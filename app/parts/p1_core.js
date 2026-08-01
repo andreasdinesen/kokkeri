@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 1;
+const APP_VERSION = 2;
 
 /* ---------------- state ---------------- */
 const S = {
@@ -259,7 +259,12 @@ async function setWakeLock(on) {
 }
 function updateWakeBtn() {
   const b = $('#wakeQuick');
-  if (b) b.classList.toggle('on', S.wakeOn);
+  if (b) {
+    b.classList.toggle('on', S.wakeOn);
+    b.textContent = S.wakeOn ? '📱' : '📴';
+    b.title = S.wakeOn ? 'Skærmen holdes tændt – klik for at slå fra'
+                       : 'Skærmen må gerne slukke – klik for at holde den tændt';
+  }
   const p = $('#wakePageBtn');
   if (p) {
     p.classList.toggle('primary', S.wakeOn);

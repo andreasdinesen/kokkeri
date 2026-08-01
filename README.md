@@ -66,6 +66,11 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v2** (august 2026): Madplan kan auto-udfyldes fra biblioteket (uden AI) og
+  retterne kan trækkes mellem dagene – ligger der allerede noget, bytter de
+  plads. Aktive timere vises i venstremenuen med nedtælling. Timer-dialogen
+  ligger nu foran kogetilstanden. Skærm-tændt-knappen viser tydeligt til/fra
+  (📱 orange = tændt, 📴 grå = fra), og kogetilstanden har en klikbar indikator.
 - **v1** (august 2026): Første udgave – opskrifter med URL-import
   (JSON-LD + microdata + AI-fallback), madplan med iCal-feed, indkøbsliste,
   timere, kogetilstand, skærmlås, AI-assistent, passkeys, backup.

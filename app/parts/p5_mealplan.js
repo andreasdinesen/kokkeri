@@ -16,15 +16,16 @@ RENDER.plan = () => {
         <button class="btn" id="wkNext">→</button>
         <button class="btn" id="wkShop">🛒 Indkøbsliste for ugen</button>
         <button class="btn" id="wkPrint">🖨️ Print</button>
-        ${S.settings.aiKeySet ? '<button class="btn primary" id="wkAi">✨ Foreslå madplan</button>' : ''}
+        <button class="btn" id="wkFill">📖 Udfyld fra biblioteket</button>
+        ${S.settings.aiKeySet ? '<button class="btn primary" id="wkAi">✨ Foreslå madplan (AI)</button>' : ''}
       </div>`) + `
   <div class="weekgrid">
     ${dates.map((d, i) => `
-      <div class="daycol${d === today ? ' today' : ''}">
+      <div class="daycol${d === today ? ' today' : ''}" data-date="${d}">
         <div class="dhead">${WEEKDAYS_DA[i]} <span style="float:right;font-weight:400">${d.slice(8)}/${+d.slice(5, 7)}</span></div>
         ${(entriesByDate[d] || []).map(e => {
           const r = e.recipeId ? recipeById(e.recipeId) : null;
-          return `<div class="planentry" data-entry="${e.id}">
+          return `<div class="planentry" data-entry="${e.id}" draggable="true">
             ${r ? esc(r.title) : esc(e.text || '')}
             ${r && recipeTotalMin(r) ? `<div class="pmeta">⏱ ${fmtMin(recipeTotalMin(r))}${e.servings ? ' · ' + e.servings + ' pers.' : ''}</div>` : (e.servings ? `<div class="pmeta">${e.servings} pers.</div>` : '')}
           </div>`;
@@ -32,7 +33,8 @@ RENDER.plan = () => {
         <button class="dayadd" data-date="${d}">+ tilføj</button>
       </div>`).join('')}
   </div>
-  <p class="small muted">Madplanen kan abonneres i din kalender-app – find iCal-linket under Indstillinger.</p>`;
+  <p class="small muted">Træk en ret til en anden dag for at flytte den – ligger der allerede noget, bytter de plads.
+  Madplanen kan abonneres i din kalender-app – find iCal-linket under Indstillinger.</p>`;
 };
 RENDER.plan_bind = () => {
   $('#wkPrev').onclick = () => { S.weekStart = addDays(S.weekStart || mondayOf(), -7); render(); };
@@ -40,14 +42,80 @@ RENDER.plan_bind = () => {
   $('#wkToday').onclick = () => { S.weekStart = mondayOf(); render(); };
   $('#wkShop').onclick = weekToShopping;
   $('#wkPrint').onclick = printWeekPlan;
+  $('#wkFill').onclick = autoFillWeek;
   const ai = $('#wkAi');
   if (ai) ai.onclick = aiSuggestWeek;
   $$('.dayadd').forEach(b => b.onclick = () => planEntryModal(null, { date: b.dataset.date }));
-  $$('.planentry[data-entry]').forEach(el => el.onclick = () => {
-    const e = K('planEntry').find(x => x.id === el.dataset.entry);
-    if (e) planEntryModal(e);
+  $$('.planentry[data-entry]').forEach(el => {
+    el.onclick = () => {
+      const e = K('planEntry').find(x => x.id === el.dataset.entry);
+      if (e) planEntryModal(e);
+    };
+    el.ondragstart = ev => {
+      ev.dataTransfer.setData('text/plain', el.dataset.entry);
+      ev.dataTransfer.effectAllowed = 'move';
+      el.classList.add('dragging');
+    };
+    el.ondragend = () => el.classList.remove('dragging');
+  });
+  $$('.daycol[data-date]').forEach(col => {
+    col.ondragover = ev => { ev.preventDefault(); ev.dataTransfer.dropEffect = 'move'; col.classList.add('dropover'); };
+    col.ondragleave = ev => { if (!col.contains(ev.relatedTarget)) col.classList.remove('dropover'); };
+    col.ondrop = ev => {
+      ev.preventDefault();
+      col.classList.remove('dropover');
+      movePlanEntry(ev.dataTransfer.getData('text/plain'), col.dataset.date);
+    };
   });
 };
+
+/* flyt en madplan-linje til en anden dag; ligger der allerede noget paa
+ * maaldagen, bytter de plads (de fortraengte ryger til den dag, der traekkes fra) */
+async function movePlanEntry(entryId, toDate) {
+  const e = K('planEntry').find(x => x.id === entryId);
+  if (!e || !toDate || e.date === toDate) return;
+  const fromDate = e.date;
+  const displaced = K('planEntry').filter(x => x.date === toDate && x.id !== e.id);
+  e.date = toDate;
+  displaced.forEach(x => { x.date = fromDate; });
+  await saveBulk([e, ...displaced]);
+  toast(displaced.length ? 'Byttet om 🔄' : 'Flyttet til ' + fmtDate(toDate));
+  render();
+}
+
+/* fyld ugens tomme dage med opskrifter fra biblioteket - uden AI.
+ * Vaegtet lodtraekning: favoritter og hoejt vurderede traekkes oftere, og
+ * samme ret kommer ikke paa to dage i samme uge (medmindre biblioteket er lille). */
+async function autoFillWeek() {
+  const monday = S.weekStart || mondayOf();
+  const dates = weekDatesOf(monday);
+  const free = dates.filter(d => !K('planEntry').some(e => e.date === d));
+  if (!free.length) return toast('Alle ugens dage har allerede noget på madplanen', true);
+  const recipes = K('recipe');
+  if (!recipes.length) return toast('Biblioteket er tomt – tilføj nogle opskrifter først', true);
+
+  const usedIds = new Set(K('planEntry').filter(e => dates.includes(e.date) && e.recipeId).map(e => e.recipeId));
+  const weight = r => 1 + (r.rating || 0) + (r.favorite ? 3 : 0);
+  let pool = recipes.filter(r => !usedIds.has(r.id));
+
+  const draw = () => {
+    if (!pool.length) pool = recipes.slice(); // lille bibliotek: genbrug fremfor at stoppe
+    let sum = pool.reduce((a, r) => a + weight(r), 0);
+    let x = Math.random() * sum;
+    for (let i = 0; i < pool.length; i++) {
+      x -= weight(pool[i]);
+      if (x <= 0) return pool.splice(i, 1)[0];
+    }
+    return pool.pop();
+  };
+
+  const items = free.map(d => ({
+    id: uid(), kind: 'planEntry', date: d, recipeId: draw().id, text: '', servings: null
+  }));
+  await saveBulk(items);
+  toast(`${items.length} dage udfyldt – træk retterne rundt, som du vil`);
+  render();
+}
 
 function planEntryModal(entry, prefill) {
   const isNew = !entry;

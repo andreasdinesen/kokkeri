@@ -86,7 +86,32 @@ nav .navsep { border-top: 1px solid var(--border); margin: 8px 4px; }
 nav .navfoot { padding: 10px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
 nav .navfoot .who { flex: 1; font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
 #navVersion { font-size: 11px; color: var(--muted); padding: 0 16px 8px; }
-#wakeQuick.on { color: var(--amber); text-shadow: 0 0 8px rgba(224,112,60,.6); }
+
+/* skaerm-taendt-knappen: tydelig forskel paa til og fra */
+#wakeQuick {
+  border: 1px solid transparent; border-radius: 8px;
+  opacity: .45; filter: grayscale(1);
+}
+#wakeQuick.on {
+  opacity: 1; filter: none; color: var(--amber);
+  background: rgba(224,112,60,.16); border-color: var(--amber);
+}
+
+/* aktive timere i sidebaren (over versionsnummeret) */
+#navTimers { padding: 0 10px 4px; }
+#navTimers .navtimer {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  font-size: 12px; padding: 5px 9px; margin-bottom: 6px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--card2); color: var(--muted); cursor: pointer; text-align: left;
+}
+#navTimers .navtimer .tlbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#navTimers .navtimer .ttime {
+  margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text);
+}
+#navTimers .navtimer.ringing { border-color: var(--red); animation: ring .8s ease infinite; }
+#navTimers .navtimer.ringing .ttime { color: var(--red); }
+#navTimers .navtimer.paused { opacity: .55; }
 
 body.navfold { padding-left: 0; }
 body.navfold main { padding-left: 64px; }
@@ -212,9 +237,12 @@ label.chk { display: flex; align-items: center; gap: 8px; font-size: 14px; color
 .daycol.today .dhead { color: var(--amber); }
 .planentry {
   background: var(--card2); border: 1px solid var(--border); border-radius: 8px;
-  padding: 6px 8px; font-size: 13px; cursor: pointer; line-height: 1.3;
+  padding: 6px 8px; font-size: 13px; cursor: grab; line-height: 1.3;
 }
 .planentry:hover { border-color: var(--muted); }
+.planentry.dragging { opacity: .4; }
+.daycol.dropover { border-color: var(--accent); background: rgba(74,194,107,.08); }
+.daycol.dropover .planentry { pointer-events: none; }
 .planentry .pmeta { font-size: 11px; color: var(--muted); }
 .dayadd {
   border: 1px dashed var(--border); background: none; color: var(--muted); border-radius: 8px;
@@ -289,8 +317,9 @@ ul.shoplist .shopgroup { font-weight: 700; border-bottom: 2px solid var(--border
 .chathints { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
 
 /* ---------- modal ---------- */
+/* z-index 75: modaler skal ligge OVER kogetilstanden (70), fx timer-dialogen */
 .modalback {
-  position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 60;
+  position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 75;
   display: flex; align-items: flex-start; justify-content: center; padding: 40px 14px;
   overflow-y: auto;
 }

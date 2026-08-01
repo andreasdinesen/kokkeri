@@ -448,7 +448,8 @@ function drawCookMode() {
   $('#cookMode').innerHTML = `
     <div class="cmhead">
       <h2>👨‍🍳 ${esc(r.title)}</h2>
-      ${S.wakeOn ? '<span class="chip on">📱 skærmen holdes tændt</span>' : ''}
+      <button class="chip chipbtn${S.wakeOn ? ' on' : ''}" id="cmWake" style="${S.wakeOn ? '' : 'color:var(--red);border-color:var(--red)'}">
+        ${S.wakeOn ? '📱 skærmen holdes tændt' : '📴 skærmen holdes IKKE tændt'}</button>
       <button class="btn" id="cmTimer">⏱️ Timer</button>
       <button class="btn" id="cmClose">✕ Luk</button>
     </div>
@@ -470,6 +471,7 @@ function drawCookMode() {
         : '<button class="btn primary" id="cmDone">✓ Færdig</button>'}
     </div>`;
   $('#cmClose').onclick = closeCookMode;
+  $('#cmWake').onclick = () => setWakeLock(!S.wakeOn);
   $('#cmTimer').onclick = () => newTimerModal(r.title);
   $('#cmPrev').onclick = () => { if (CM.step > 0) { CM.step--; drawCookMode(); } };
   const next = $('#cmNext');

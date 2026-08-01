@@ -35,10 +35,27 @@ function renderNav() {
     render();
   });
   $('#navSearch').onclick = openPalette;
+  renderNavTimers();
   $('#navVersion').textContent = 'Kokkeri v' + APP_VERSION;
   const A = app();
   $('#brandName').textContent = A.appTitle || 'Kokkeri';
   $('#brandLogo').innerHTML = S.settings.logo ? `<img class="navlogo" src="${S.settings.logo}">` : '🍳';
+}
+
+/* aktive timere i sidebaren - nedtaellingen opdateres af timer-motoren via [data-timerid] */
+function renderNavTimers() {
+  const host = $('#navTimers');
+  if (!host) return;
+  host.innerHTML = S.timers.map(t => `
+    <button class="navtimer${t.ringing ? ' ringing' : ''}${t.paused ? ' paused' : ''}" data-timerid="${t.id}" title="Gå til timerne">
+      <span>${t.ringing ? '⏰' : t.paused ? '⏸' : '⏱'}</span>
+      <span class="tlbl">${esc(t.label)}</span>
+      <span class="ttime">${t.ringing ? '0:00' : fmtTimer(timerRemainMs(t))}</span>
+    </button>`).join('');
+  host.querySelectorAll('.navtimer').forEach(b => b.onclick = () => {
+    if (matchMedia('(max-width: 760px)').matches) document.body.classList.remove('navopen');
+    goto('timers');
+  });
 }
 
 function render() {
