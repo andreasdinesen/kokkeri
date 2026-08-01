@@ -1,0 +1,980 @@
+'use strict';
+/* Kokkeri – selvstændig server til Yggdrasil Panel
+ * Node.js (>=22) uden npm-afhængigheder: node:http + node:sqlite + node:crypto.
+ * Funktioner: brugere, sessions, kodeord (scrypt), passkeys (WebAuthn),
+ * fælles data-API (items pr. kind), indstillinger, backup/restore,
+ * opskrift-import fra URL (schema.org/Recipe JSON-LD), billed-proxy,
+ * AI-proxy (Claude API, nøglen bor kun på serveren) og iCal-feed af madplanen.
+ * Alt data ligger i SQLite i /data. Bygget efter samme opskrift som beanledger. */
+
+const http = require('node:http');
+const crypto = require('node:crypto');
+const path = require('node:path');
+const fs = require('node:fs');
+const { DatabaseSync } = require('node:sqlite');
+
+const BIND_PORT = parseInt(process.env.BIND_PORT || '3000', 10);
+const DATA_DIR = process.env.DATA_DIR || process.cwd();
+const APP_DIR = __dirname;
+const PUBLIC_DIR = path.join(APP_DIR, 'public');
+const APP_NAME = process.env.APP_NAME || 'Kokkeri';
+const SESSION_DAYS = 90;
+const DB_PATH = path.join(DATA_DIR, 'kokkeri.db');
+
+/* Datatyper frontenden må gemme. Holdes som whitelist så API'et ikke kan
+ * bruges som vilkårligt lager. */
+const KINDS = new Set([
+  'recipe',    // opskrift (titel, ingredienser, fremgangsmåde, kilde-URL, billede ...)
+  'planEntry', // madplan-linje (dato + opskrift eller fritekst)
+  'shopItem'   // indkøbsliste-linje (tekst, evt. opskrift-reference, afkrydset)
+]);
+
+/* ---------------- database ---------------- */
+const db = new DatabaseSync(DB_PATH);
+db.exec(`
+PRAGMA journal_mode = WAL;
+PRAGMA foreign_keys = ON;
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT UNIQUE NOT NULL,
+  pass_salt TEXT NOT NULL,
+  pass_hash TEXT NOT NULL,
+  is_admin INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS credentials (
+  id TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  jwk TEXT NOT NULL,
+  counter INTEGER NOT NULL DEFAULT 0,
+  label TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS items (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  data TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_items_kind ON items(kind);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+`);
+
+const q = {
+  userByName: db.prepare('SELECT * FROM users WHERE lower(username) = lower(?)'),
+  userById: db.prepare('SELECT * FROM users WHERE id = ?'),
+  userCount: db.prepare('SELECT COUNT(*) AS n FROM users'),
+  adminCount: db.prepare('SELECT COUNT(*) AS n FROM users WHERE is_admin = 1'),
+  insertUser: db.prepare('INSERT INTO users (username, pass_salt, pass_hash, is_admin, created_at) VALUES (?,?,?,?,?)'),
+  setPassword: db.prepare('UPDATE users SET pass_salt = ?, pass_hash = ? WHERE id = ?'),
+  setAdmin: db.prepare('UPDATE users SET is_admin = ? WHERE id = ?'),
+  deleteUser: db.prepare('DELETE FROM users WHERE id = ?'),
+  allUsers: db.prepare(`SELECT u.id, u.username, u.is_admin, u.created_at,
+      (SELECT COUNT(*) FROM credentials c WHERE c.user_id = u.id) AS passkeys
+    FROM users u ORDER BY u.id`),
+  insertSession: db.prepare('INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?,?,?,?)'),
+  sessionByToken: db.prepare('SELECT * FROM sessions WHERE token = ?'),
+  deleteSession: db.prepare('DELETE FROM sessions WHERE token = ?'),
+  deleteUserSessions: db.prepare('DELETE FROM sessions WHERE user_id = ?'),
+  purgeSessions: db.prepare('DELETE FROM sessions WHERE expires_at < ?'),
+  credById: db.prepare('SELECT * FROM credentials WHERE id = ?'),
+  credsByUser: db.prepare('SELECT id, label, created_at FROM credentials WHERE user_id = ? ORDER BY created_at'),
+  insertCred: db.prepare('INSERT INTO credentials (id, user_id, jwk, counter, label, created_at) VALUES (?,?,?,?,?,?)'),
+  updateCounter: db.prepare('UPDATE credentials SET counter = ? WHERE id = ?'),
+  deleteCred: db.prepare('DELETE FROM credentials WHERE id = ? AND user_id = ?'),
+  deleteUserCreds: db.prepare('DELETE FROM credentials WHERE user_id = ?'),
+  itemsAll: db.prepare('SELECT kind, data FROM items WHERE deleted = 0'),
+  itemsByKind: db.prepare('SELECT data FROM items WHERE kind = ? AND deleted = 0'),
+  itemById: db.prepare('SELECT * FROM items WHERE id = ?'),
+  upsertItem: db.prepare(`INSERT INTO items (id, kind, data, updated_at, deleted) VALUES (?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, data = excluded.data,
+      updated_at = excluded.updated_at, deleted = excluded.deleted`),
+  wipeItems: db.prepare('DELETE FROM items'),
+  allSettings: db.prepare('SELECT key, value FROM settings'),
+  getSetting: db.prepare('SELECT value FROM settings WHERE key = ?'),
+  setSetting: db.prepare('INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+};
+
+const nowIso = () => new Date().toISOString();
+const setting = (key, dflt) => { const r = q.getSetting.get(key); return r ? r.value : dflt; };
+
+/* kalender-token til iCal-abonnement (kalender-apps kan ikke sende cookies) */
+if (!setting('ical_token', '')) {
+  q.setSetting.run('ical_token', crypto.randomBytes(16).toString('hex'));
+}
+
+/* ---------------- helpers ---------------- */
+const b64u = buf => Buffer.from(buf).toString('base64url');
+const fromB64u = s => Buffer.from(String(s || ''), 'base64url');
+const sha256 = buf => crypto.createHash('sha256').update(buf).digest();
+
+function hashPassword(password, salt) {
+  return crypto.scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1 }).toString('hex');
+}
+function verifyPassword(user, password) {
+  const h = Buffer.from(hashPassword(password, user.pass_salt), 'hex');
+  const stored = Buffer.from(user.pass_hash, 'hex');
+  return h.length === stored.length && crypto.timingSafeEqual(h, stored);
+}
+function createSession(res, userId, secure) {
+  const token = crypto.randomBytes(32).toString('hex');
+  const exp = new Date(Date.now() + SESSION_DAYS * 864e5).toISOString();
+  q.insertSession.run(token, userId, nowIso(), exp);
+  const cookie = [`kokkeri_session=${token}`, 'HttpOnly', 'Path=/', 'SameSite=Lax',
+    `Max-Age=${SESSION_DAYS * 86400}`].concat(secure ? ['Secure'] : []).join('; ');
+  res.setHeader('Set-Cookie', cookie);
+}
+function readCookies(req) {
+  const out = {};
+  (req.headers.cookie || '').split(';').forEach(p => {
+    const i = p.indexOf('=');
+    if (i > 0) out[p.slice(0, i).trim()] = p.slice(i + 1).trim();
+  });
+  return out;
+}
+function currentUser(req) {
+  const token = readCookies(req).kokkeri_session;
+  if (!token || !/^[0-9a-f]{64}$/.test(token)) return null;
+  const s = q.sessionByToken.get(token);
+  if (!s) return null;
+  if (s.expires_at < nowIso()) { q.deleteSession.run(token); return null; }
+  const u = q.userById.get(s.user_id);
+  if (!u) { q.deleteSession.run(token); return null; }
+  u._token = token;
+  return u;
+}
+function reqContext(req) {
+  const proto = (String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim()) ||
+    (req.socket.encrypted ? 'https' : 'http');
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || 'localhost').split(',')[0].trim();
+  const hostname = host.replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+  return { origin: proto + '://' + host, rpId: hostname, secure: proto === 'https' };
+}
+
+/* simple rate limit for login attempts */
+const attempts = new Map();
+function rateLimited(key) {
+  const now = Date.now();
+  const a = attempts.get(key) || [];
+  const recent = a.filter(t => now - t < 15 * 60e3);
+  attempts.set(key, recent);
+  return recent.length >= 15;
+}
+function noteAttempt(key) { (attempts.get(key) || attempts.set(key, []).get(key)).push(Date.now()); }
+
+/* ---------------- CBOR (minimal decoder) ---------------- */
+function cborDecodeFirst(buf) {
+  let off = 0;
+  function readLen(ai) {
+    if (ai < 24) return ai;
+    if (ai === 24) return buf[off++];
+    if (ai === 25) { const v = buf.readUInt16BE(off); off += 2; return v; }
+    if (ai === 26) { const v = buf.readUInt32BE(off); off += 4; return v; }
+    if (ai === 27) { const v = Number(buf.readBigUInt64BE(off)); off += 8; return v; }
+    throw new Error('cbor: unsupported length');
+  }
+  function read() {
+    if (off >= buf.length) throw new Error('cbor: truncated');
+    const ib = buf[off++], mt = ib >> 5, ai = ib & 31;
+    if (mt === 7) {
+      if (ai === 20) return false;
+      if (ai === 21) return true;
+      if (ai === 22 || ai === 23) return null;
+      throw new Error('cbor: unsupported simple/float');
+    }
+    const len = readLen(ai);
+    switch (mt) {
+      case 0: return len;
+      case 1: return -1 - len;
+      case 2: { const v = buf.subarray(off, off + len); off += len; return Buffer.from(v); }
+      case 3: { const v = buf.subarray(off, off + len).toString('utf8'); off += len; return v; }
+      case 4: { const a = []; for (let i = 0; i < len; i++) a.push(read()); return a; }
+      case 5: { const m = new Map(); for (let i = 0; i < len; i++) { const k = read(); m.set(k, read()); } return m; }
+      default: throw new Error('cbor: unsupported major type');
+    }
+  }
+  const v = read();
+  return [v, off];
+}
+
+/* ---------------- WebAuthn ---------------- */
+function coseToJwk(cose) {
+  const kty = cose.get(1), alg = cose.get(3);
+  if (kty === 2) { // EC2
+    if (cose.get(-1) !== 1 || alg !== -7) throw new Error('Ukendt EC-kurve/algoritme');
+    return { kty: 'EC', crv: 'P-256', x: b64u(cose.get(-2)), y: b64u(cose.get(-3)) };
+  }
+  if (kty === 3) { // RSA
+    if (alg !== -257) throw new Error('Ukendt RSA-algoritme');
+    return { kty: 'RSA', n: b64u(cose.get(-1)), e: b64u(cose.get(-2)) };
+  }
+  throw new Error('Ukendt nøgletype');
+}
+function parseAuthData(authData) {
+  if (authData.length < 37) throw new Error('authData for kort');
+  const out = {
+    rpIdHash: authData.subarray(0, 32),
+    flags: authData[32],
+    counter: authData.readUInt32BE(33)
+  };
+  if (out.flags & 0x40) { // attested credential data
+    const credIdLen = authData.readUInt16BE(53);
+    out.credId = authData.subarray(55, 55 + credIdLen);
+    const [cose] = cborDecodeFirst(authData.subarray(55 + credIdLen));
+    out.cose = cose;
+  }
+  return out;
+}
+function verifyClientData(cdJson, expectType, expectChallenge, expectOrigin) {
+  let cd;
+  try { cd = JSON.parse(cdJson.toString('utf8')); } catch (e) { throw new Error('Ugyldig clientData'); }
+  if (cd.type !== expectType) throw new Error('Forkert clientData-type');
+  if (cd.challenge !== expectChallenge) throw new Error('Challenge matcher ikke');
+  if (cd.origin !== expectOrigin) throw new Error('Origin matcher ikke (' + cd.origin + ' ≠ ' + expectOrigin + ')');
+  return cd;
+}
+function verifyAssertionSignature(jwkJson, authData, cdJson, sig) {
+  const key = crypto.createPublicKey({ key: JSON.parse(jwkJson), format: 'jwk' });
+  const signed = Buffer.concat([authData, sha256(cdJson)]);
+  return crypto.verify('sha256', signed, key, sig);
+}
+
+/* challenge store (in-memory, kortlivet) */
+const challenges = new Map();
+function issueChallenge(data) {
+  const id = crypto.randomBytes(16).toString('hex');
+  challenges.set(id, Object.assign({ exp: Date.now() + 5 * 60e3 }, data));
+  if (challenges.size > 1000) {
+    for (const [k, v] of challenges) if (v.exp < Date.now()) challenges.delete(k);
+  }
+  return id;
+}
+function takeChallenge(id) {
+  const c = challenges.get(id);
+  challenges.delete(id);
+  if (!c || c.exp < Date.now()) return null;
+  return c;
+}
+
+/* ---------------- HTTP plumbing ---------------- */
+function send(res, code, obj) {
+  const body = JSON.stringify(obj);
+  res.writeHead(code, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff'
+  });
+  res.end(body);
+}
+const err = (res, code, message) => send(res, code, { error: message });
+
+function readBody(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', c => {
+      size += c.length;
+      if (size > (maxBytes || 25e6)) { reject(new Error('For stor forespørgsel')); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      if (!chunks.length) return resolve({});
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+      catch (e) { reject(new Error('Ugyldig JSON')); }
+    });
+    req.on('error', reject);
+  });
+}
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8', '.json': 'application/json',
+  '.png': 'image/png', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json',
+  '.ico': 'image/x-icon', '.woff2': 'font/woff2'
+};
+function serveStatic(res, relPath) {
+  const full = path.normalize(path.join(PUBLIC_DIR, relPath));
+  if (!full.startsWith(PUBLIC_DIR)) return err(res, 404, 'Ikke fundet');
+  fs.readFile(full, (e, data) => {
+    if (e) return err(res, 404, 'Ikke fundet');
+    res.writeHead(200, {
+      'Content-Type': MIME[path.extname(full)] || 'application/octet-stream',
+      'Cache-Control': 'no-cache',
+      'X-Content-Type-Options': 'nosniff'
+    });
+    res.end(data);
+  });
+}
+
+/* ---------------- validation ---------------- */
+const USERNAME_RE = /^[a-zA-Z0-9._æøåÆØÅ-]{2,32}$/;
+function validPassword(p) { return typeof p === 'string' && p.length >= 8 && p.length <= 200; }
+
+/* Whitelist af setting-nøgler frontenden må skrive. `app` er hoved-JSON'en
+ * med parametre; `logo` er et data-URL-billede. `ai_key` er Claude API-nøglen –
+ * den gemmes her, men returneres ALDRIG til frontenden (kun aiKeySet: true). */
+const SETTING_KEYS = new Set(['app', 'logo', 'allow_registration', 'ai_key', 'ai_model']);
+const SETTING_MAX = { app: 200000, logo: 900000, allow_registration: 4, ai_key: 300, ai_model: 100 };
+
+function sanitizeItem(it) {
+  if (!it || typeof it !== 'object') return null;
+  if (typeof it.id !== 'string' || !/^[0-9a-zA-Z-]{6,64}$/.test(it.id)) return null;
+  if (typeof it.kind !== 'string' || !KINDS.has(it.kind)) return null;
+  const clean = Object.assign({}, it);
+  delete clean._token;
+  const json = JSON.stringify(clean);
+  if (json.length > 200000) return null;
+  return { id: it.id, kind: it.kind, json, deleted: it.deleted ? 1 : 0 };
+}
+function meJson(u) {
+  return {
+    id: u.id, username: u.username, isAdmin: !!u.is_admin,
+    passkeys: q.credsByUser.all(u.id).map(c => ({ id: c.id, label: c.label || 'Passkey', created: c.created_at }))
+  };
+}
+function appSettingsJson() {
+  const out = {};
+  for (const row of q.allSettings.all()) {
+    if (row.key === 'app') { try { out.app = JSON.parse(row.value); } catch (e) { out.app = {}; } }
+    else if (row.key === 'logo') out.logo = row.value;
+  }
+  out.aiKeySet = !!setting('ai_key', '');
+  out.aiModel = setting('ai_model', '');
+  return out;
+}
+
+/* ---------------- opskrift-import (schema.org/Recipe) ---------------- */
+/* De fleste opskrift-sider (Valdemarsro, Arla, madensverden, NYT Cooking ...)
+ * indlejrer opskriften som JSON-LD. Vi henter siden, finder Recipe-objektet og
+ * normaliserer det. Findes intet, returneres sidens rene tekst, saa frontenden
+ * kan lade AI'en udtraekke opskriften i stedet. */
+const FETCH_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'da,en;q=0.8'
+};
+
+function decodeEntities(s) {
+  const named = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', deg: '°',
+    aring: 'å', Aring: 'Å', aelig: 'æ', AElig: 'Æ', oslash: 'ø', Oslash: 'Ø',
+    frac12: '½', frac14: '¼', frac34: '¾', eacute: 'é', uuml: 'ü', ouml: 'ö', auml: 'ä' };
+  return String(s || '')
+    .replace(/&#x([0-9a-fA-F]+);/g, (m, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (m, d) => String.fromCodePoint(+d))
+    .replace(/&([a-zA-Z]+);/g, (m, n) => named[n] !== undefined ? named[n] : m);
+}
+function stripHtml(html) {
+  return decodeEntities(String(html || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|h\d|tr)>/gi, '\n')
+    .replace(/<[^>]+>/g, ' '))
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n[ \t]*/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+/* ISO 8601-varighed (PT1H30M) -> minutter */
+function isoDurationToMin(v) {
+  const m = String(v || '').match(/^-?P(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$/);
+  if (!m) return null;
+  const min = (+m[1] || 0) * 1440 + (+m[2] || 0) * 60 + (+m[3] || 0) + (+m[4] || 0) / 60;
+  return min ? Math.round(min) : null;
+}
+function asText(v) {
+  if (v == null) return '';
+  if (typeof v === 'string') return decodeEntities(v.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+  if (Array.isArray(v)) return v.map(asText).filter(Boolean).join(', ');
+  if (typeof v === 'object') return asText(v.name || v.text || v['@value'] || '');
+  return String(v);
+}
+function imageUrlOf(v) {
+  if (!v) return '';
+  if (typeof v === 'string') return v;
+  if (Array.isArray(v)) return imageUrlOf(v[0]);
+  if (typeof v === 'object') return imageUrlOf(v.url || v.contentUrl || '');
+  return '';
+}
+function findRecipeNode(node, depth) {
+  if (!node || typeof node !== 'object' || (depth || 0) > 6) return null;
+  if (Array.isArray(node)) {
+    for (const n of node) { const r = findRecipeNode(n, (depth || 0) + 1); if (r) return r; }
+    return null;
+  }
+  const t = node['@type'];
+  const types = Array.isArray(t) ? t : (t ? [t] : []);
+  if (types.some(x => String(x).toLowerCase() === 'recipe')) return node;
+  for (const key of ['@graph', 'mainEntity', 'mainEntityOfPage', 'itemListElement', 'item']) {
+    if (node[key]) { const r = findRecipeNode(node[key], (depth || 0) + 1); if (r) return r; }
+  }
+  return null;
+}
+function instructionsOf(v, out) {
+  out = out || [];
+  if (!v) return out;
+  if (typeof v === 'string') {
+    /* nogle sider har hele fremgangsmaaden som een streng med linjeskift */
+    decodeEntities(v.replace(/<[^>]+>/g, '\n')).split(/\n+/)
+      .map(s => s.replace(/\s+/g, ' ').trim()).filter(Boolean).forEach(s => out.push(s));
+    return out;
+  }
+  if (Array.isArray(v)) { v.forEach(x => instructionsOf(x, out)); return out; }
+  if (typeof v === 'object') {
+    const t = String(v['@type'] || '').toLowerCase();
+    if (t === 'howtosection') {
+      const name = asText(v.name);
+      if (name) out.push('## ' + name);
+      instructionsOf(v.itemListElement, out);
+      return out;
+    }
+    const txt = asText(v.text || v.name);
+    if (txt) out.push(txt);
+    else instructionsOf(v.itemListElement, out);
+    return out;
+  }
+  return out;
+}
+function normalizeRecipe(node, pageUrl) {
+  const yieldRaw = asText(node.recipeYield);
+  const servings = (() => { const m = yieldRaw.match(/\d+/); return m ? +m[0] : null; })();
+  const ingredients = (Array.isArray(node.recipeIngredient) ? node.recipeIngredient
+    : Array.isArray(node.ingredients) ? node.ingredients
+    : (node.recipeIngredient || node.ingredients) ? [node.recipeIngredient || node.ingredients] : [])
+    .map(asText).filter(Boolean);
+  return {
+    title: asText(node.name),
+    description: asText(node.description),
+    image: imageUrlOf(node.image),
+    ingredients,
+    instructions: instructionsOf(node.recipeInstructions).filter(Boolean),
+    prepMin: isoDurationToMin(node.prepTime),
+    cookMin: isoDurationToMin(node.cookTime),
+    totalMin: isoDurationToMin(node.totalTime),
+    servings,
+    yieldText: yieldRaw,
+    category: asText(node.recipeCategory),
+    cuisine: asText(node.recipeCuisine),
+    keywords: asText(node.keywords),
+    author: asText(node.author),
+    url: pageUrl
+  };
+}
+/* Microdata-fallback (itemtype="schema.org/Recipe" + itemprop=...) - bruges af
+ * bl.a. Valdemarsro. Uden DOM noejes vi med robuste heuristikker: alle props
+ * soeges fra Recipe-scopets start og frem. */
+function mdProp(scope, prop, all) {
+  const re = new RegExp(
+    `<([a-z0-9]+)([^>]*\\bitemprop=["']${prop}["'][^>]*)>([\\s\\S]*?)<\\/\\1>|<[^>]*\\bitemprop=["']${prop}["'][^>]*?(?:content|datetime)=["']([^"']+)["'][^>]*\\/?>|<[^>]*(?:content|datetime)=["']([^"']+)["'][^>]*\\bitemprop=["']${prop}["'][^>]*\\/?>`,
+    'gi');
+  const out = [];
+  let m;
+  while ((m = re.exec(scope))) {
+    /* content/datetime-attribut vinder over indre tekst (fx PT45M) */
+    const attrs = m[2] || '';
+    const attrVal = (attrs.match(/(?:content|datetime)=["']([^"']+)["']/i) || [])[1];
+    const v = attrVal || m[4] || m[5] || stripHtml(m[3] || '');
+    if (v && String(v).trim()) out.push(String(v).trim());
+    if (!all) break;
+  }
+  return all ? out : (out[0] || '');
+}
+function microdataRecipe(html, pageUrl) {
+  const idx = html.search(/itemtype=["']https?:\/\/schema\.org\/Recipe["']/i);
+  if (idx < 0) return null;
+  const scope = html.slice(Math.max(0, html.lastIndexOf('<', idx)));
+  const ingredients = mdProp(scope, 'recipeIngredient', true)
+    .concat(mdProp(scope, 'ingredients', true))
+    .map(s => s.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  if (!ingredients.length) return null;
+  const instructions = [];
+  for (const block of mdProp(scope, 'recipeInstructions', true)) {
+    block.split(/\n+/).map(s => s.trim()).filter(Boolean).forEach(s => instructions.push(s));
+  }
+  const titleM = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const ogTitle = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i) ||
+                  html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']/i);
+  const ogImg = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
+                html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+  const yieldRaw = mdProp(scope, 'recipeYield');
+  const servM = yieldRaw.match(/\d+/);
+  return {
+    title: mdProp(scope, 'headline') || (ogTitle ? decodeEntities(ogTitle[1]) : '') ||
+           mdProp(scope, 'name') || (titleM ? decodeEntities(titleM[1]).trim() : ''),
+    description: mdProp(scope, 'description'),
+    image: ogImg ? ogImg[1] : imageUrlOf(mdProp(scope, 'image')),
+    ingredients,
+    instructions,
+    prepMin: isoDurationToMin(mdProp(scope, 'prepTime')),
+    cookMin: isoDurationToMin(mdProp(scope, 'cookTime')),
+    totalMin: isoDurationToMin(mdProp(scope, 'totalTime')),
+    servings: servM ? +servM[0] : null,
+    yieldText: yieldRaw,
+    category: mdProp(scope, 'recipeCategory'),
+    cuisine: mdProp(scope, 'recipeCuisine'),
+    keywords: mdProp(scope, 'keywords'),
+    author: '',
+    url: pageUrl
+  };
+}
+function extractRecipe(html, pageUrl) {
+  const blocks = [...html.matchAll(/<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)];
+  for (const b of blocks) {
+    let json;
+    const raw = b[1].trim().replace(/^\s*<!--/, '').replace(/-->\s*$/, '');
+    try { json = JSON.parse(raw); } catch (e) { continue; }
+    const node = findRecipeNode(json, 0);
+    if (node) {
+      const r = normalizeRecipe(node, pageUrl);
+      if (r.title && (r.ingredients.length || r.instructions.length)) return r;
+    }
+  }
+  const md = microdataRecipe(html, pageUrl);
+  if (md && md.title) return md;
+  return null;
+}
+async function fetchPage(url) {
+  const r = await fetch(url, { headers: FETCH_HEADERS, signal: AbortSignal.timeout(20000), redirect: 'follow' });
+  if (!r.ok) throw new Error('Siden svarede ' + r.status);
+  const buf = Buffer.from(await r.arrayBuffer());
+  if (buf.length > 8e6) throw new Error('Siden er for stor');
+  return buf.toString('utf8');
+}
+
+/* ---------------- AI-proxy (Claude API) ---------------- */
+const AI_DEFAULT_MODEL = 'claude-sonnet-5';
+async function aiMessage(body) {
+  const key = setting('ai_key', '');
+  if (!key) { const e = new Error('Ingen AI-nøgle sat – tilføj din Claude API-nøgle under Indstillinger'); e.status = 400; throw e; }
+  const model = setting('ai_model', '') || AI_DEFAULT_MODEL;
+  const messages = Array.isArray(body.messages) ? body.messages
+    .filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
+    .slice(-40).map(m => ({ role: m.role, content: String(m.content).slice(0, 60000) })) : [];
+  if (!messages.length) { const e = new Error('Ingen beskeder'); e.status = 400; throw e; }
+  const payload = {
+    model,
+    max_tokens: Math.min(Math.max(parseInt(body.maxTokens, 10) || 2048, 256), 8192),
+    messages
+  };
+  if (typeof body.system === 'string' && body.system) payload.system = String(body.system).slice(0, 60000);
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': key,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(120000)
+  });
+  const j = await r.json().catch(() => null);
+  if (!r.ok) {
+    const msg = (j && j.error && j.error.message) || ('AI-tjenesten svarede ' + r.status);
+    const e = new Error(msg); e.status = r.status === 401 ? 401 : 502; throw e;
+  }
+  const text = (j.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
+  return { text, model: j.model, usage: j.usage || null };
+}
+
+/* ---------------- router ---------------- */
+const server = http.createServer(async (req, res) => {
+  const u = new URL(req.url, 'http://x');
+  const p = u.pathname;
+  const ctx = reqContext(req);
+
+  try {
+    /* --- static --- */
+    if (req.method === 'GET' && (p === '/' || p === '/index.html')) return serveStatic(res, 'index.html');
+    if (req.method === 'GET' && p === '/manifest.webmanifest') {
+      res.writeHead(200, { 'Content-Type': 'application/manifest+json' });
+      return res.end(JSON.stringify({
+        name: APP_NAME, short_name: 'Kokkeri', start_url: '.', display: 'standalone',
+        background_color: '#0b0f14', theme_color: '#e0703c', lang: 'da',
+        icons: [{ src: 'icon-192.png', sizes: '192x192', type: 'image/png' },
+                { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' }]
+      }));
+    }
+    if (req.method === 'GET' && /^\/(app\.js|style\.css|icon-\d+\.png|favicon\.ico)$/.test(p)) {
+      return serveStatic(res, p === '/favicon.ico' ? 'icon-192.png' : p.slice(1));
+    }
+    if (!p.startsWith('/api/')) return err(res, 404, 'Ikke fundet');
+
+    /* --- API --- */
+    const user = currentUser(req);
+    const isJson = (req.headers['content-type'] || '').includes('application/json');
+    if (req.method !== 'GET' && !isJson) return err(res, 400, 'Content-Type skal være application/json');
+    const body = req.method === 'GET' ? {} : await readBody(req);
+
+    /* iCal-abonnement af madplanen (ingen session - beskyttet af token) */
+    if (p === '/api/madplan.ics' && req.method === 'GET') {
+      const token = String(u.searchParams.get('token') || '');
+      const want = setting('ical_token', '');
+      if (!want || token !== want) return err(res, 403, 'Ugyldigt kalender-token');
+      const entries = q.itemsByKind.all('planEntry').map(r => JSON.parse(r.data));
+      const recipes = new Map(q.itemsByKind.all('recipe').map(r => { const x = JSON.parse(r.data); return [x.id, x]; }));
+      const icsEsc = s => String(s || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+      const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15) + 'Z';
+      const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Kokkeri//DA', 'CALSCALE:GREGORIAN',
+        'X-WR-CALNAME:' + icsEsc(APP_NAME + ' madplan'), 'X-WR-TIMEZONE:Europe/Copenhagen'];
+      for (const e of entries) {
+        if (!e.date || !/^\d{4}-\d{2}-\d{2}$/.test(e.date)) continue;
+        const rec = e.recipeId ? recipes.get(e.recipeId) : null;
+        const title = rec ? rec.title : (e.text || 'Madplan');
+        lines.push('BEGIN:VEVENT', `UID:${e.id}@kokkeri`, 'DTSTAMP:' + stamp,
+          `DTSTART;VALUE=DATE:${e.date.replace(/-/g, '')}`,
+          'SUMMARY:' + icsEsc('🍽 ' + title));
+        if (rec && rec.url) lines.push('DESCRIPTION:' + icsEsc(rec.url));
+        lines.push('END:VEVENT');
+      }
+      lines.push('END:VCALENDAR');
+      res.writeHead(200, { 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(lines.join('\r\n'));
+    }
+
+    /* offentlig config til login-siden (ingen session paakraevet) */
+    if (p === '/api/public-config' && req.method === 'GET') {
+      const total = q.userCount.get().n;
+      return send(res, 200, {
+        appName: APP_NAME,
+        allowRegistration: total === 0 || setting('allow_registration', '1') === '1'
+      });
+    }
+
+    /* auth */
+    if (p === '/api/register' && req.method === 'POST') {
+      const total = q.userCount.get().n;
+      const allowReg = total === 0 || setting('allow_registration', '1') === '1';
+      if (!allowReg) return err(res, 403, 'Registrering af nye brugere er slået fra');
+      const username = String(body.username || '').trim();
+      if (!USERNAME_RE.test(username)) return err(res, 400, 'Brugernavn: 2-32 tegn (bogstaver, tal, . _ -)');
+      if (!validPassword(body.password)) return err(res, 400, 'Kodeordet skal være mindst 8 tegn');
+      if (q.userByName.get(username)) return err(res, 409, 'Brugernavnet er optaget');
+      const salt = crypto.randomBytes(16).toString('hex');
+      const info = q.insertUser.run(username, salt, hashPassword(body.password, salt), total === 0 ? 1 : 0, nowIso());
+      createSession(res, Number(info.lastInsertRowid), ctx.secure);
+      const nu = q.userById.get(Number(info.lastInsertRowid));
+      console.log(`[bruger] oprettet: ${username}${total === 0 ? ' (admin)' : ''}`);
+      return send(res, 200, { me: meJson(nu), firstUser: total === 0 });
+    }
+    if (p === '/api/login' && req.method === 'POST') {
+      const key = (req.socket.remoteAddress || '') + '|' + String(body.username || '');
+      if (rateLimited(key)) return err(res, 429, 'For mange forsøg – prøv igen om et kvarter');
+      const usr = q.userByName.get(String(body.username || '').trim());
+      if (!usr || !verifyPassword(usr, String(body.password || ''))) {
+        noteAttempt(key);
+        return err(res, 401, 'Forkert brugernavn eller kodeord');
+      }
+      createSession(res, usr.id, ctx.secure);
+      return send(res, 200, { me: meJson(usr) });
+    }
+    if (p === '/api/logout' && req.method === 'POST') {
+      if (user) q.deleteSession.run(user._token);
+      res.setHeader('Set-Cookie', 'kokkeri_session=; Path=/; Max-Age=0');
+      return send(res, 200, { ok: true });
+    }
+
+    /* webauthn login (ingen session påkrævet) */
+    if (p === '/api/webauthn/login/options' && req.method === 'POST') {
+      const challenge = b64u(crypto.randomBytes(32));
+      const challengeId = issueChallenge({ challenge, origin: ctx.origin, rpId: ctx.rpId, type: 'get' });
+      return send(res, 200, {
+        challengeId,
+        publicKey: { challenge, rpId: ctx.rpId, timeout: 60000, userVerification: 'preferred', allowCredentials: [] }
+      });
+    }
+    if (p === '/api/webauthn/login/verify' && req.method === 'POST') {
+      const c = takeChallenge(String(body.challengeId || ''));
+      if (!c || c.type !== 'get') return err(res, 400, 'Challenge er udløbet – prøv igen');
+      const cred = q.credById.get(String(body.id || ''));
+      if (!cred) return err(res, 401, 'Ukendt passkey');
+      const cdJson = fromB64u(body.response && body.response.clientDataJSON);
+      const authData = fromB64u(body.response && body.response.authenticatorData);
+      const sig = fromB64u(body.response && body.response.signature);
+      verifyClientData(cdJson, 'webauthn.get', c.challenge, c.origin);
+      const ad = parseAuthData(authData);
+      if (!ad.rpIdHash.equals(sha256(Buffer.from(c.rpId)))) return err(res, 401, 'Forkert rpId');
+      if (!(ad.flags & 0x01)) return err(res, 401, 'Bruger ikke til stede');
+      if (!verifyAssertionSignature(cred.jwk, authData, cdJson, sig)) return err(res, 401, 'Ugyldig signatur');
+      if (ad.counter > 0 && cred.counter > 0 && ad.counter <= cred.counter) return err(res, 401, 'Ugyldig tæller (klonet nøgle?)');
+      q.updateCounter.run(ad.counter, cred.id);
+      const usr = q.userById.get(cred.user_id);
+      if (!usr) return err(res, 401, 'Brugeren findes ikke længere');
+      createSession(res, usr.id, ctx.secure);
+      return send(res, 200, { me: meJson(usr) });
+    }
+
+    /* alt herunder kræver login */
+    if (!user) return err(res, 401, 'Ikke logget ind');
+
+    if (p === '/api/me' && req.method === 'GET') return send(res, 200, { me: meJson(user) });
+
+    if (p === '/api/password' && req.method === 'POST') {
+      if (!verifyPassword(user, String(body.current || ''))) return err(res, 401, 'Nuværende kodeord er forkert');
+      if (!validPassword(body.password)) return err(res, 400, 'Nyt kodeord skal være mindst 8 tegn');
+      const salt = crypto.randomBytes(16).toString('hex');
+      q.setPassword.run(salt, hashPassword(body.password, salt), user.id);
+      return send(res, 200, { ok: true });
+    }
+
+    /* webauthn registrering */
+    if (p === '/api/webauthn/register/options' && req.method === 'POST') {
+      const challenge = b64u(crypto.randomBytes(32));
+      const challengeId = issueChallenge({ challenge, origin: ctx.origin, rpId: ctx.rpId, type: 'create', userId: user.id });
+      return send(res, 200, {
+        challengeId,
+        publicKey: {
+          challenge,
+          rp: { name: APP_NAME, id: ctx.rpId },
+          user: { id: b64u(Buffer.from('user-' + user.id)), name: user.username, displayName: user.username },
+          pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+          timeout: 60000,
+          attestation: 'none',
+          authenticatorSelection: { residentKey: 'preferred', userVerification: 'preferred' },
+          excludeCredentials: q.credsByUser.all(user.id).map(c => ({ type: 'public-key', id: c.id }))
+        }
+      });
+    }
+    if (p === '/api/webauthn/register/verify' && req.method === 'POST') {
+      const c = takeChallenge(String(body.challengeId || ''));
+      if (!c || c.type !== 'create' || c.userId !== user.id) return err(res, 400, 'Challenge er udløbet – prøv igen');
+      const cdJson = fromB64u(body.response && body.response.clientDataJSON);
+      verifyClientData(cdJson, 'webauthn.create', c.challenge, c.origin);
+      const [att] = cborDecodeFirst(fromB64u(body.response && body.response.attestationObject));
+      const authData = att.get('authData');
+      if (!Buffer.isBuffer(authData)) return err(res, 400, 'Manglende authData');
+      const ad = parseAuthData(authData);
+      if (!ad.rpIdHash.equals(sha256(Buffer.from(c.rpId)))) return err(res, 400, 'Forkert rpId');
+      if (!ad.credId || !ad.cose) return err(res, 400, 'Ingen credential-data');
+      const jwk = coseToJwk(ad.cose);
+      const credId = b64u(ad.credId);
+      if (q.credById.get(credId)) return err(res, 409, 'Denne passkey er allerede registreret');
+      const label = String(body.label || '').slice(0, 100) || 'Passkey';
+      q.insertCred.run(credId, user.id, JSON.stringify(jwk), ad.counter, label, nowIso());
+      return send(res, 200, { me: meJson(user) });
+    }
+    if (p.startsWith('/api/webauthn/credentials/') && req.method === 'DELETE') {
+      q.deleteCred.run(decodeURIComponent(p.slice('/api/webauthn/credentials/'.length)), user.id);
+      return send(res, 200, { me: meJson(q.userById.get(user.id)) });
+    }
+
+    /* ---- data: items (faelles for alle brugere) ---- */
+    if (p === '/api/items' && req.method === 'GET') {
+      const kind = u.searchParams.get('kind');
+      if (kind && !KINDS.has(kind)) return err(res, 400, 'Ukendt datatype');
+      const rows = kind ? q.itemsByKind.all(kind).map(r => JSON.parse(r.data))
+        : q.itemsAll.all().map(r => JSON.parse(r.data));
+      return send(res, 200, { items: rows });
+    }
+    if (p === '/api/items' && req.method === 'POST') {
+      const it = sanitizeItem(body.item);
+      if (!it) return err(res, 400, 'Ugyldigt element');
+      const stamp = nowIso();
+      q.upsertItem.run(it.id, it.kind, it.json, stamp, it.deleted);
+      return send(res, 200, { ok: true, updatedAt: stamp });
+    }
+    if (p === '/api/items/bulk' && req.method === 'POST') {
+      const arr = Array.isArray(body.items) ? body.items.slice(0, 50000) : null;
+      if (!arr) return err(res, 400, 'Forventede { items: [...] }');
+      let n = 0;
+      const stamp = nowIso();
+      db.exec('BEGIN');
+      try {
+        for (const raw of arr) {
+          const it = sanitizeItem(raw);
+          if (!it) continue;
+          q.upsertItem.run(it.id, it.kind, it.json, stamp, it.deleted);
+          n++;
+        }
+        db.exec('COMMIT');
+      } catch (e) { db.exec('ROLLBACK'); throw e; }
+      return send(res, 200, { imported: n });
+    }
+
+    /* ---- indstillinger (app-parametre + logo + AI) ---- */
+    if (p === '/api/settings' && req.method === 'GET') {
+      return send(res, 200, Object.assign(appSettingsJson(), { icalToken: setting('ical_token', '') }));
+    }
+    if (p === '/api/settings' && req.method === 'POST') {
+      const entries = body.settings && typeof body.settings === 'object' ? body.settings : null;
+      if (!entries) return err(res, 400, 'Forventede { settings: {...} }');
+      for (const [key, val] of Object.entries(entries)) {
+        if (!SETTING_KEYS.has(key)) return err(res, 400, 'Ukendt indstilling: ' + key);
+        const str = key === 'app' ? JSON.stringify(val) : String(val == null ? '' : val);
+        if (str.length > SETTING_MAX[key]) return err(res, 413, key + ' er for stor');
+        q.setSetting.run(key, str);
+      }
+      return send(res, 200, appSettingsJson());
+    }
+
+    /* ---- opskrift-import fra URL ---- */
+    if (p === '/api/fetch-recipe' && req.method === 'GET') {
+      let target;
+      try { target = new URL(String(u.searchParams.get('url') || '')); } catch (e) { return err(res, 400, 'Ugyldig URL'); }
+      if (target.protocol !== 'https:' && target.protocol !== 'http:') return err(res, 400, 'Kun http/https-links');
+      try {
+        const html = await fetchPage(target.href);
+        const recipe = extractRecipe(html, target.href);
+        if (recipe) return send(res, 200, { recipe });
+        /* intet JSON-LD: returner sidens tekst, saa AI'en kan proeve */
+        const titleM = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+        const ogImg = html.match(/<meta[^>]+property\s*=\s*["']og:image["'][^>]+content\s*=\s*["']([^"']+)["']/i) ||
+                      html.match(/<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+property\s*=\s*["']og:image["']/i);
+        return send(res, 200, {
+          recipe: null,
+          pageTitle: titleM ? decodeEntities(titleM[1]).trim().slice(0, 300) : '',
+          pageImage: ogImg ? ogImg[1] : '',
+          pageText: stripHtml(html).slice(0, 30000)
+        });
+      } catch (e) {
+        return err(res, 502, 'Kunne ikke hente siden: ' + e.message);
+      }
+    }
+
+    /* ---- billed-proxy (til at gemme opskrift-billeder lokalt som dataURL) ---- */
+    if (p === '/api/fetch-image' && req.method === 'GET') {
+      let target;
+      try { target = new URL(String(u.searchParams.get('url') || '')); } catch (e) { return err(res, 400, 'Ugyldig URL'); }
+      if (target.protocol !== 'https:' && target.protocol !== 'http:') return err(res, 400, 'Kun http/https-links');
+      try {
+        const r = await fetch(target.href, { headers: FETCH_HEADERS, signal: AbortSignal.timeout(20000), redirect: 'follow' });
+        if (!r.ok) return err(res, 502, 'Billedet svarede ' + r.status);
+        const type = r.headers.get('content-type') || '';
+        if (!type.startsWith('image/')) return err(res, 415, 'Ikke et billede (' + type + ')');
+        const buf = Buffer.from(await r.arrayBuffer());
+        if (buf.length > 10e6) return err(res, 413, 'Billedet er for stort');
+        res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-store' });
+        return res.end(buf);
+      } catch (e) {
+        return err(res, 502, 'Kunne ikke hente billedet: ' + e.message);
+      }
+    }
+
+    /* ---- AI-proxy ---- */
+    if (p === '/api/ai' && req.method === 'POST') {
+      try {
+        const out = await aiMessage(body);
+        return send(res, 200, out);
+      } catch (e) {
+        return err(res, e.status || 502, e.message);
+      }
+    }
+
+    /* ---- backup / restore ---- */
+    if (p === '/api/backup' && req.method === 'GET') {
+      const items = q.itemsAll.all().map(r => JSON.parse(r.data));
+      return send(res, 200, {
+        app: 'kokkeri', exported: nowIso(),
+        settings: appSettingsJson(), items
+      });
+    }
+    if (p === '/api/backup.db' && req.method === 'GET') {
+      if (!user.is_admin) return err(res, 403, 'Kræver administrator-rettigheder');
+      try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch (e) {}
+      return fs.readFile(DB_PATH, (e, data) => {
+        if (e) return err(res, 500, 'Kunne ikke læse databasen');
+        res.writeHead(200, {
+          'Content-Type': 'application/octet-stream',
+          'Content-Disposition': `attachment; filename="kokkeri-${new Date().toISOString().slice(0, 10)}.db"`
+        });
+        res.end(data);
+      });
+    }
+    if (p === '/api/restore' && req.method === 'POST') {
+      if (!user.is_admin) return err(res, 403, 'Kræver administrator-rettigheder');
+      const arr = Array.isArray(body.items) ? body.items : null;
+      if (!arr) return err(res, 400, 'Forventede { items: [...] } fra en Kokkeri-backup');
+      const stamp = nowIso();
+      let n = 0;
+      db.exec('BEGIN');
+      try {
+        if (body.replace) q.wipeItems.run();
+        for (const raw of arr) {
+          const it = sanitizeItem(raw);
+          if (!it) continue;
+          q.upsertItem.run(it.id, it.kind, it.json, stamp, it.deleted);
+          n++;
+        }
+        if (body.settings && typeof body.settings === 'object') {
+          if (body.settings.app) q.setSetting.run('app', JSON.stringify(body.settings.app).slice(0, SETTING_MAX.app));
+          if (typeof body.settings.logo === 'string') q.setSetting.run('logo', body.settings.logo.slice(0, SETTING_MAX.logo));
+        }
+        db.exec('COMMIT');
+      } catch (e) { db.exec('ROLLBACK'); throw e; }
+      console.log(`[backup] ${user.username} gendannede ${n} elementer${body.replace ? ' (erstattede alt)' : ''}`);
+      return send(res, 200, { restored: n });
+    }
+
+    /* ---- admin ---- */
+    if (p.startsWith('/api/admin/')) {
+      if (!user.is_admin) return err(res, 403, 'Kræver administrator-rettigheder');
+
+      if (p === '/api/admin/users' && req.method === 'GET') {
+        return send(res, 200, {
+          users: q.allUsers.all().map(x => ({
+            id: x.id, username: x.username, isAdmin: !!x.is_admin,
+            created: x.created_at, passkeys: x.passkeys
+          })),
+          allowRegistration: setting('allow_registration', '1') === '1'
+        });
+      }
+      if (p === '/api/admin/settings' && req.method === 'POST') {
+        if (typeof body.allowRegistration === 'boolean') {
+          q.setSetting.run('allow_registration', body.allowRegistration ? '1' : '0');
+        }
+        return send(res, 200, { allowRegistration: setting('allow_registration', '1') === '1' });
+      }
+      const m = p.match(/^\/api\/admin\/users\/(\d+)(?:\/(password|role))?$/);
+      if (m) {
+        const targetId = parseInt(m[1], 10);
+        const target = q.userById.get(targetId);
+        if (!target) return err(res, 404, 'Brugeren findes ikke');
+
+        if (m[2] === 'password' && req.method === 'POST') {
+          if (!validPassword(body.password)) return err(res, 400, 'Kodeordet skal være mindst 8 tegn');
+          const salt = crypto.randomBytes(16).toString('hex');
+          q.setPassword.run(salt, hashPassword(body.password, salt), targetId);
+          q.deleteUserSessions.run(targetId);
+          console.log(`[admin] ${user.username} satte nyt kodeord for ${target.username}`);
+          return send(res, 200, { ok: true });
+        }
+        if (m[2] === 'role' && req.method === 'POST') {
+          const makeAdmin = !!body.isAdmin;
+          if (!makeAdmin && target.is_admin && q.adminCount.get().n <= 1) {
+            return err(res, 400, 'Kan ikke fjerne den sidste administrator');
+          }
+          q.setAdmin.run(makeAdmin ? 1 : 0, targetId);
+          console.log(`[admin] ${user.username} ${makeAdmin ? 'gav' : 'fjernede'} admin for ${target.username}`);
+          return send(res, 200, { ok: true });
+        }
+        if (!m[2] && req.method === 'DELETE') {
+          if (targetId === user.id) return err(res, 400, 'Du kan ikke slette dig selv');
+          if (target.is_admin && q.adminCount.get().n <= 1) return err(res, 400, 'Kan ikke slette den sidste administrator');
+          q.deleteUserSessions.run(targetId);
+          q.deleteUserCreds.run(targetId);
+          q.deleteUser.run(targetId);
+          console.log(`[admin] ${user.username} slettede brugeren ${target.username}`);
+          return send(res, 200, { ok: true });
+        }
+      }
+    }
+
+    return err(res, 404, 'Ukendt endpoint');
+  } catch (e) {
+    console.error('[fejl]', req.method, p, e.message);
+    return err(res, 500, 'Serverfejl: ' + e.message);
+  }
+});
+
+setInterval(() => { try { q.purgeSessions.run(nowIso()); } catch (e) {} }, 6 * 3600e3).unref();
+
+server.listen(BIND_PORT, () => {
+  console.log(`${APP_NAME}: Kokkeri lytter på port ${BIND_PORT} (data: ${DB_PATH})`);
+});

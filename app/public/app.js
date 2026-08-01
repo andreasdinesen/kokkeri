@@ -1,0 +1,1910 @@
+'use strict';
+/* Kokkeri frontend – vanilla JS, ingen frameworks.
+ * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
+
+const APP_VERSION = 1;
+
+/* ---------------- state ---------------- */
+const S = {
+  me: null,
+  settings: { app: {}, logo: '', aiKeySet: false, aiModel: '' },
+  items: [],            // alle datatyper fra serveren
+  byKind: {},           // kind -> [items]
+  view: 'dash',
+  viewArg: null,        // fx opskrift-id på detaljesiden
+  weekStart: null,      // mandag i den viste madplan-uge (YYYY-MM-DD)
+  recFilter: { q: '', category: '', fav: false },
+  chat: [],             // AI-samtale (kun i hukommelsen)
+  chatBusy: false,
+  timers: [],           // [{id,label,totalMs,endsAt,remainMs,paused,ringing}]
+  wakeOn: false,
+  wakeSentinel: null
+};
+
+/* standard-parametre – kan aendres under Indstillinger */
+const DEFAULT_APP = {
+  appTitle: 'Kokkeri',
+  categories: ['Hovedret', 'Forret', 'Dessert', 'Kage & bagværk', 'Tilbehør', 'Salat', 'Suppe', 'Morgenmad', 'Drikkevarer'],
+  defaultServings: 4,
+  timerPresets: [1, 3, 5, 10, 15, 20, 30, 45, 60]
+};
+const app = () => Object.assign({}, DEFAULT_APP, S.settings.app || {});
+
+/* ---------------- API ---------------- */
+async function api(path, opts) {
+  const o = Object.assign({ headers: {} }, opts || {});
+  if (o.body !== undefined) {
+    o.method = o.method || 'POST';
+    o.headers['Content-Type'] = 'application/json';
+    o.body = JSON.stringify(o.body);
+  }
+  const r = await fetch(path, o);
+  let j = null;
+  try { j = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error((j && j.error) || ('HTTP ' + r.status));
+  return j;
+}
+
+/* ---------------- utils ---------------- */
+const $ = sel => document.querySelector(sel);
+const $$ = sel => [...document.querySelectorAll(sel)];
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+/* crypto.randomUUID findes kun i secure contexts (https/localhost) - fallback til getRandomValues */
+function uid() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 15) | 64;  // version 4
+  b[8] = (b[8] & 63) | 128; // variant 10
+  const h = [...b].map(x => x.toString(16).padStart(2, '0')).join('');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+/* dansk + engelsk talformat: "1,5"=1.5, "1.5"=1.5 */
+function num(v) {
+  let s = String(v == null ? '' : v).trim().replace(/\s/g, '');
+  if (!s) return 0;
+  if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.');
+  const n = parseFloat(s);
+  return isNaN(n) ? 0 : n;
+}
+function fmt(n, dec) {
+  if (n == null || isNaN(n)) return '–';
+  return Number(n).toLocaleString('da-DK', { minimumFractionDigits: dec == null ? 0 : dec, maximumFractionDigits: dec == null ? 2 : dec });
+}
+function fmtDate(d) {
+  if (!d) return '';
+  const dt = new Date(String(d).length === 10 ? d + 'T00:00:00' : d);
+  if (isNaN(dt)) return String(d);
+  return dt.toLocaleDateString('da-DK', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+function isoDate(d) { // -> YYYY-MM-DD
+  const dt = d ? new Date(d) : new Date();
+  if (isNaN(dt)) return '';
+  return dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0');
+}
+function addDays(iso, n) {
+  const dt = new Date(iso + 'T00:00:00');
+  dt.setDate(dt.getDate() + n);
+  return isoDate(dt);
+}
+function mondayOf(d) { // mandag i samme uge
+  const dt = d ? new Date(d + 'T00:00:00') : new Date();
+  dt.setDate(dt.getDate() - ((dt.getDay() + 6) % 7));
+  return isoDate(dt);
+}
+function isoWeekNo(iso) {
+  const d = new Date(iso + 'T00:00:00');
+  d.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7));
+  const jan4 = new Date(d.getFullYear(), 0, 4);
+  return 1 + Math.round(((d - jan4) / 864e5 - 3 + ((jan4.getDay() + 6) % 7)) / 7);
+}
+const WEEKDAYS_DA = ['Mandag', 'Tirsdag', 'Onsdag', 'Torsdag', 'Fredag', 'Lørdag', 'Søndag'];
+
+/* samlet tid for en opskrift - nogle sider saetter totalTime forkert (lavere end
+ * cookTime), saa vi tager det stoerste af totalTime og prep+cook */
+function recipeTotalMin(r) {
+  return Math.max(r.totalMin || 0, (r.prepMin || 0) + (r.cookMin || 0)) || null;
+}
+function fmtMin(min) {
+  if (min == null || isNaN(min) || min <= 0) return '';
+  const h = Math.floor(min / 60), m = Math.round(min % 60);
+  if (h && m) return h + ' t ' + m + ' min';
+  return h ? h + ' t' : m + ' min';
+}
+
+function toast(msg, isErr) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.className = 'show' + (isErr ? ' err' : '');
+  clearTimeout(t._h);
+  t._h = setTimeout(() => { t.className = ''; }, isErr ? 5000 : 2600);
+}
+function downloadFile(name, content, mime) {
+  const blob = content instanceof Blob ? content : new Blob([content], { type: mime || 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+function normName(s) { return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+
+/* ---------------- ingrediens-skalering ---------------- */
+/* Skalerer den ledende maengde i en ingredienslinje: "500 g mel" -> "750 g mel".
+ * Forstaar decimaler (1,5 / 1.5), blandede tal (1 1/2), broeker (3/4) og
+ * unicode-broeker (½ ¼ ¾ ⅓ ⅔ ⅛). Roerer ikke tal inde i teksten. */
+const UFRAC = { '½': 0.5, '¼': 0.25, '¾': 0.75, '⅓': 1 / 3, '⅔': 2 / 3, '⅛': 0.125, '⅜': 0.375, '⅝': 0.625, '⅞': 0.875 };
+function parseQty(s) {
+  s = String(s || '').trim();
+  let m = s.match(/^(\d+)\s+(\d+)\s*\/\s*(\d+)/);              // 1 1/2
+  if (m) return { val: +m[1] + (+m[2]) / (+m[3]), len: m[0].length };
+  m = s.match(/^(\d+)\s*\/\s*(\d+)/);                          // 3/4
+  if (m) return { val: (+m[1]) / (+m[2]), len: m[0].length };
+  m = s.match(/^(\d+)\s*([½¼¾⅓⅔⅛⅜⅝⅞])/);                      // 1½
+  if (m) return { val: +m[1] + UFRAC[m[2]], len: m[0].length };
+  m = s.match(/^([½¼¾⅓⅔⅛⅜⅝⅞])/);                              // ½
+  if (m) return { val: UFRAC[m[1]], len: m[0].length };
+  m = s.match(/^(\d+(?:[.,]\d+)?)/);                           // 500 / 1,5
+  if (m) return { val: num(m[1]), len: m[0].length };
+  return null;
+}
+function fmtQty(n) {
+  const r = Math.round(n * 100) / 100;
+  return r.toLocaleString('da-DK', { maximumFractionDigits: 2 });
+}
+function scaleIngredient(line, factor) {
+  if (!factor || factor === 1) return line;
+  const s = String(line);
+  const q1 = parseQty(s);
+  if (!q1) return line;
+  let out = fmtQty(q1.val * factor);
+  let rest = s.slice(q1.len);
+  /* interval: "2-3 fed hvidloeg" */
+  const rm = rest.match(/^\s*[-–]\s*/);
+  if (rm) {
+    const q2 = parseQty(rest.slice(rm[0].length));
+    if (q2) {
+      out += '-' + fmtQty(q2.val * factor);
+      rest = rest.slice(rm[0].length + q2.len);
+    }
+  }
+  return out + rest;
+}
+
+/* ---------------- data-adgang ---------------- */
+function reindex() {
+  S.byKind = {};
+  for (const it of S.items) {
+    if (it.deleted) continue;
+    (S.byKind[it.kind] = S.byKind[it.kind] || []).push(it);
+  }
+}
+const K = kind => S.byKind[kind] || [];
+const recipeById = id => K('recipe').find(r => r.id === id) || null;
+
+async function saveItem(it, quiet) {
+  it.updatedAt = new Date().toISOString();
+  const idx = S.items.findIndex(x => x.id === it.id);
+  if (idx >= 0) S.items[idx] = it; else S.items.push(it);
+  reindex();
+  try { await api('/api/items', { body: { item: it } }); if (!quiet) toast('Gemt'); }
+  catch (e) { toast('Kunne ikke gemme: ' + e.message, true); }
+}
+async function deleteItem(it) {
+  it.deleted = true;
+  await saveItem(it, true);
+  toast('Slettet');
+}
+async function saveBulk(items) {
+  for (const it of items) {
+    const idx = S.items.findIndex(x => x.id === it.id);
+    if (idx >= 0) S.items[idx] = it; else S.items.push(it);
+  }
+  reindex();
+  const r = await api('/api/items/bulk', { body: { items } });
+  return r.imported;
+}
+async function saveSettings(patch) {
+  const s = await api('/api/settings', { body: { settings: patch } });
+  S.settings = Object.assign(S.settings, s);
+  toast('Indstillinger gemt');
+}
+
+/* ---------------- modal ---------------- */
+function openModal(html, onReady, wide) {
+  const host = $('#modalHost');
+  host.innerHTML = `<div class="modalback"><div class="modal${wide ? ' wide' : ''}">${html}</div></div>`;
+  host.querySelector('.modalback').addEventListener('mousedown', e => {
+    if (e.target === e.currentTarget) closeModal();
+  });
+  if (onReady) onReady(host.querySelector('.modal'));
+}
+function closeModal() { $('#modalHost').innerHTML = ''; }
+
+async function confirmBox(text, verb) {
+  return new Promise(resolve => {
+    openModal(`<h2>Er du sikker?</h2><p>${esc(text)}</p>
+      <div class="actions">
+        <button class="btn" id="cfNo">Annullér</button>
+        <button class="btn danger" id="cfYes">${esc(verb || 'Slet')}</button>
+      </div>`, m => {
+      m.querySelector('#cfNo').onclick = () => { closeModal(); resolve(false); };
+      m.querySelector('#cfYes').onclick = () => { closeModal(); resolve(true); };
+    });
+  });
+}
+
+/* ---------------- hold skaermen taendt (Wake Lock) ---------------- */
+async function setWakeLock(on) {
+  if (on && !('wakeLock' in navigator)) {
+    toast('Skærmlås kræver https (Wake Lock API er ikke tilgængeligt her)', true);
+    return;
+  }
+  S.wakeOn = on;
+  try { localStorage.setItem('kk_wake', on ? '1' : ''); } catch (e) {}
+  if (on) {
+    try {
+      S.wakeSentinel = await navigator.wakeLock.request('screen');
+      S.wakeSentinel.addEventListener('release', () => { S.wakeSentinel = null; });
+      toast('Skærmen holdes tændt');
+    } catch (e) {
+      S.wakeOn = false;
+      toast('Kunne ikke holde skærmen tændt: ' + e.message, true);
+    }
+  } else if (S.wakeSentinel) {
+    try { await S.wakeSentinel.release(); } catch (e) {}
+    S.wakeSentinel = null;
+    toast('Skærmen må gerne slukke igen');
+  }
+  updateWakeBtn();
+}
+function updateWakeBtn() {
+  const b = $('#wakeQuick');
+  if (b) b.classList.toggle('on', S.wakeOn);
+  const p = $('#wakePageBtn');
+  if (p) {
+    p.classList.toggle('primary', S.wakeOn);
+    p.textContent = S.wakeOn ? '📱 Skærmen holdes tændt – slå fra' : '📱 Hold skærmen tændt';
+  }
+  /* kogetilstandens chip skal afspejle den faktiske tilstand */
+  if (typeof CM !== 'undefined' && CM.recipe && !$('#cookMode').hidden) drawCookMode();
+}
+/* wake lock slippes naar fanen skjules - tag den igen */
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && S.wakeOn && !S.wakeSentinel && 'wakeLock' in navigator) {
+    navigator.wakeLock.request('screen').then(sn => {
+      S.wakeSentinel = sn;
+      sn.addEventListener('release', () => { S.wakeSentinel = null; });
+    }).catch(() => {});
+  }
+});
+
+/* ---------------- print ---------------- */
+function printSheet(html) {
+  $('#printHost').innerHTML = html;
+  setTimeout(() => window.print(), 60);
+}
+function printLogoHtml() {
+  return S.settings.logo ? `<div class="plogo"><img src="${S.settings.logo}"></div>` : '';
+}
+
+/* ---------------- navigation og skal ---------------- */
+const VIEWS = [
+  { id: 'dash',      ico: '📊', label: 'Overblik' },
+  { id: 'recipes',   ico: '📖', label: 'Opskrifter' },
+  { id: 'plan',      ico: '📅', label: 'Madplan' },
+  { id: 'shopping',  ico: '🛒', label: 'Indkøbsliste' },
+  { id: 'timers',    ico: '⏱️', label: 'Timere' },
+  { id: 'assistant', ico: '✨', label: 'AI-assistent' },
+  { id: 'settings',  ico: '⚙️', label: 'Indstillinger' }
+];
+const RENDER = {}; // id -> funktion
+
+function navBadge(id) {
+  if (id === 'timers') {
+    const n = S.timers.length;
+    return n ? `<span class="navbadge">${n}</span>` : '';
+  }
+  if (id === 'shopping') {
+    const n = K('shopItem').filter(i => !i.done).length;
+    return n ? `<span class="navbadge">${n}</span>` : '';
+  }
+  return '';
+}
+
+function renderNav() {
+  $('#navItems').innerHTML = `<button class="navbtn" id="navSearch">
+      <span class="ico">🔍</span><span>Søg</span><span class="hint" style="margin-left:auto"><span class="kbd">⌘K</span></span>
+    </button><div class="navsep"></div>` + VIEWS.map(v =>
+    `<button class="navbtn${S.view === v.id ? ' active' : ''}" data-view="${v.id}">
+       <span class="ico">${v.ico}</span><span>${v.label}</span>${navBadge(v.id)}</button>`).join('');
+  $$('#navItems .navbtn[data-view]').forEach(b => b.onclick = () => {
+    S.view = b.dataset.view;
+    S.viewArg = null;
+    if (matchMedia('(max-width: 760px)').matches) document.body.classList.remove('navopen');
+    render();
+  });
+  $('#navSearch').onclick = openPalette;
+  $('#navVersion').textContent = 'Kokkeri v' + APP_VERSION;
+  const A = app();
+  $('#brandName').textContent = A.appTitle || 'Kokkeri';
+  $('#brandLogo').innerHTML = S.settings.logo ? `<img class="navlogo" src="${S.settings.logo}">` : '🍳';
+}
+
+function render() {
+  renderNav();
+  const fn = RENDER[S.view] || RENDER.dash;
+  $('#app').innerHTML = fn();
+  const binder = RENDER[S.view + '_bind'];
+  if (binder) binder();
+  updateWakeBtn();
+  window.scrollTo(0, 0);
+}
+function goto(view, arg) {
+  S.view = view;
+  S.viewArg = arg == null ? null : arg;
+  render();
+}
+
+function pageHead(title, sub, extraHtml) {
+  return `<div class="toprow"><div class="grow"><h1>${esc(title)}</h1><p class="sub">${sub || ''}</p></div>
+    ${extraHtml || ''}</div>`;
+}
+
+/* faelles: opskrift-dropdown */
+function recipeOptions(selectedId) {
+  const list = K('recipe').slice().sort((a, b) => String(a.title || '').localeCompare(String(b.title || ''), 'da'));
+  return '<option value="">– vælg opskrift –</option>' + list.map(r =>
+    `<option value="${r.id}"${r.id === selectedId ? ' selected' : ''}>${esc(r.title)}</option>`).join('');
+}
+
+/* ---------------- kommandopalet (Cmd/Ctrl+K) ---------------- */
+function paletteItems() {
+  const items = VIEWS.map(v => ({ ico: v.ico, label: v.label, hint: 'side', run: () => goto(v.id) }));
+  items.push(
+    { ico: '📖', label: 'Ny opskrift', hint: 'handling', run: () => { goto('recipes'); recipeModal(null); } },
+    { ico: '🌐', label: 'Importér opskrift fra URL', hint: 'handling', run: () => { goto('recipes'); importUrlModal(); } },
+    { ico: '⏱️', label: 'Ny timer', hint: 'handling', run: () => { goto('timers'); newTimerModal(); } },
+    { ico: '🛒', label: 'Tilføj til indkøbsliste', hint: 'handling', run: () => { goto('shopping'); setTimeout(() => { const el = $('#shopNew'); if (el) el.focus(); }, 50); } },
+    { ico: '📱', label: S.wakeOn ? 'Slå skærmlås fra' : 'Hold skærmen tændt', hint: 'handling', run: () => setWakeLock(!S.wakeOn) },
+    { ico: '🎲', label: 'Tilfældig opskrift', hint: 'handling', run: randomRecipe },
+    { ico: '🌗', label: 'Skift tema', hint: 'handling', run: () => $('#themeQuick').click() }
+  );
+  /* opskrifter kan findes direkte fra paletten */
+  for (const r of K('recipe')) {
+    items.push({ ico: '🍽️', label: r.title || '(uden titel)', hint: 'opskrift', run: () => goto('recipeDetail', r.id) });
+  }
+  return items;
+}
+
+function randomRecipe() {
+  const list = K('recipe');
+  if (!list.length) return toast('Ingen opskrifter endnu', true);
+  goto('recipeDetail', list[Math.floor(Math.random() * list.length)].id);
+}
+
+function openPalette() {
+  if (!S.me || $('#palette')) return;
+  const wrap = document.createElement('div');
+  wrap.id = 'palette';
+  wrap.innerHTML = `<div class="palbox">
+      <input id="palInput" placeholder="Hop til side, opskrift eller handling…" autocomplete="off">
+      <div class="palist" id="palList"></div>
+    </div>`;
+  document.body.appendChild(wrap);
+  const input = wrap.querySelector('#palInput');
+  const list = wrap.querySelector('#palList');
+  let sel = 0, shown = [];
+
+  const close = () => wrap.remove();
+  const draw = () => {
+    const q = normName(input.value);
+    shown = paletteItems().filter(it => !q || normName(it.label).includes(q)).slice(0, 40);
+    sel = Math.min(sel, Math.max(0, shown.length - 1));
+    list.innerHTML = shown.length ? shown.map((it, i) => `
+      <div class="palitem${i === sel ? ' sel' : ''}" data-i="${i}">
+        <span class="ico">${it.ico}</span><span>${esc(it.label)}</span><span class="hint">${it.hint}</span>
+      </div>`).join('') : '<div class="palempty">Ingen resultater</div>';
+    list.querySelectorAll('.palitem').forEach(el => {
+      el.onmouseenter = () => { sel = +el.dataset.i; draw(); };
+      el.onclick = () => { const it = shown[+el.dataset.i]; close(); it.run(); };
+    });
+    const selEl = list.querySelector('.palitem.sel');
+    if (selEl) selEl.scrollIntoView({ block: 'nearest' });
+  };
+  input.oninput = () => { sel = 0; draw(); };
+  input.onkeydown = e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(sel + 1, shown.length - 1); draw(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(sel - 1, 0); draw(); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (shown[sel]) { close(); shown[sel].run(); } }
+    else if (e.key === 'Escape') close();
+  };
+  wrap.addEventListener('mousedown', e => { if (e.target === wrap) close(); });
+  draw();
+  input.focus();
+}
+
+/* ---------------- auth-flow ---------------- */
+async function boot() {
+  document.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && String(e.key).toLowerCase() === 'k') {
+      e.preventDefault();
+      openPalette();
+    }
+  });
+  $('#navToggle').onclick = () => {
+    if (matchMedia('(max-width: 760px)').matches) document.body.classList.toggle('navopen');
+    else {
+      document.body.classList.toggle('navfold');
+      try { localStorage.setItem('kk_nav', document.body.classList.contains('navfold') ? '1' : ''); } catch (e) {}
+    }
+  };
+  $('#themeQuick').onclick = () => {
+    const cur = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+    document.documentElement.dataset.theme = cur;
+    try { localStorage.setItem('kk_theme', cur); } catch (e) {}
+    updateThemeBtn();
+  };
+  $('#wakeQuick').onclick = () => setWakeLock(!S.wakeOn);
+  $('#logoutBtn').onclick = async () => { await api('/api/logout', { body: {} }); location.reload(); };
+
+  try {
+    const r = await api('/api/me');
+    S.me = r.me;
+    await enterApp();
+  } catch (e) {
+    showLogin();
+  }
+}
+function updateThemeBtn() {
+  $('#themeQuick').textContent = document.documentElement.dataset.theme === 'light' ? '🌙' : '☀️';
+}
+
+function showLogin() {
+  document.body.className = 'noauth';
+  $('#loginView').hidden = false;
+  $('nav').hidden = true;
+  $('#navToggle').hidden = true;
+  $('#app').hidden = true;
+
+  // skjul "Opret ny bruger" naar admin har lukket for registrering
+  api('/api/public-config').then(cfg => {
+    $('#showRegister').parentElement.hidden = !cfg.allowRegistration;
+  }).catch(() => {});
+
+  const doLogin = async () => {
+    try {
+      const r = await api('/api/login', { body: { username: $('#loginUser').value, password: $('#loginPass').value } });
+      S.me = r.me;
+      await enterApp();
+    } catch (e) { toast(e.message, true); }
+  };
+  $('#loginBtn').onclick = doLogin;
+  $('#loginPass').onkeydown = e => { if (e.key === 'Enter') doLogin(); };
+  $('#passkeyBtn').onclick = passkeyLogin;
+  $('#showRegister').onclick = e => { e.preventDefault(); $('#loginForm').hidden = true; $('#registerForm').hidden = false; };
+  $('#showLogin').onclick = e => { e.preventDefault(); $('#loginForm').hidden = false; $('#registerForm').hidden = true; };
+  $('#registerBtn').onclick = async () => {
+    if ($('#regPass').value !== $('#regPass2').value) return toast('Kodeordene er ikke ens', true);
+    try {
+      const r = await api('/api/register', { body: { username: $('#regUser').value, password: $('#regPass').value } });
+      S.me = r.me;
+      if (r.firstUser) toast('Du er oprettet som administrator');
+      await enterApp();
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+async function enterApp() {
+  const [settings, items] = await Promise.all([api('/api/settings'), api('/api/items')]);
+  S.settings = Object.assign({ app: {}, logo: '' }, settings);
+  S.items = items.items || [];
+  reindex();
+  S.weekStart = mondayOf();
+  document.body.className = '';
+  try { if (localStorage.getItem('kk_nav') === '1') document.body.classList.add('navfold'); } catch (e) {}
+  $('#loginView').hidden = true;
+  $('nav').hidden = false;
+  $('#navToggle').hidden = false;
+  $('#app').hidden = false;
+  $('#whoAmI').textContent = S.me.username + (S.me.isAdmin ? ' · admin' : '');
+  updateThemeBtn();
+  if (S.settings.logo) {
+    $('#loginLogo').innerHTML = `<img src="${S.settings.logo}">`;
+  }
+  loadTimers();
+  startTimerEngine();
+  try { if (localStorage.getItem('kk_wake') === '1') setWakeLock(true); } catch (e) {}
+  render();
+}
+
+/* WebAuthn hjaelpere */
+const waB64uToBuf = s => Uint8Array.from(atob(String(s).replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(s.length / 4) * 4, '=')), c => c.charCodeAt(0));
+const waBufToB64u = b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+async function passkeyLogin() {
+  try {
+    const o = await api('/api/webauthn/login/options', { body: {} });
+    const pk = o.publicKey;
+    pk.challenge = waB64uToBuf(pk.challenge);
+    const cred = await navigator.credentials.get({ publicKey: pk });
+    const r = await api('/api/webauthn/login/verify', {
+      body: {
+        challengeId: o.challengeId,
+        id: cred.id,
+        response: {
+          clientDataJSON: waBufToB64u(cred.response.clientDataJSON),
+          authenticatorData: waBufToB64u(cred.response.authenticatorData),
+          signature: waBufToB64u(cred.response.signature)
+        }
+      }
+    });
+    S.me = r.me;
+    await enterApp();
+  } catch (e) {
+    if (e.name !== 'NotAllowedError') toast('Passkey-login fejlede: ' + e.message, true);
+  }
+}
+async function passkeyRegister() {
+  try {
+    const o = await api('/api/webauthn/register/options', { body: {} });
+    const pk = o.publicKey;
+    pk.challenge = waB64uToBuf(pk.challenge);
+    pk.user.id = waB64uToBuf(pk.user.id);
+    pk.excludeCredentials = (pk.excludeCredentials || []).map(c => ({ type: 'public-key', id: waB64uToBuf(c.id) }));
+    const cred = await navigator.credentials.create({ publicKey: pk });
+    const label = prompt('Navn til denne passkey (fx "MacBook" eller "iPhone"):', 'Denne enhed') || 'Passkey';
+    const r = await api('/api/webauthn/register/verify', {
+      body: {
+        challengeId: o.challengeId,
+        label,
+        response: { clientDataJSON: waBufToB64u(cred.response.clientDataJSON), attestationObject: waBufToB64u(cred.response.attestationObject) }
+      }
+    });
+    S.me = r.me;
+    toast('Passkey registreret');
+    render();
+  } catch (e) {
+    if (e.name !== 'NotAllowedError') toast('Kunne ikke registrere passkey: ' + e.message, true);
+  }
+}
+
+/* ---------------- Overblik ---------------- */
+RENDER.dash = () => {
+  const recipes = K('recipe');
+  const favs = recipes.filter(r => r.favorite);
+  const today = isoDate();
+  const monday = mondayOf();
+  const weekDates = [...Array(7)].map((_, i) => addDays(monday, i));
+  const planned = K('planEntry').filter(e => weekDates.includes(e.date));
+  const shopOpen = K('shopItem').filter(i => !i.done).length;
+
+  /* de naeste 3 dages madplan */
+  const upcoming = [];
+  for (let i = 0; i < 3; i++) {
+    const d = addDays(today, i);
+    const entries = K('planEntry').filter(e => e.date === d);
+    upcoming.push({ date: d, entries });
+  }
+  const dayName = d => d === today ? 'I dag' : d === addDays(today, 1) ? 'I morgen'
+    : WEEKDAYS_DA[(new Date(d + 'T00:00:00').getDay() + 6) % 7];
+
+  const latest = recipes.slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))).slice(0, 4);
+
+  return pageHead(app().appTitle || 'Kokkeri', 'Dit lokale opskrifts-bibliotek',
+      `<button class="btn" id="dashRandom">🎲 Tilfældig opskrift</button>
+       <button class="btn primary" id="dashImport">🌐 Importér fra URL</button>`) + `
+
+  <div class="cards">
+    <div class="card"><div class="lbl">Opskrifter</div><div class="big">${recipes.length}</div>
+      <div class="note">${favs.length} favoritter</div></div>
+    <div class="card"><div class="lbl">Madplan (uge ${isoWeekNo(monday)})</div><div class="big">${planned.length}</div>
+      <div class="note">planlagte måltider</div></div>
+    <div class="card"><div class="lbl">Indkøbsliste</div><div class="big">${shopOpen}</div>
+      <div class="note">varer mangler</div></div>
+    <div class="card"><div class="lbl">Timere</div><div class="big">${S.timers.length}</div>
+      <div class="note">${S.timers.some(t => t.ringing) ? '⏰ en timer ringer!' : S.timers.length ? 'i gang' : 'ingen aktive'}</div></div>
+  </div>
+
+  <h2>De næste dage</h2>
+  <div class="panelbox">
+    ${upcoming.map(u => `
+      <div class="rowflex" style="padding:6px 0;border-bottom:1px solid var(--border)">
+        <strong style="width:90px">${dayName(u.date)}</strong>
+        <span class="muted small" style="width:78px">${fmtDate(u.date)}</span>
+        ${u.entries.length ? u.entries.map(e => {
+          const r = e.recipeId ? recipeById(e.recipeId) : null;
+          return r ? `<a href="#" data-rec="${r.id}" class="planlink">🍽️ ${esc(r.title)}</a>`
+                   : `<span>🍽️ ${esc(e.text || '')}</span>`;
+        }).join(' · ') : '<span class="muted">intet planlagt</span>'}
+      </div>`).join('')}
+    <div style="margin-top:10px"><button class="btn small" id="dashToPlan">📅 Åbn madplanen</button></div>
+  </div>
+
+  ${latest.length ? `<h2>Seneste opskrifter</h2>
+  <div class="recgrid">${latest.map(recipeCardHtml).join('')}</div>` : `
+  <div class="panelbox center" style="padding:40px">
+    <div style="font-size:40px">🍳</div>
+    <h2 style="margin-top:8px">Velkommen til Kokkeri</h2>
+    <p class="muted">Kom i gang ved at importere en opskrift fra en URL – appen trækker selv titel,
+    ingredienser og fremgangsmåde ud af siden.</p>
+    <button class="btn primary" id="dashImport2">🌐 Importér din første opskrift</button>
+  </div>`}`;
+};
+
+RENDER.dash_bind = () => {
+  $('#dashRandom').onclick = randomRecipe;
+  $('#dashImport').onclick = importUrlModal;
+  const i2 = $('#dashImport2');
+  if (i2) i2.onclick = importUrlModal;
+  $('#dashToPlan').onclick = () => goto('plan');
+  $$('.planlink').forEach(a => a.onclick = e => { e.preventDefault(); goto('recipeDetail', a.dataset.rec); });
+  bindRecipeCards();
+};
+
+/* ---------------- Opskrifter ---------------- */
+
+function starsHtml(rating) {
+  const r = rating || 0;
+  return `<span class="stars">${[1, 2, 3, 4, 5].map(i => `<span class="${i <= r ? '' : 'off'}">★</span>`).join('')}</span>`;
+}
+
+function recipeCardHtml(r) {
+  const time = recipeTotalMin(r);
+  return `<div class="reccard" data-rec="${r.id}">
+    <div class="recimg">${r.image ? `<img src="${r.image}" alt="" loading="lazy">` : '🍽️'}</div>
+    <div class="recbody">
+      <div class="rectitle">${r.favorite ? '⭐ ' : ''}${esc(r.title || '(uden titel)')}</div>
+      <div class="recmeta">
+        ${r.category ? `<span>${esc(r.category)}</span>` : ''}
+        ${time ? `<span>⏱ ${fmtMin(time)}</span>` : ''}
+        ${r.rating ? starsHtml(r.rating) : ''}
+      </div>
+    </div>
+  </div>`;
+}
+function bindRecipeCards() {
+  $$('.reccard[data-rec]').forEach(c => c.onclick = () => goto('recipeDetail', c.dataset.rec));
+}
+
+RENDER.recipes = () => {
+  const f = S.recFilter;
+  const cats = app().categories || [];
+  let list = K('recipe').slice();
+  if (f.fav) list = list.filter(r => r.favorite);
+  if (f.category) list = list.filter(r => r.category === f.category);
+  if (f.q) {
+    const q = normName(f.q);
+    list = list.filter(r =>
+      normName(r.title).includes(q) ||
+      normName((r.tags || []).join(' ')).includes(q) ||
+      normName((r.ingredients || []).join(' ')).includes(q));
+  }
+  list.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+
+  return pageHead('Opskrifter', `${K('recipe').length} opskrifter i biblioteket`,
+      `<button class="btn" id="recNew">➕ Ny opskrift</button>
+       <button class="btn primary" id="recImport">🌐 Importér fra URL</button>`) + `
+  <div class="rowflex">
+    <input id="recSearch" placeholder="🔍 Søg i titel, ingredienser og tags…" value="${esc(f.q)}" style="min-width:240px;flex:1;max-width:380px">
+    <span class="chip chipbtn${f.fav ? ' sel' : ''}" id="recFav">⭐ Favoritter</span>
+    ${cats.map(c => `<span class="chip chipbtn${f.category === c ? ' sel' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}
+  </div>
+  ${list.length ? `<div class="recgrid">${list.map(recipeCardHtml).join('')}</div>`
+    : '<p class="muted" style="margin-top:26px">Ingen opskrifter matcher.</p>'}`;
+};
+RENDER.recipes_bind = () => {
+  $('#recNew').onclick = () => recipeModal(null);
+  $('#recImport').onclick = importUrlModal;
+  const search = $('#recSearch');
+  search.oninput = () => {
+    S.recFilter.q = search.value;
+    clearTimeout(search._h);
+    search._h = setTimeout(() => { const v = search.value; render(); const el = $('#recSearch'); el.focus(); el.setSelectionRange(v.length, v.length); }, 250);
+  };
+  $('#recFav').onclick = () => { S.recFilter.fav = !S.recFilter.fav; render(); };
+  $$('[data-cat]').forEach(c => c.onclick = () => {
+    S.recFilter.category = S.recFilter.category === c.dataset.cat ? '' : c.dataset.cat;
+    render();
+  });
+  bindRecipeCards();
+};
+
+/* ---------------- detalje ---------------- */
+/* goer "20 min"/"1 time" i fremgangsmaaden klikbare -> starter en timer */
+function linkifyTimers(escapedText) {
+  return escapedText.replace(/(\d+)(?:\s*[-–]\s*(\d+))?\s*(minutter|minutters|minut|min\.?|timers|timer|time)\b/gi, (m, a, b, unit) => {
+    const isHour = /^tim/i.test(unit);
+    const mins = (parseInt(b || a, 10)) * (isHour ? 60 : 1);
+    if (!mins || mins > 24 * 60) return m;
+    return `<span class="inline-timer" data-min="${mins}" title="Klik for at starte en timer på ${mins} min">⏱ ${m}</span>`;
+  });
+}
+function bindInlineTimers(label) {
+  $$('.inline-timer').forEach(el => el.onclick = e => {
+    e.stopPropagation();
+    startTimer(+el.dataset.min * 60000, label);
+    toast(`Timer på ${fmtMin(+el.dataset.min)} startet`);
+    renderNav();
+  });
+}
+
+function ingredientsHtml(r, factor) {
+  return (r.ingredients || []).map(line => {
+    if (/^##\s*/.test(line)) return `<li style="border:0;font-weight:700;color:var(--amber);padding-top:12px">${esc(line.replace(/^##\s*/, ''))}</li>`;
+    return `<li>${esc(scaleIngredient(line, factor))}</li>`;
+  }).join('');
+}
+function instructionsHtml(r) {
+  let out = '', open = false;
+  for (const step of (r.instructions || [])) {
+    if (/^##\s*/.test(step)) {
+      out += `<li class="stepsec">${esc(step.replace(/^##\s*/, ''))}</li>`;
+    } else {
+      out += `<li>${linkifyTimers(esc(step))}</li>`;
+      open = true;
+    }
+  }
+  return out || (open ? '' : '<li class="muted">Ingen fremgangsmåde</li>');
+}
+
+RENDER.recipeDetail = () => {
+  const r = recipeById(S.viewArg);
+  if (!r) { S.view = 'recipes'; return RENDER.recipes(); }
+  const base = r.servings || app().defaultServings;
+  if (S.detailFor !== r.id) { S.detailFor = r.id; S.detailServings = base; }
+  if (!S.detailServings) S.detailServings = base;
+  const factor = S.detailServings / base;
+
+  return `<div class="toprow"><div class="grow">
+      <p class="small" style="margin:0 0 6px"><a href="#" id="backToList">← Opskrifter</a></p>
+      <h1>${esc(r.title)}</h1>
+      <p class="sub">${r.category ? esc(r.category) + ' · ' : ''}${(r.tags || []).map(t => `<span class="chip">${esc(t)}</span>`).join(' ')}</p>
+    </div>
+    <div class="rowflex">
+      <button class="iconbtn" id="favBtn" title="Favorit" style="font-size:22px">${r.favorite ? '⭐' : '☆'}</button>
+      <button class="btn" id="cookBtn">👨‍🍳 Kogetilstand</button>
+      <button class="btn" id="shopBtn">🛒 Til indkøbsliste</button>
+      <button class="btn" id="planBtn">📅 Til madplan</button>
+      <button class="btn" id="printBtn">🖨️ Print</button>
+      <button class="btn" id="editBtn">✏️ Redigér</button>
+    </div></div>
+
+  <div class="rowflex" style="margin:6px 0 14px">
+    ${r.prepMin ? `<span class="timechip">🔪 Forberedelse: ${fmtMin(r.prepMin)}</span>` : ''}
+    ${r.cookMin ? `<span class="timechip">🍳 Tilberedning: ${fmtMin(r.cookMin)}</span>` : ''}
+    ${recipeTotalMin(r) ? `<span class="timechip">⏱ I alt: ${fmtMin(recipeTotalMin(r))}</span>` : ''}
+    <span class="stars pick" id="ratePick">${[1, 2, 3, 4, 5].map(i => `<span data-star="${i}" class="${i <= (r.rating || 0) ? '' : 'off'}">★</span>`).join('')}</span>
+  </div>
+
+  <div class="recdetail">
+    <div>
+      ${r.image ? `<div class="recphoto"><img src="${r.image}" alt=""></div>` : ''}
+      ${r.description ? `<p class="muted" style="margin-top:12px">${esc(r.description)}</p>` : ''}
+      <h2>Ingredienser</h2>
+      <div class="rowflex" style="margin-bottom:4px">
+        <span class="servstep">
+          <button class="btn" id="servMinus">−</button>
+          <strong>${S.detailServings} ${/portion|person/i.test(r.yieldText || '') || !r.yieldText ? 'portioner' : esc(r.yieldText.replace(/\d+\s*/, ''))}</strong>
+          <button class="btn" id="servPlus">+</button>
+        </span>
+        ${factor !== 1 ? '<span class="chip on">skaleret</span>' : ''}
+      </div>
+      <ul class="ings">${ingredientsHtml(r, factor)}</ul>
+      ${r.url ? `<p class="small">Kilde: <a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(new URL(r.url).hostname)} ↗</a></p>` : ''}
+    </div>
+    <div>
+      <h2 style="margin-top:0">Fremgangsmåde</h2>
+      <ol class="steps">${instructionsHtml(r)}</ol>
+      ${r.notes ? `<h2>Noter</h2><p style="white-space:pre-wrap">${esc(r.notes)}</p>` : ''}
+      <p class="small muted" style="margin-top:22px">Tip: klik på et minuttal i fremgangsmåden for at starte en timer.</p>
+    </div>
+  </div>`;
+};
+RENDER.recipeDetail_bind = () => {
+  const r = recipeById(S.viewArg);
+  if (!r) return;
+  $('#backToList').onclick = e => { e.preventDefault(); S.detailServings = null; goto('recipes'); };
+  $('#editBtn').onclick = () => recipeModal(r);
+  $('#cookBtn').onclick = () => openCookMode(r);
+  $('#printBtn').onclick = () => printRecipe(r);
+  $('#favBtn').onclick = async () => { r.favorite = !r.favorite; await saveItem(r, true); render(); };
+  $('#shopBtn').onclick = () => addRecipeToShopping(r, S.detailServings / (r.servings || app().defaultServings));
+  $('#planBtn').onclick = () => planEntryModal(null, { recipeId: r.id });
+  $('#servMinus').onclick = () => { S.detailServings = Math.max(1, S.detailServings - 1); render(); };
+  $('#servPlus').onclick = () => { S.detailServings = S.detailServings + 1; render(); };
+  $$('#ratePick [data-star]').forEach(s => s.onclick = async () => {
+    const v = +s.dataset.star;
+    r.rating = r.rating === v ? 0 : v;
+    await saveItem(r, true);
+    render();
+  });
+  bindInlineTimers(r.title);
+};
+
+/* ---------------- print ---------------- */
+function printRecipe(r) {
+  const factor = (S.detailServings || r.servings || 1) / (r.servings || S.detailServings || 1);
+  printSheet(`${printLogoHtml()}
+    <h1>${esc(r.title)}</h1>
+    <p style="text-align:center">${r.category ? esc(r.category) + ' · ' : ''}${S.detailServings || r.servings || ''} portioner
+      ${recipeTotalMin(r) ? ' · ' + fmtMin(recipeTotalMin(r)) : ''}</p>
+    <h2>Ingredienser</h2>
+    <ul>${(r.ingredients || []).map(l => `<li>${esc(scaleIngredient(l, factor))}</li>`).join('')}</ul>
+    <h2>Fremgangsmåde</h2>
+    <ol>${(r.instructions || []).map(s => /^##/.test(s) ? `</ol><h2>${esc(s.replace(/^##\s*/, ''))}</h2><ol>` : `<li>${esc(s)}</li>`).join('')}</ol>
+    ${r.url ? `<p class="pdate">Kilde: ${esc(r.url)}</p>` : ''}`);
+}
+
+/* ---------------- redigerings-modal ---------------- */
+function recipeModal(r, prefill) {
+  const isNew = !r;
+  const d = r || Object.assign({
+    id: uid(), kind: 'recipe', title: '', description: '', image: '', url: '',
+    ingredients: [], instructions: [], prepMin: null, cookMin: null, totalMin: null,
+    servings: app().defaultServings, yieldText: '', category: '', tags: [], rating: 0,
+    favorite: false, notes: '', createdAt: new Date().toISOString()
+  }, prefill || {});
+  const cats = app().categories || [];
+
+  openModal(`<h2>${isNew ? 'Ny opskrift' : 'Redigér opskrift'}</h2>
+    <div class="formgrid" style="grid-template-columns:2fr 1fr">
+      <label class="fld"><span>Titel</span><input id="rmTitle" value="${esc(d.title)}"></label>
+      <label class="fld"><span>Kategori</span><select id="rmCat">
+        <option value="">–</option>${cats.map(c => `<option${c === d.category ? ' selected' : ''}>${esc(c)}</option>`).join('')}
+      </select></label>
+    </div>
+    <label class="fld"><span>Kort beskrivelse</span><textarea id="rmDesc" rows="2">${esc(d.description)}</textarea></label>
+    <div class="formgrid">
+      <label class="fld"><span>Portioner</span><input id="rmServ" type="number" min="1" value="${d.servings || ''}"></label>
+      <label class="fld"><span>Forberedelse (min)</span><input id="rmPrep" type="number" min="0" value="${d.prepMin || ''}"></label>
+      <label class="fld"><span>Tilberedning (min)</span><input id="rmCook" type="number" min="0" value="${d.cookMin || ''}"></label>
+      <label class="fld"><span>Tags (komma-adskilt)</span><input id="rmTags" value="${esc((d.tags || []).join(', '))}"></label>
+    </div>
+    <label class="fld"><span>Ingredienser – én pr. linje ("## Overskrift" laver en gruppe)</span>
+      <textarea id="rmIngs" rows="8">${esc((d.ingredients || []).join('\n'))}</textarea></label>
+    <label class="fld"><span>Fremgangsmåde – ét trin pr. linje ("## Overskrift" laver en sektion)</span>
+      <textarea id="rmSteps" rows="8">${esc((d.instructions || []).join('\n'))}</textarea></label>
+    <label class="fld"><span>Noter (kun til dig selv)</span><textarea id="rmNotes" rows="2">${esc(d.notes || '')}</textarea></label>
+    <div class="formgrid" style="grid-template-columns:2fr 1fr">
+      <label class="fld"><span>Kilde-URL</span><input id="rmUrl" value="${esc(d.url || '')}"></label>
+      <label class="fld"><span>Billede</span>
+        <span class="rowflex">
+          <button class="btn small" id="rmImgPick">${d.image ? 'Skift…' : 'Vælg…'}</button>
+          ${d.image ? '<button class="btn small danger" id="rmImgDel">Fjern</button>' : ''}
+          <input id="rmImgFile" type="file" accept="image/*" hidden>
+        </span></label>
+    </div>
+    <div class="actions">
+      ${isNew ? '' : '<button class="btn danger" id="rmDelete" style="margin-right:auto">Slet opskrift</button>'}
+      <button class="btn" id="rmCancel">Annullér</button>
+      <button class="btn primary" id="rmSave">Gem</button>
+    </div>`, m => {
+    let image = d.image || '';
+    m.querySelector('#rmImgPick').onclick = () => m.querySelector('#rmImgFile').click();
+    m.querySelector('#rmImgFile').onchange = async e => {
+      const f = e.target.files[0];
+      if (!f) return;
+      image = await blobToScaledDataUrl(f);
+      m.querySelector('#rmImgPick').textContent = 'Valgt ✓';
+    };
+    const del = m.querySelector('#rmImgDel');
+    if (del) del.onclick = () => { image = ''; del.disabled = true; m.querySelector('#rmImgPick').textContent = 'Vælg…'; };
+    m.querySelector('#rmCancel').onclick = closeModal;
+    if (!isNew) m.querySelector('#rmDelete').onclick = async () => {
+      if (!await confirmBox(`Slet opskriften "${d.title}"?`)) return;
+      closeModal();
+      await deleteItem(d);
+      S.detailServings = null;
+      goto('recipes');
+    };
+    m.querySelector('#rmSave').onclick = async () => {
+      d.title = m.querySelector('#rmTitle').value.trim();
+      if (!d.title) return toast('Opskriften skal have en titel', true);
+      d.category = m.querySelector('#rmCat').value;
+      d.description = m.querySelector('#rmDesc').value.trim();
+      d.servings = parseInt(m.querySelector('#rmServ').value, 10) || null;
+      d.prepMin = parseInt(m.querySelector('#rmPrep').value, 10) || null;
+      d.cookMin = parseInt(m.querySelector('#rmCook').value, 10) || null;
+      d.tags = m.querySelector('#rmTags').value.split(',').map(t => t.trim()).filter(Boolean);
+      d.ingredients = m.querySelector('#rmIngs').value.split('\n').map(l => l.trim()).filter(Boolean);
+      d.instructions = m.querySelector('#rmSteps').value.split('\n').map(l => l.trim()).filter(Boolean);
+      d.notes = m.querySelector('#rmNotes').value.trim();
+      d.url = m.querySelector('#rmUrl').value.trim();
+      d.image = image;
+      closeModal();
+      await saveItem(d);
+      goto('recipeDetail', d.id);
+    };
+  }, true);
+}
+
+/* ---------------- billeder: skaler til dataURL saa alt gemmes lokalt ---------------- */
+function blobToScaledDataUrl(blob, maxDim) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const max = maxDim || 720;
+      const scale = Math.min(1, max / Math.max(img.width, img.height));
+      const cv = document.createElement('canvas');
+      cv.width = Math.round(img.width * scale);
+      cv.height = Math.round(img.height * scale);
+      cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+      let q = 0.82, url = cv.toDataURL('image/jpeg', q);
+      while (url.length > 160000 && q > 0.4) { q -= 0.12; url = cv.toDataURL('image/jpeg', q); }
+      URL.revokeObjectURL(img.src);
+      resolve(url);
+    };
+    img.onerror = () => { URL.revokeObjectURL(img.src); reject(new Error('Kunne ikke læse billedet')); };
+    img.src = URL.createObjectURL(blob);
+  });
+}
+async function fetchImageAsDataUrl(url) {
+  if (!url) return '';
+  try {
+    const r = await fetch('/api/fetch-image?url=' + encodeURIComponent(url));
+    if (!r.ok) return '';
+    return await blobToScaledDataUrl(await r.blob());
+  } catch (e) { return ''; }
+}
+
+/* ---------------- import fra URL ---------------- */
+function importUrlModal() {
+  openModal(`<h2>🌐 Importér opskrift fra URL</h2>
+    <p class="muted small">Indsæt et link til en opskrift – fx fra Valdemarsro, Arla, Madens Verden
+    eller de fleste andre opskriftsider. Kokkeri trækker selv titel, ingredienser, fremgangsmåde,
+    tider og billede ud og gemmer linket, så du altid kan gå tilbage til originalen.</p>
+    <label class="fld"><span>URL</span><input id="impUrl" placeholder="https://…" autocomplete="off"></label>
+    <p class="small muted" id="impStatus" style="min-height:18px"></p>
+    <div class="actions">
+      <button class="btn" id="impCancel">Annullér</button>
+      <button class="btn primary" id="impGo">Hent opskrift</button>
+    </div>`, m => {
+    const status = m.querySelector('#impStatus');
+    const input = m.querySelector('#impUrl');
+    input.focus();
+    m.querySelector('#impCancel').onclick = closeModal;
+    const go = async () => {
+      let url = input.value.trim();
+      if (!url) return;
+      if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+      const btn = m.querySelector('#impGo');
+      btn.disabled = true;
+      status.textContent = 'Henter siden …';
+      try {
+        const res = await api('/api/fetch-recipe?url=' + encodeURIComponent(url));
+        if (res.recipe) {
+          status.textContent = 'Fandt opskriften – henter billede …';
+          const image = await fetchImageAsDataUrl(res.recipe.image);
+          closeModal();
+          openImportedRecipe(res.recipe, image);
+        } else if (res.pageText) {
+          if (!S.settings.aiKeySet) {
+            status.innerHTML = 'Siden har ingen maskinlæsbar opskrift (JSON-LD). Med en AI-nøgle under <b>Indstillinger</b> kan Kokkeri i stedet læse siden med AI.';
+            btn.disabled = false;
+            return;
+          }
+          status.textContent = 'Ingen maskinlæsbar opskrift – prøver med AI (kan tage ~20 sek.) …';
+          const rec = await aiExtractRecipe(res.pageText, url, res.pageTitle);
+          const image = await fetchImageAsDataUrl(rec.image || res.pageImage);
+          closeModal();
+          openImportedRecipe(Object.assign(rec, { url }), image);
+        } else {
+          status.textContent = 'Kunne ikke finde en opskrift på siden.';
+          btn.disabled = false;
+        }
+      } catch (e) {
+        status.textContent = 'Fejl: ' + e.message;
+        btn.disabled = false;
+      }
+    };
+    m.querySelector('#impGo').onclick = go;
+    input.onkeydown = e => { if (e.key === 'Enter') go(); };
+  });
+}
+
+function openImportedRecipe(rec, image) {
+  /* gaet en kategori ud fra sidens egen kategori-tekst */
+  const cats = app().categories || [];
+  const catGuess = cats.find(c => normName(rec.category || '').includes(normName(c))) || '';
+  recipeModal(null, {
+    title: rec.title || '',
+    description: rec.description || '',
+    image: image || '',
+    url: rec.url || '',
+    ingredients: rec.ingredients || [],
+    instructions: rec.instructions || [],
+    prepMin: rec.prepMin || null,
+    cookMin: rec.cookMin || null,
+    totalMin: rec.totalMin || null,
+    servings: rec.servings || app().defaultServings,
+    yieldText: rec.yieldText || '',
+    category: catGuess,
+    tags: (rec.keywords ? String(rec.keywords).split(',').map(t => t.trim()).filter(Boolean).slice(0, 6) : [])
+  });
+  toast('Opskriften er hentet – tjek den igennem og tryk Gem');
+}
+
+/* AI-fallback: udtraek opskrift af raa sidetekst (eller chat-svar) */
+async function aiExtractRecipe(text, sourceUrl, pageTitle) {
+  const sys = `Du udtrækker madopskrifter af rå tekst. Svar KUN med ét JSON-objekt, ingen forklaring, ingen markdown-hegn.
+Format: {"title": str, "description": str, "servings": tal|null, "prepMin": tal|null, "cookMin": tal|null,
+"ingredients": [str, ...], "instructions": [str, ...], "category": str}
+Ingredienser: én pr. linje med mængde først (fx "500 g hakket oksekød"). Brug "## Overskrift" som linje for grupper/sektioner.
+Fremgangsmåde: ét trin pr. streng, uden numre. Behold dansk sprog (oversæt IKKE en udenlandsk opskrift).
+Findes der ingen opskrift i teksten, svar {"error": "ingen opskrift fundet"}.`;
+  const r = await api('/api/ai', {
+    body: {
+      system: sys,
+      messages: [{ role: 'user', content: (pageTitle ? 'Sidens titel: ' + pageTitle + '\n\n' : '') + text }],
+      maxTokens: 4096
+    }
+  });
+  let j;
+  try {
+    j = JSON.parse(String(r.text).replace(/^[\s\S]*?\{/, '{').replace(/\}[^}]*$/, '}'));
+  } catch (e) { throw new Error('AI-svaret kunne ikke læses som en opskrift'); }
+  if (j.error) throw new Error(j.error);
+  if (!j.title || !Array.isArray(j.ingredients)) throw new Error('AI fandt ingen opskrift på siden');
+  return {
+    title: j.title, description: j.description || '', servings: j.servings || null,
+    prepMin: j.prepMin || null, cookMin: j.cookMin || null,
+    ingredients: j.ingredients.map(String), instructions: (j.instructions || []).map(String),
+    category: j.category || '', url: sourceUrl || ''
+  };
+}
+
+/* ---------------- indkoebsliste fra opskrift ---------------- */
+async function addRecipeToShopping(r, factor) {
+  const lines = (r.ingredients || []).filter(l => !/^##/.test(l));
+  if (!lines.length) return toast('Opskriften har ingen ingredienser', true);
+  const items = lines.map(l => ({
+    id: uid(), kind: 'shopItem', text: scaleIngredient(l, factor || 1),
+    group: r.title, done: false, createdAt: new Date().toISOString()
+  }));
+  await saveBulk(items);
+  toast(`${items.length} varer føjet til indkøbslisten`);
+  renderNav();
+}
+
+/* ---------------- kogetilstand ---------------- */
+const CM = { recipe: null, step: 0, wakeWasOn: false };
+
+function openCookMode(r) {
+  CM.recipe = r;
+  CM.step = 0;
+  CM.wakeWasOn = S.wakeOn;
+  if (!S.wakeOn) setWakeLock(true); // skaermen skal ikke slukke midt i madlavningen
+  drawCookMode();
+  $('#cookMode').hidden = false;
+}
+function closeCookMode() {
+  $('#cookMode').hidden = true;
+  $('#cookMode').innerHTML = '';
+  if (!CM.wakeWasOn && S.wakeOn) setWakeLock(false);
+  CM.recipe = null;
+}
+function drawCookMode() {
+  const r = CM.recipe;
+  const steps = (r.instructions || []).filter(s => !/^##/.test(s));
+  const factor = (S.detailServings || r.servings || 1) / (r.servings || S.detailServings || 1);
+  const step = steps[CM.step] || '';
+  $('#cookMode').innerHTML = `
+    <div class="cmhead">
+      <h2>👨‍🍳 ${esc(r.title)}</h2>
+      ${S.wakeOn ? '<span class="chip on">📱 skærmen holdes tændt</span>' : ''}
+      <button class="btn" id="cmTimer">⏱️ Timer</button>
+      <button class="btn" id="cmClose">✕ Luk</button>
+    </div>
+    <div class="cmbody">
+      <div class="cmings">
+        <h3 style="margin-top:0">Ingredienser</h3>
+        <ul>${ingredientsHtml(r, factor)}</ul>
+      </div>
+      <div>
+        <div class="cmstepnum">Trin ${CM.step + 1} af ${steps.length}</div>
+        <div class="cmstep">${linkifyTimers(esc(step))}</div>
+      </div>
+    </div>
+    <div class="cmfoot">
+      <button class="btn" id="cmPrev" ${CM.step === 0 ? 'disabled' : ''}>← Forrige</button>
+      <div class="cmprogress">${steps.map((_, i) => i === CM.step ? '●' : '○').join(' ')}</div>
+      ${CM.step < steps.length - 1
+        ? '<button class="btn primary" id="cmNext">Næste →</button>'
+        : '<button class="btn primary" id="cmDone">✓ Færdig</button>'}
+    </div>`;
+  $('#cmClose').onclick = closeCookMode;
+  $('#cmTimer').onclick = () => newTimerModal(r.title);
+  $('#cmPrev').onclick = () => { if (CM.step > 0) { CM.step--; drawCookMode(); } };
+  const next = $('#cmNext');
+  if (next) next.onclick = () => { CM.step++; drawCookMode(); };
+  const done = $('#cmDone');
+  if (done) done.onclick = async () => {
+    CM.recipe.timesCooked = (CM.recipe.timesCooked || 0) + 1;
+    CM.recipe.lastCooked = isoDate();
+    await saveItem(CM.recipe, true);
+    closeCookMode();
+    toast('Velbekomme! 🍽️');
+    render();
+  };
+  bindInlineTimers(r.title);
+}
+document.addEventListener('keydown', e => {
+  if ($('#cookMode').hidden || $('#modalHost').innerHTML) return;
+  if (e.key === 'ArrowRight') { const b = $('#cmNext'); if (b) b.click(); }
+  else if (e.key === 'ArrowLeft') { const b = $('#cmPrev'); if (b && !b.disabled) b.click(); }
+  else if (e.key === 'Escape') closeCookMode();
+});
+
+/* ---------------- Madplan (uge-visning) ---------------- */
+
+function weekDatesOf(monday) { return [...Array(7)].map((_, i) => addDays(monday, i)); }
+
+RENDER.plan = () => {
+  const monday = S.weekStart || mondayOf();
+  const dates = weekDatesOf(monday);
+  const today = isoDate();
+  const entriesByDate = {};
+  for (const e of K('planEntry')) (entriesByDate[e.date] = entriesByDate[e.date] || []).push(e);
+
+  return pageHead('Madplan', `Uge ${isoWeekNo(monday)} · ${fmtDate(monday)} – ${fmtDate(dates[6])}`,
+      `<div class="rowflex">
+        <button class="btn" id="wkPrev">←</button>
+        <button class="btn" id="wkToday">I dag</button>
+        <button class="btn" id="wkNext">→</button>
+        <button class="btn" id="wkShop">🛒 Indkøbsliste for ugen</button>
+        <button class="btn" id="wkPrint">🖨️ Print</button>
+        ${S.settings.aiKeySet ? '<button class="btn primary" id="wkAi">✨ Foreslå madplan</button>' : ''}
+      </div>`) + `
+  <div class="weekgrid">
+    ${dates.map((d, i) => `
+      <div class="daycol${d === today ? ' today' : ''}">
+        <div class="dhead">${WEEKDAYS_DA[i]} <span style="float:right;font-weight:400">${d.slice(8)}/${+d.slice(5, 7)}</span></div>
+        ${(entriesByDate[d] || []).map(e => {
+          const r = e.recipeId ? recipeById(e.recipeId) : null;
+          return `<div class="planentry" data-entry="${e.id}">
+            ${r ? esc(r.title) : esc(e.text || '')}
+            ${r && recipeTotalMin(r) ? `<div class="pmeta">⏱ ${fmtMin(recipeTotalMin(r))}${e.servings ? ' · ' + e.servings + ' pers.' : ''}</div>` : (e.servings ? `<div class="pmeta">${e.servings} pers.</div>` : '')}
+          </div>`;
+        }).join('')}
+        <button class="dayadd" data-date="${d}">+ tilføj</button>
+      </div>`).join('')}
+  </div>
+  <p class="small muted">Madplanen kan abonneres i din kalender-app – find iCal-linket under Indstillinger.</p>`;
+};
+RENDER.plan_bind = () => {
+  $('#wkPrev').onclick = () => { S.weekStart = addDays(S.weekStart || mondayOf(), -7); render(); };
+  $('#wkNext').onclick = () => { S.weekStart = addDays(S.weekStart || mondayOf(), 7); render(); };
+  $('#wkToday').onclick = () => { S.weekStart = mondayOf(); render(); };
+  $('#wkShop').onclick = weekToShopping;
+  $('#wkPrint').onclick = printWeekPlan;
+  const ai = $('#wkAi');
+  if (ai) ai.onclick = aiSuggestWeek;
+  $$('.dayadd').forEach(b => b.onclick = () => planEntryModal(null, { date: b.dataset.date }));
+  $$('.planentry[data-entry]').forEach(el => el.onclick = () => {
+    const e = K('planEntry').find(x => x.id === el.dataset.entry);
+    if (e) planEntryModal(e);
+  });
+};
+
+function planEntryModal(entry, prefill) {
+  const isNew = !entry;
+  const d = entry || Object.assign({
+    id: uid(), kind: 'planEntry', date: isoDate(), recipeId: '', text: '', servings: null
+  }, prefill || {});
+
+  openModal(`<h2>${isNew ? 'Tilføj til madplan' : 'Redigér madplan'}</h2>
+    <div class="formgrid">
+      <label class="fld"><span>Dato</span><input id="pmDate" type="date" value="${esc(d.date)}"></label>
+      <label class="fld"><span>Personer (valgfrit)</span><input id="pmServ" type="number" min="1" value="${d.servings || ''}"></label>
+    </div>
+    <label class="fld"><span>Opskrift fra biblioteket</span><select id="pmRec">${recipeOptions(d.recipeId)}</select></label>
+    <label class="fld"><span>… eller fritekst (fx "Rester" eller "Pizza ude i byen")</span>
+      <input id="pmText" value="${esc(d.text || '')}"></label>
+    <div class="actions">
+      ${isNew ? '' : '<button class="btn danger" id="pmDelete" style="margin-right:auto">Fjern</button>'}
+      <button class="btn" id="pmCancel">Annullér</button>
+      <button class="btn primary" id="pmSave">Gem</button>
+    </div>`, m => {
+    m.querySelector('#pmCancel').onclick = closeModal;
+    if (!isNew) m.querySelector('#pmDelete').onclick = async () => {
+      closeModal();
+      await deleteItem(d);
+      render();
+    };
+    m.querySelector('#pmSave').onclick = async () => {
+      d.date = m.querySelector('#pmDate').value;
+      if (!d.date) return toast('Vælg en dato', true);
+      d.recipeId = m.querySelector('#pmRec').value;
+      d.text = m.querySelector('#pmText').value.trim();
+      if (!d.recipeId && !d.text) return toast('Vælg en opskrift eller skriv en tekst', true);
+      d.servings = parseInt(m.querySelector('#pmServ').value, 10) || null;
+      closeModal();
+      await saveItem(d);
+      if (S.view !== 'plan') toast('Sat på madplanen ' + fmtDate(d.date));
+      render();
+    };
+  });
+}
+
+/* hele ugens opskrifter -> indkoebsliste (skaleret efter personer) */
+async function weekToShopping() {
+  const dates = weekDatesOf(S.weekStart || mondayOf());
+  const entries = K('planEntry').filter(e => dates.includes(e.date) && e.recipeId);
+  if (!entries.length) return toast('Ugen har ingen opskrifter på madplanen', true);
+  const items = [];
+  for (const e of entries) {
+    const r = recipeById(e.recipeId);
+    if (!r) continue;
+    const factor = e.servings && r.servings ? e.servings / r.servings : 1;
+    for (const l of (r.ingredients || []).filter(l => !/^##/.test(l))) {
+      items.push({
+        id: uid(), kind: 'shopItem', text: scaleIngredient(l, factor),
+        group: r.title, done: false, createdAt: new Date().toISOString()
+      });
+    }
+  }
+  await saveBulk(items);
+  toast(`${items.length} varer føjet til indkøbslisten`);
+  goto('shopping');
+}
+
+function printWeekPlan() {
+  const monday = S.weekStart || mondayOf();
+  const dates = weekDatesOf(monday);
+  printSheet(`${printLogoHtml()}
+    <h1>Madplan – uge ${isoWeekNo(monday)}</h1>
+    <table><tbody>
+    ${dates.map((d, i) => {
+      const entries = K('planEntry').filter(e => e.date === d);
+      return `<tr><td style="width:130px"><b>${WEEKDAYS_DA[i]}</b><br>${fmtDate(d)}</td>
+        <td>${entries.map(e => {
+          const r = e.recipeId ? recipeById(e.recipeId) : null;
+          return esc(r ? r.title : e.text || '') + (e.servings ? ` (${e.servings} pers.)` : '');
+        }).join('<br>') || '&nbsp;'}</td></tr>`;
+    }).join('')}
+    </tbody></table>
+    <p class="pdate">Printet ${fmtDate(isoDate())}</p>`);
+}
+
+/* ---------------- AI: foreslaa en uge-madplan ---------------- */
+async function aiSuggestWeek() {
+  const monday = S.weekStart || mondayOf();
+  const dates = weekDatesOf(monday);
+  const free = dates.filter(d => !K('planEntry').some(e => e.date === d));
+  if (!free.length) return toast('Alle ugens dage har allerede noget på madplanen', true);
+  const recipes = K('recipe');
+  if (recipes.length < 2) return toast('Tilføj nogle opskrifter først, så AI\'en har noget at vælge imellem', true);
+
+  toast('AI\'en sammensætter en madplan …');
+  const list = recipes.map(r => ({
+    id: r.id, title: r.title, category: r.category || '',
+    min: recipeTotalMin(r),
+    rating: r.rating || 0, lastCooked: r.lastCooked || null
+  }));
+  const sys = `Du sammensætter en ugentlig aftensmads-plan ud fra brugerens egne opskrifter.
+Vælg varieret (ikke to ens retter i træk, bland kategorier), foretræk højt vurderede opskrifter og
+retter der ikke er lavet for nylig. Hverdagsretter bør være hurtige; weekend må gerne tage længere tid.
+Svar KUN med JSON: [{"date": "YYYY-MM-DD", "recipeId": "..."}] – én pr. dato, brug KUN de givne datoer og recipeId'er.`;
+  try {
+    const r = await api('/api/ai', {
+      body: {
+        system: sys,
+        messages: [{ role: 'user', content: `Datoer der skal fyldes: ${free.join(', ')}\n\nOpskrifter:\n` + JSON.stringify(list) }],
+        maxTokens: 2048
+      }
+    });
+    let plan;
+    try { plan = JSON.parse(String(r.text).replace(/^[\s\S]*?\[/, '[').replace(/\][^\]]*$/, ']')); }
+    catch (e) { throw new Error('AI-svaret kunne ikke læses'); }
+    const items = [];
+    for (const p of plan) {
+      if (!free.includes(p.date) || !recipeById(p.recipeId)) continue;
+      if (items.some(i => i.date === p.date)) continue;
+      items.push({ id: uid(), kind: 'planEntry', date: p.date, recipeId: p.recipeId, text: '', servings: null });
+    }
+    if (!items.length) throw new Error('AI\'en foreslog ingen brugbare dage');
+    await saveBulk(items);
+    toast(`Madplan foreslået for ${items.length} dage – ret til som du vil`);
+    render();
+  } catch (e) {
+    toast('Kunne ikke lave madplan: ' + e.message, true);
+  }
+}
+
+/* ---------------- Indkøbsliste ---------------- */
+RENDER.shopping = () => {
+  const items = K('shopItem').slice().sort((a, b) =>
+    String(a.group || 'zzz').localeCompare(String(b.group || 'zzz'), 'da') ||
+    String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  const open = items.filter(i => !i.done), done = items.filter(i => i.done);
+
+  const listHtml = arr => {
+    let out = '', lastGroup = null;
+    for (const i of arr) {
+      const g = i.group || 'Andet';
+      if (g !== lastGroup) { out += `<li class="shopgroup">${esc(g)}</li>`; lastGroup = g; }
+      out += `<li class="${i.done ? 'done' : ''}" data-shop="${i.id}">
+        <input type="checkbox" ${i.done ? 'checked' : ''}>
+        <span class="txt">${esc(i.text)}</span>
+        <button class="iconbtn" data-del="${i.id}" title="Fjern">✕</button>
+      </li>`;
+    }
+    return out;
+  };
+
+  return pageHead('Indkøbsliste', `${open.length} varer mangler`,
+      `<div class="rowflex">
+        <button class="btn" id="shopPrint">🖨️ Print</button>
+        <button class="btn" id="shopClearDone" ${done.length ? '' : 'disabled'}>Ryd afkrydsede</button>
+        <button class="btn danger" id="shopClearAll" ${items.length ? '' : 'disabled'}>Tøm listen</button>
+      </div>`) + `
+  <div class="panelbox">
+    <div class="rowflex">
+      <input id="shopNew" placeholder="Tilføj vare – fx 2 L mælk" style="flex:1;min-width:200px">
+      <button class="btn primary" id="shopAdd">Tilføj</button>
+    </div>
+    <ul class="shoplist">${listHtml(open) || '<li class="muted" style="border:0">Listen er tom 🎉</li>'}</ul>
+    ${done.length ? `<h3 class="muted">Afkrydset (${done.length})</h3><ul class="shoplist">${listHtml(done)}</ul>` : ''}
+  </div>
+  <p class="small muted">Tilføj en hel opskrift fra opskriftens side (🛒) eller hele ugen fra madplanen.</p>`;
+};
+RENDER.shopping_bind = () => {
+  const add = async () => {
+    const el = $('#shopNew');
+    const text = el.value.trim();
+    if (!text) return;
+    await saveItem({ id: uid(), kind: 'shopItem', text, group: '', done: false, createdAt: new Date().toISOString() }, true);
+    render();
+    setTimeout(() => { const n = $('#shopNew'); if (n) n.focus(); }, 30);
+  };
+  $('#shopAdd').onclick = add;
+  $('#shopNew').onkeydown = e => { if (e.key === 'Enter') add(); };
+  $('#shopNew').focus();
+
+  $$('[data-shop]').forEach(li => {
+    const it = K('shopItem').find(x => x.id === li.dataset.shop);
+    if (!it) return;
+    const toggle = async () => { it.done = !it.done; await saveItem(it, true); render(); };
+    li.querySelector('input').onchange = toggle;
+    li.querySelector('.txt').onclick = toggle;
+  });
+  $$('[data-del]').forEach(b => b.onclick = async e => {
+    e.stopPropagation();
+    const it = K('shopItem').find(x => x.id === b.dataset.del);
+    if (it) { it.deleted = true; await saveItem(it, true); render(); }
+  });
+  $('#shopClearDone').onclick = async () => {
+    const done = K('shopItem').filter(i => i.done);
+    await saveBulk(done.map(i => Object.assign(i, { deleted: true })));
+    render();
+  };
+  $('#shopClearAll').onclick = async () => {
+    if (!await confirmBox('Tøm hele indkøbslisten?', 'Tøm')) return;
+    await saveBulk(K('shopItem').map(i => Object.assign(i, { deleted: true })));
+    render();
+  };
+  $('#shopPrint').onclick = () => {
+    const items = K('shopItem').filter(i => !i.done);
+    let lastGroup = null, rows = '';
+    for (const i of items.slice().sort((a, b) => String(a.group || 'zzz').localeCompare(String(b.group || 'zzz'), 'da'))) {
+      const g = i.group || 'Andet';
+      if (g !== lastGroup) { rows += `<h2>${esc(g)}</h2>`; lastGroup = g; }
+      rows += `<p style="margin:2px 0">☐ ${esc(i.text)}</p>`;
+    }
+    printSheet(`${printLogoHtml()}<h1>Indkøbsliste</h1>${rows}<p class="pdate">${fmtDate(isoDate())}</p>`);
+  };
+};
+
+/* ---------------- Timere ---------------- */
+/* Timerne lever i localStorage (kk_timers), saa de overlever en genindlaesning.
+ * {id, label, totalMs, endsAt (epoch-ms), remainMs (ved pause), paused, ringing} */
+
+function loadTimers() {
+  try { S.timers = JSON.parse(localStorage.getItem('kk_timers') || '[]'); } catch (e) { S.timers = []; }
+  if (!Array.isArray(S.timers)) S.timers = [];
+}
+function saveTimers() {
+  try { localStorage.setItem('kk_timers', JSON.stringify(S.timers)); } catch (e) {}
+}
+
+function startTimer(ms, label) {
+  S.timers.push({
+    id: uid(), label: label || 'Timer', totalMs: ms,
+    endsAt: Date.now() + ms, remainMs: null, paused: false, ringing: false
+  });
+  saveTimers();
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission().catch(() => {});
+  }
+  if (S.view === 'timers') render(); else renderNav();
+}
+function timerRemainMs(t) {
+  return t.paused ? t.remainMs : Math.max(0, t.endsAt - Date.now());
+}
+function fmtTimer(ms) {
+  const s = Math.ceil(ms / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(sec).padStart(2, '0');
+}
+
+/* ---- alarmlyd (WebAudio, ingen filer) ---- */
+let audioCtx = null;
+function beep() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+    const now = audioCtx.currentTime;
+    for (let i = 0; i < 3; i++) {
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      o.type = 'sine';
+      o.frequency.value = 880;
+      g.gain.setValueAtTime(0.0001, now + i * 0.25);
+      g.gain.exponentialRampToValueAtTime(0.3, now + i * 0.25 + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.25 + 0.2);
+      o.connect(g).connect(audioCtx.destination);
+      o.start(now + i * 0.25);
+      o.stop(now + i * 0.25 + 0.22);
+    }
+  } catch (e) {}
+}
+
+let timerEngineStarted = false;
+function startTimerEngine() {
+  if (timerEngineStarted) return;
+  timerEngineStarted = true;
+  setInterval(() => {
+    let changed = false, anyRinging = false;
+    for (const t of S.timers) {
+      if (!t.paused && !t.ringing && Date.now() >= t.endsAt) {
+        t.ringing = true;
+        changed = true;
+        toast('⏰ ' + t.label + ' er færdig!');
+        if ('Notification' in window && Notification.permission === 'granted') {
+          try { new Notification('⏰ ' + t.label, { body: 'Timeren er færdig' }); } catch (e) {}
+        }
+      }
+      if (t.ringing) anyRinging = true;
+    }
+    if (anyRinging && Math.floor(Date.now() / 1000) % 2 === 0) beep();
+    if (changed) {
+      saveTimers();
+      if (S.view === 'timers' || S.view === 'dash') render(); else renderNav();
+    }
+    /* opdater viste tider uden fuld gen-rendering */
+    $$('[data-timerid]').forEach(card => {
+      const t = S.timers.find(x => x.id === card.dataset.timerid);
+      if (!t) return;
+      const rem = timerRemainMs(t);
+      const timeEl = card.querySelector('.ttime');
+      if (timeEl) timeEl.textContent = t.ringing ? '0:00' : fmtTimer(rem);
+      const bar = card.querySelector('.timerbar > div');
+      if (bar) bar.style.width = (t.ringing ? 100 : Math.min(100, 100 - rem / t.totalMs * 100)) + '%';
+    });
+  }, 500);
+}
+
+RENDER.timers = () => {
+  const presets = app().timerPresets || DEFAULT_APP.timerPresets;
+  return pageHead('Timere', 'Køkkentimere – de kører videre, selv om du skifter side',
+      `<button class="btn" id="wakePageBtn">📱 Hold skærmen tændt</button>`) + `
+  <div class="panelbox">
+    <div class="rowflex">
+      ${presets.map(m => `<button class="btn" data-preset="${m}">${fmtMin(m)}</button>`).join('')}
+      <span style="flex:1"></span>
+      <input id="tmMin" type="number" min="1" placeholder="min" style="width:80px">
+      <input id="tmLabel" placeholder="navn (fx pasta)" style="width:160px">
+      <button class="btn primary" id="tmStart">▶ Start</button>
+    </div>
+  </div>
+  ${S.timers.length ? `<div class="timergrid">
+    ${S.timers.map(t => {
+      const rem = timerRemainMs(t);
+      return `<div class="timercard${t.ringing ? ' ringing' : ''}" data-timerid="${t.id}">
+        <div class="tlabel">${esc(t.label)}</div>
+        <div class="ttime">${t.ringing ? '0:00' : fmtTimer(rem)}</div>
+        <div class="timerbar"><div style="width:${t.ringing ? 100 : Math.min(100, 100 - rem / t.totalMs * 100)}%"></div></div>
+        <div class="tactions">
+          ${t.ringing
+            ? `<button class="btn primary" data-tstop="${t.id}">✓ OK</button>`
+            : `<button class="btn small" data-tpause="${t.id}">${t.paused ? '▶' : '⏸'}</button>
+               <button class="btn small" data-tplus="${t.id}">+1 min</button>
+               <button class="btn small danger" data-tstop="${t.id}">✕</button>`}
+        </div>
+      </div>`;
+    }).join('')}
+  </div>` : '<p class="muted" style="margin-top:24px">Ingen aktive timere. Start én med knapperne ovenfor – eller klik på et minuttal inde i en opskrift.</p>'}
+  <p class="small muted">💡 Slå "Hold skærmen tændt" til, mens du laver mad, så skærmen ikke låser (kræver https).</p>`;
+};
+RENDER.timers_bind = () => {
+  $('#wakePageBtn').onclick = () => setWakeLock(!S.wakeOn);
+  updateWakeBtn();
+  $$('[data-preset]').forEach(b => b.onclick = () => { startTimer(+b.dataset.preset * 60000, fmtMin(+b.dataset.preset)); });
+  const start = () => {
+    const min = num($('#tmMin').value);
+    if (!min || min <= 0) return toast('Angiv antal minutter', true);
+    startTimer(min * 60000, $('#tmLabel').value.trim() || fmtMin(min));
+  };
+  $('#tmStart').onclick = start;
+  $('#tmMin').onkeydown = e => { if (e.key === 'Enter') start(); };
+  $('#tmLabel').onkeydown = e => { if (e.key === 'Enter') start(); };
+
+  $$('[data-tstop]').forEach(b => b.onclick = () => {
+    S.timers = S.timers.filter(t => t.id !== b.dataset.tstop);
+    saveTimers();
+    render();
+  });
+  $$('[data-tpause]').forEach(b => b.onclick = () => {
+    const t = S.timers.find(x => x.id === b.dataset.tpause);
+    if (!t) return;
+    if (t.paused) { t.endsAt = Date.now() + t.remainMs; t.remainMs = null; t.paused = false; }
+    else { t.remainMs = timerRemainMs(t); t.paused = true; }
+    saveTimers();
+    render();
+  });
+  $$('[data-tplus]').forEach(b => b.onclick = () => {
+    const t = S.timers.find(x => x.id === b.dataset.tplus);
+    if (!t) return;
+    if (t.paused) t.remainMs += 60000; else t.endsAt += 60000;
+    t.totalMs += 60000;
+    saveTimers();
+    render();
+  });
+};
+
+function newTimerModal(label) {
+  const presets = app().timerPresets || DEFAULT_APP.timerPresets;
+  openModal(`<h2>⏱️ Ny timer</h2>
+    <div class="rowflex">${presets.map(m => `<button class="btn" data-nt="${m}">${fmtMin(m)}</button>`).join('')}</div>
+    <div class="rowflex" style="margin-top:12px">
+      <input id="ntMin" type="number" min="1" placeholder="minutter" style="width:110px">
+      <input id="ntLabel" placeholder="navn" value="${esc(label || '')}" style="flex:1">
+      <button class="btn primary" id="ntStart">▶ Start</button>
+    </div>
+    <div class="actions"><button class="btn" id="ntCancel">Luk</button></div>`, m => {
+    m.querySelector('#ntCancel').onclick = closeModal;
+    m.querySelectorAll('[data-nt]').forEach(b => b.onclick = () => {
+      startTimer(+b.dataset.nt * 60000, label || fmtMin(+b.dataset.nt));
+      closeModal();
+      toast('Timer startet');
+    });
+    const start = () => {
+      const min = num(m.querySelector('#ntMin').value);
+      if (!min || min <= 0) return toast('Angiv antal minutter', true);
+      startTimer(min * 60000, m.querySelector('#ntLabel').value.trim() || fmtMin(min));
+      closeModal();
+      toast('Timer startet');
+    };
+    m.querySelector('#ntStart').onclick = start;
+    m.querySelector('#ntMin').onkeydown = e => { if (e.key === 'Enter') start(); };
+    m.querySelector('#ntMin').focus();
+  });
+}
+
+/* ---------------- AI-assistent (chat) ---------------- */
+
+function assistantSystemPrompt() {
+  const recipes = K('recipe').map(r => ({
+    id: r.id, titel: r.title, kategori: r.category || '',
+    min: recipeTotalMin(r),
+    vurdering: r.rating || null, favorit: !!r.favorite
+  }));
+  const monday = mondayOf();
+  const plan = K('planEntry')
+    .filter(e => e.date >= monday && e.date <= addDays(monday, 13))
+    .map(e => {
+      const r = e.recipeId ? recipeById(e.recipeId) : null;
+      return e.date + ': ' + (r ? r.title : e.text || '');
+    });
+  return `Du er køkkenassistenten i appen "Kokkeri" – brugerens eget opskrifts-bibliotek.
+Du hjælper på dansk med madlavning: opskrifter, teknik, erstatninger af ingredienser, skalering,
+menu-idéer og madplaner. Vær konkret og kortfattet.
+
+I dag er det ${isoDate()} (${WEEKDAYS_DA[(new Date().getDay() + 6) % 7]}).
+
+Brugerens opskrifter (JSON): ${JSON.stringify(recipes).slice(0, 20000)}
+
+Madplan de næste to uger: ${plan.length ? plan.join('; ') : 'tom'}
+
+Når du foreslår en komplet opskrift, så skriv den med tydelige afsnit "Ingredienser:" og
+"Fremgangsmåde:", så brugeren kan gemme den med ét klik. Nævner brugeren en af sine egne
+opskrifter, så tag udgangspunkt i den.`;
+}
+
+RENDER.assistant = () => {
+  if (!S.settings.aiKeySet) {
+    return pageHead('AI-assistent', 'Din personlige køkkenassistent') + `
+    <div class="panelbox center" style="padding:40px">
+      <div style="font-size:40px">✨</div>
+      <h2 style="margin-top:8px">Assistenten er ikke sat op endnu</h2>
+      <p class="muted">Tilføj din Claude API-nøgle under Indstillinger, så kan assistenten hjælpe med
+      opskrift-idéer, madplaner, ingrediens-erstatninger og import af opskrifter fra sider uden
+      maskinlæsbare data.</p>
+      <button class="btn primary" id="aiToSettings">⚙️ Gå til Indstillinger</button>
+    </div>`;
+  }
+  const hints = ['Hvad kan jeg lave med det, jeg har i køleskabet?',
+    'Foreslå en hurtig hverdagsret', 'Lav en vegetarisk madplan til ugen',
+    'Hvad kan jeg bruge i stedet for fløde?'];
+  return pageHead('AI-assistent', 'Spørg om alt i køkkenet – assistenten kender dine opskrifter og din madplan',
+      `<button class="btn" id="aiClear" ${S.chat.length ? '' : 'disabled'}>Ryd samtale</button>`) + `
+  <div class="chatwrap">
+    <div class="chatlog" id="chatLog">
+      ${S.chat.length ? S.chat.map((m, i) => `
+        <div class="msg ${m.role === 'user' ? 'user' : 'ai'}">${esc(m.content)}${
+          m.role === 'assistant' && /ingredienser/i.test(m.content) && /fremgangsmåde/i.test(m.content)
+            ? `<div class="msgact"><button class="btn small" data-saverec="${i}">💾 Gem som opskrift</button></div>` : ''
+        }</div>`).join('')
+      : `<div class="msg ai">Hej! Jeg er din køkkenassistent 👨‍🍳 Spørg mig om opskrifter, madplaner,
+        erstatninger eller teknik – jeg kender dit bibliotek på ${K('recipe').length} opskrifter.</div>
+        <div class="chathints">${hints.map(h => `<span class="chip chipbtn" data-hint="${esc(h)}">${esc(h)}</span>`).join('')}</div>`}
+      ${S.chatBusy ? '<div class="msg ai thinking">Tænker …</div>' : ''}
+    </div>
+    <div class="chatinput">
+      <textarea id="chatText" placeholder="Skriv til assistenten… (Enter sender, Shift+Enter = ny linje)"></textarea>
+      <button class="btn primary" id="chatSend" ${S.chatBusy ? 'disabled' : ''}>Send</button>
+    </div>
+  </div>`;
+};
+RENDER.assistant_bind = () => {
+  const toSettings = $('#aiToSettings');
+  if (toSettings) { toSettings.onclick = () => goto('settings'); return; }
+
+  const log = $('#chatLog');
+  log.scrollTop = log.scrollHeight;
+  $('#aiClear').onclick = () => { S.chat = []; render(); };
+  $$('[data-hint]').forEach(c => c.onclick = () => sendChat(c.dataset.hint));
+  $$('[data-saverec]').forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    b.textContent = 'Læser opskriften …';
+    try {
+      const rec = await aiExtractRecipe(S.chat[+b.dataset.saverec].content, '', '');
+      recipeModal(null, Object.assign(rec, { url: '' }));
+    } catch (e) { toast(e.message, true); b.disabled = false; b.textContent = '💾 Gem som opskrift'; }
+  });
+  const ta = $('#chatText');
+  const send = () => { const v = ta.value.trim(); if (v) sendChat(v); };
+  $('#chatSend').onclick = send;
+  ta.onkeydown = e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  };
+  if (!S.chatBusy) ta.focus();
+};
+
+async function sendChat(text) {
+  if (S.chatBusy) return;
+  S.chat.push({ role: 'user', content: text });
+  S.chatBusy = true;
+  render();
+  try {
+    const r = await api('/api/ai', {
+      body: { system: assistantSystemPrompt(), messages: S.chat, maxTokens: 3000 }
+    });
+    S.chat.push({ role: 'assistant', content: r.text || '(tomt svar)' });
+  } catch (e) {
+    S.chat.push({ role: 'assistant', content: '⚠️ ' + e.message });
+  }
+  S.chatBusy = false;
+  if (S.view === 'assistant') render();
+}
+
+/* ---------------- Indstillinger ---------------- */
+RENDER.settings = () => {
+  const A = app();
+  return pageHead('Indstillinger', 'App, AI, kalender, backup og brugere') + `
+
+  <div class="panelbox">
+    <h2 style="margin-top:0">App</h2>
+    <div class="formgrid">
+      <label class="fld"><span>Appens navn</span><input id="setTitle" value="${esc(A.appTitle)}"></label>
+      <label class="fld"><span>Standard-portioner</span><input id="setServ" type="number" min="1" value="${A.defaultServings}"></label>
+      <label class="fld"><span>Timer-forvalg (minutter, komma-adskilt)</span>
+        <input id="setPresets" value="${esc((A.timerPresets || []).join(', '))}"></label>
+    </div>
+    <label class="fld"><span>Kategorier (én pr. linje)</span>
+      <textarea id="setCats" rows="5">${esc((A.categories || []).join('\n'))}</textarea></label>
+    <div class="rowflex" style="margin-top:10px">
+      <button class="btn small" id="logoPick">${S.settings.logo ? 'Skift logo…' : 'Upload logo…'}</button>
+      ${S.settings.logo ? '<button class="btn small danger" id="logoDel">Fjern logo</button>' : ''}
+      <input id="logoFile" type="file" accept="image/*" hidden>
+      <span style="flex:1"></span>
+      <button class="btn primary" id="setSave">Gem indstillinger</button>
+    </div>
+  </div>
+
+  <div class="panelbox">
+    <h2 style="margin-top:0">✨ AI-assistent (Claude API)</h2>
+    <p class="small muted">Nøglen gemmes kun på serveren og sendes aldrig til browseren.
+      Opret en API-nøgle på <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>.
+      Status: ${S.settings.aiKeySet ? '<span class="good">nøgle er sat ✓</span>' : '<span class="warn">ingen nøgle</span>'}</p>
+    <div class="formgrid" style="grid-template-columns:2fr 1fr auto">
+      <label class="fld"><span>API-nøgle ${S.settings.aiKeySet ? '(udfyld kun for at skifte)' : ''}</span>
+        <input id="aiKey" type="password" placeholder="sk-ant-…" autocomplete="off"></label>
+      <label class="fld"><span>Model (tom = standard)</span>
+        <input id="aiModel" placeholder="claude-sonnet-5" value="${esc(S.settings.aiModel || '')}"></label>
+      <label class="fld"><span>&nbsp;</span><button class="btn primary" id="aiSave">Gem AI</button></label>
+    </div>
+    ${S.settings.aiKeySet ? '<button class="btn small danger" id="aiClearKey">Fjern nøglen</button>' : ''}
+  </div>
+
+  <div class="panelbox">
+    <h2 style="margin-top:0">📅 Madplan i din kalender</h2>
+    <p class="small muted">Abonnér på madplanen i Apple/Google Kalender med dette link:</p>
+    <div class="rowflex">
+      <input id="icalUrl" readonly value="${esc(location.origin + '/api/madplan.ics?token=' + (S.settings.icalToken || ''))}" style="flex:1;min-width:260px">
+      <button class="btn small" id="icalCopy">Kopiér</button>
+    </div>
+  </div>
+
+  <div class="panelbox">
+    <h2 style="margin-top:0">Backup</h2>
+    <div class="rowflex">
+      <button class="btn" id="bakJson">⬇️ Download backup (JSON)</button>
+      ${S.me.isAdmin ? '<button class="btn" id="bakDb">⬇️ Download database (.db)</button>' : ''}
+      ${S.me.isAdmin ? '<button class="btn" id="bakRestore">⬆️ Gendan fra JSON…</button><input id="bakFile" type="file" accept=".json" hidden>' : ''}
+    </div>
+  </div>
+
+  <div class="panelbox">
+    <h2 style="margin-top:0">Min konto</h2>
+    <p class="small muted">Logget ind som <b>${esc(S.me.username)}</b>${S.me.isAdmin ? ' (administrator)' : ''}</p>
+    <h3>Passkeys</h3>
+    ${(S.me.passkeys || []).length ? `<table class="data" style="max-width:480px"><tbody>
+      ${S.me.passkeys.map(pk => `<tr><td>🔑 ${esc(pk.label)}</td><td class="small muted">${fmtDate(pk.created)}</td>
+        <td class="right"><button class="iconbtn" data-pkdel="${esc(pk.id)}">✕</button></td></tr>`).join('')}
+    </tbody></table>` : '<p class="small muted">Ingen passkeys endnu.</p>'}
+    <button class="btn small" id="pkAdd">➕ Tilføj passkey til denne enhed</button>
+    <h3>Skift kodeord</h3>
+    <div class="formgrid" style="max-width:560px">
+      <label class="fld"><span>Nuværende kodeord</span><input id="pwCur" type="password" autocomplete="current-password"></label>
+      <label class="fld"><span>Nyt kodeord</span><input id="pwNew" type="password" autocomplete="new-password"></label>
+      <label class="fld"><span>&nbsp;</span><button class="btn" id="pwSave">Skift kodeord</button></label>
+    </div>
+  </div>
+
+  ${S.me.isAdmin ? `<div class="panelbox">
+    <h2 style="margin-top:0">Brugere (admin)</h2>
+    <div id="adminUsers" class="muted small">Henter …</div>
+  </div>` : ''}`;
+};
+
+RENDER.settings_bind = () => {
+  let logoData = undefined; // undefined = uaendret, '' = fjern
+  $('#logoPick').onclick = () => $('#logoFile').click();
+  $('#logoFile').onchange = async e => {
+    const f = e.target.files[0];
+    if (!f) return;
+    logoData = await blobToScaledDataUrl(f, 400);
+    $('#logoPick').textContent = 'Logo valgt ✓';
+  };
+  const ld = $('#logoDel');
+  if (ld) ld.onclick = () => { logoData = ''; ld.disabled = true; };
+
+  $('#setSave').onclick = async () => {
+    const patch = Object.assign({}, S.settings.app || {}, {
+      appTitle: $('#setTitle').value.trim() || 'Kokkeri',
+      defaultServings: parseInt($('#setServ').value, 10) || 4,
+      timerPresets: $('#setPresets').value.split(',').map(s => parseInt(s, 10)).filter(n => n > 0),
+      categories: $('#setCats').value.split('\n').map(s => s.trim()).filter(Boolean)
+    });
+    const settings = { app: patch };
+    if (logoData !== undefined) settings.logo = logoData;
+    await saveSettings(settings);
+    render();
+  };
+
+  $('#aiSave').onclick = async () => {
+    const settings = {};
+    const key = $('#aiKey').value.trim();
+    if (key) settings.ai_key = key;
+    settings.ai_model = $('#aiModel').value.trim();
+    if (!Object.keys(settings).length) return;
+    await saveSettings(settings);
+    render();
+  };
+  const clearKey = $('#aiClearKey');
+  if (clearKey) clearKey.onclick = async () => {
+    if (!await confirmBox('Fjern AI-nøglen fra serveren?', 'Fjern')) return;
+    await saveSettings({ ai_key: '' });
+    render();
+  };
+
+  $('#icalCopy').onclick = () => {
+    $('#icalUrl').select();
+    navigator.clipboard.writeText($('#icalUrl').value).then(() => toast('Link kopieret'));
+  };
+
+  $('#bakJson').onclick = async () => {
+    const b = await api('/api/backup');
+    downloadFile('kokkeri-backup-' + isoDate() + '.json', JSON.stringify(b, null, 1), 'application/json');
+  };
+  const bdb = $('#bakDb');
+  if (bdb) bdb.onclick = () => { location.href = '/api/backup.db'; };
+  const brs = $('#bakRestore');
+  if (brs) {
+    brs.onclick = () => $('#bakFile').click();
+    $('#bakFile').onchange = async e => {
+      const f = e.target.files[0];
+      if (!f) return;
+      let data;
+      try { data = JSON.parse(await f.text()); } catch (err) { return toast('Filen er ikke gyldig JSON', true); }
+      if (!Array.isArray(data.items)) return toast('Ligner ikke en Kokkeri-backup', true);
+      const replace = await confirmBox(`Gendan ${data.items.length} elementer fra backup? Vælg "Erstat alt" for at overskrive alt eksisterende.`, 'Erstat alt');
+      const r = await api('/api/restore', { body: { items: data.items, settings: data.settings || null, replace } });
+      toast('Gendannede ' + r.restored + ' elementer');
+      const items = await api('/api/items');
+      S.items = items.items || [];
+      reindex();
+      render();
+    };
+  }
+
+  $('#pkAdd').onclick = passkeyRegister;
+  $$('[data-pkdel]').forEach(b => b.onclick = async () => {
+    if (!await confirmBox('Fjern denne passkey?', 'Fjern')) return;
+    const r = await api('/api/webauthn/credentials/' + encodeURIComponent(b.dataset.pkdel), { method: 'DELETE', body: {} });
+    S.me = r.me;
+    render();
+  });
+
+  $('#pwSave').onclick = async () => {
+    try {
+      await api('/api/password', { body: { current: $('#pwCur').value, password: $('#pwNew').value } });
+      toast('Kodeordet er skiftet');
+      $('#pwCur').value = $('#pwNew').value = '';
+    } catch (e) { toast(e.message, true); }
+  };
+
+  if (S.me.isAdmin) loadAdminUsers();
+};
+
+async function loadAdminUsers() {
+  const host = $('#adminUsers');
+  if (!host) return;
+  try {
+    const r = await api('/api/admin/users');
+    host.className = '';
+    host.innerHTML = `
+      <label class="chk" style="margin-bottom:10px"><input type="checkbox" id="admAllowReg" ${r.allowRegistration ? 'checked' : ''}>
+        Tillad registrering af nye brugere</label>
+      <div class="tablewrap"><table class="data"><thead>
+        <tr><th>Bruger</th><th>Oprettet</th><th>Passkeys</th><th>Rolle</th><th></th></tr></thead><tbody>
+        ${r.users.map(u => `<tr>
+          <td>${esc(u.username)}${u.id === S.me.id ? ' <span class="muted small">(dig)</span>' : ''}</td>
+          <td class="small muted">${fmtDate(u.created)}</td>
+          <td>${u.passkeys}</td>
+          <td>${u.isAdmin ? '<span class="chip on">admin</span>' : '<span class="chip">bruger</span>'}</td>
+          <td class="right nowrap">
+            <button class="btn small" data-admpw="${u.id}">Nyt kodeord</button>
+            <button class="btn small" data-admrole="${u.id}" data-isadmin="${u.isAdmin ? 1 : 0}">${u.isAdmin ? 'Fjern admin' : 'Gør til admin'}</button>
+            ${u.id !== S.me.id ? `<button class="btn small danger" data-admdel="${u.id}" data-name="${esc(u.username)}">Slet</button>` : ''}
+          </td></tr>`).join('')}
+      </tbody></table></div>`;
+    $('#admAllowReg').onchange = async e => {
+      await api('/api/admin/settings', { body: { allowRegistration: e.target.checked } });
+      toast('Gemt');
+    };
+    $$('[data-admpw]').forEach(b => b.onclick = async () => {
+      const pw = prompt('Nyt kodeord (mindst 8 tegn):');
+      if (!pw) return;
+      try { await api(`/api/admin/users/${b.dataset.admpw}/password`, { body: { password: pw } }); toast('Kodeord sat'); }
+      catch (e) { toast(e.message, true); }
+    });
+    $$('[data-admrole]').forEach(b => b.onclick = async () => {
+      try {
+        await api(`/api/admin/users/${b.dataset.admrole}/role`, { body: { isAdmin: b.dataset.isadmin !== '1' } });
+        loadAdminUsers();
+      } catch (e) { toast(e.message, true); }
+    });
+    $$('[data-admdel]').forEach(b => b.onclick = async () => {
+      if (!await confirmBox(`Slet brugeren "${b.dataset.name}"?`)) return;
+      try { await api('/api/admin/users/' + b.dataset.admdel, { method: 'DELETE', body: {} }); loadAdminUsers(); }
+      catch (e) { toast(e.message, true); }
+    });
+  } catch (e) {
+    host.textContent = 'Kunne ikke hente brugere: ' + e.message;
+  }
+}
+
+/* start appen */
+boot();

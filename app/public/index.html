@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="da">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kokkeri</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+<script data-theme-init>
+/* anvend gemt tema foer foerste paint */
+(function(){try{var t=localStorage.getItem('kk_theme');
+if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;
+else if(matchMedia('(prefers-color-scheme: light)').matches)document.documentElement.dataset.theme='light';
+else document.documentElement.dataset.theme='dark';}catch(e){}})();
+</script>
+</head>
+<body class="noauth">
+
+<button id="navToggle" title="Vis/skjul menu" hidden>☰</button>
+
+<nav hidden>
+  <div class="brand"><span id="brandLogo">🍳</span><span id="brandName">Kokkeri</span></div>
+  <div class="navitems" id="navItems"></div>
+  <div id="navVersion"></div>
+  <div class="navfoot">
+    <span class="who" id="whoAmI"></span>
+    <button class="iconbtn" id="wakeQuick" title="Hold skærmen tændt">📱</button>
+    <button class="iconbtn" id="themeQuick" title="Skift tema">🌙</button>
+    <button class="iconbtn" id="logoutBtn" title="Log ud">⏻</button>
+  </div>
+</nav>
+
+<div id="loginView" hidden>
+  <div class="biglogo" id="loginLogo">🍳</div>
+  <div class="logincard">
+    <h1 id="loginTitle">Kokkeri</h1>
+    <p class="sub center" id="loginSub">Log ind for at fortsætte</p>
+    <div id="loginForm">
+      <label class="fld"><span>Brugernavn</span><input id="loginUser" autocomplete="username"></label>
+      <label class="fld"><span>Kodeord</span><input id="loginPass" type="password" autocomplete="current-password"></label>
+      <button class="btn primary" id="loginBtn">Log ind</button>
+      <button class="btn" id="passkeyBtn">🔑 Log ind med passkey</button>
+      <p class="small center"><a href="#" id="showRegister">Opret ny bruger</a></p>
+    </div>
+    <div id="registerForm" hidden>
+      <label class="fld"><span>Brugernavn</span><input id="regUser" autocomplete="username"></label>
+      <label class="fld"><span>Kodeord (mindst 8 tegn)</span><input id="regPass" type="password" autocomplete="new-password"></label>
+      <label class="fld"><span>Gentag kodeord</span><input id="regPass2" type="password" autocomplete="new-password"></label>
+      <button class="btn primary" id="registerBtn">Opret bruger</button>
+      <p class="small center"><a href="#" id="showLogin">Tilbage til login</a></p>
+    </div>
+  </div>
+</div>
+
+<main id="app" hidden></main>
+
+<div id="cookMode" hidden></div>
+<div id="modalHost"></div>
+<div id="toast"></div>
+<div id="printHost" class="printsheet"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

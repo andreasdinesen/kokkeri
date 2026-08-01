@@ -1,0 +1,493 @@
+/* ---------------- Opskrifter ---------------- */
+
+function starsHtml(rating) {
+  const r = rating || 0;
+  return `<span class="stars">${[1, 2, 3, 4, 5].map(i => `<span class="${i <= r ? '' : 'off'}">★</span>`).join('')}</span>`;
+}
+
+function recipeCardHtml(r) {
+  const time = recipeTotalMin(r);
+  return `<div class="reccard" data-rec="${r.id}">
+    <div class="recimg">${r.image ? `<img src="${r.image}" alt="" loading="lazy">` : '🍽️'}</div>
+    <div class="recbody">
+      <div class="rectitle">${r.favorite ? '⭐ ' : ''}${esc(r.title || '(uden titel)')}</div>
+      <div class="recmeta">
+        ${r.category ? `<span>${esc(r.category)}</span>` : ''}
+        ${time ? `<span>⏱ ${fmtMin(time)}</span>` : ''}
+        ${r.rating ? starsHtml(r.rating) : ''}
+      </div>
+    </div>
+  </div>`;
+}
+function bindRecipeCards() {
+  $$('.reccard[data-rec]').forEach(c => c.onclick = () => goto('recipeDetail', c.dataset.rec));
+}
+
+RENDER.recipes = () => {
+  const f = S.recFilter;
+  const cats = app().categories || [];
+  let list = K('recipe').slice();
+  if (f.fav) list = list.filter(r => r.favorite);
+  if (f.category) list = list.filter(r => r.category === f.category);
+  if (f.q) {
+    const q = normName(f.q);
+    list = list.filter(r =>
+      normName(r.title).includes(q) ||
+      normName((r.tags || []).join(' ')).includes(q) ||
+      normName((r.ingredients || []).join(' ')).includes(q));
+  }
+  list.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+
+  return pageHead('Opskrifter', `${K('recipe').length} opskrifter i biblioteket`,
+      `<button class="btn" id="recNew">➕ Ny opskrift</button>
+       <button class="btn primary" id="recImport">🌐 Importér fra URL</button>`) + `
+  <div class="rowflex">
+    <input id="recSearch" placeholder="🔍 Søg i titel, ingredienser og tags…" value="${esc(f.q)}" style="min-width:240px;flex:1;max-width:380px">
+    <span class="chip chipbtn${f.fav ? ' sel' : ''}" id="recFav">⭐ Favoritter</span>
+    ${cats.map(c => `<span class="chip chipbtn${f.category === c ? ' sel' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}
+  </div>
+  ${list.length ? `<div class="recgrid">${list.map(recipeCardHtml).join('')}</div>`
+    : '<p class="muted" style="margin-top:26px">Ingen opskrifter matcher.</p>'}`;
+};
+RENDER.recipes_bind = () => {
+  $('#recNew').onclick = () => recipeModal(null);
+  $('#recImport').onclick = importUrlModal;
+  const search = $('#recSearch');
+  search.oninput = () => {
+    S.recFilter.q = search.value;
+    clearTimeout(search._h);
+    search._h = setTimeout(() => { const v = search.value; render(); const el = $('#recSearch'); el.focus(); el.setSelectionRange(v.length, v.length); }, 250);
+  };
+  $('#recFav').onclick = () => { S.recFilter.fav = !S.recFilter.fav; render(); };
+  $$('[data-cat]').forEach(c => c.onclick = () => {
+    S.recFilter.category = S.recFilter.category === c.dataset.cat ? '' : c.dataset.cat;
+    render();
+  });
+  bindRecipeCards();
+};
+
+/* ---------------- detalje ---------------- */
+/* goer "20 min"/"1 time" i fremgangsmaaden klikbare -> starter en timer */
+function linkifyTimers(escapedText) {
+  return escapedText.replace(/(\d+)(?:\s*[-–]\s*(\d+))?\s*(minutter|minutters|minut|min\.?|timers|timer|time)\b/gi, (m, a, b, unit) => {
+    const isHour = /^tim/i.test(unit);
+    const mins = (parseInt(b || a, 10)) * (isHour ? 60 : 1);
+    if (!mins || mins > 24 * 60) return m;
+    return `<span class="inline-timer" data-min="${mins}" title="Klik for at starte en timer på ${mins} min">⏱ ${m}</span>`;
+  });
+}
+function bindInlineTimers(label) {
+  $$('.inline-timer').forEach(el => el.onclick = e => {
+    e.stopPropagation();
+    startTimer(+el.dataset.min * 60000, label);
+    toast(`Timer på ${fmtMin(+el.dataset.min)} startet`);
+    renderNav();
+  });
+}
+
+function ingredientsHtml(r, factor) {
+  return (r.ingredients || []).map(line => {
+    if (/^##\s*/.test(line)) return `<li style="border:0;font-weight:700;color:var(--amber);padding-top:12px">${esc(line.replace(/^##\s*/, ''))}</li>`;
+    return `<li>${esc(scaleIngredient(line, factor))}</li>`;
+  }).join('');
+}
+function instructionsHtml(r) {
+  let out = '', open = false;
+  for (const step of (r.instructions || [])) {
+    if (/^##\s*/.test(step)) {
+      out += `<li class="stepsec">${esc(step.replace(/^##\s*/, ''))}</li>`;
+    } else {
+      out += `<li>${linkifyTimers(esc(step))}</li>`;
+      open = true;
+    }
+  }
+  return out || (open ? '' : '<li class="muted">Ingen fremgangsmåde</li>');
+}
+
+RENDER.recipeDetail = () => {
+  const r = recipeById(S.viewArg);
+  if (!r) { S.view = 'recipes'; return RENDER.recipes(); }
+  const base = r.servings || app().defaultServings;
+  if (S.detailFor !== r.id) { S.detailFor = r.id; S.detailServings = base; }
+  if (!S.detailServings) S.detailServings = base;
+  const factor = S.detailServings / base;
+
+  return `<div class="toprow"><div class="grow">
+      <p class="small" style="margin:0 0 6px"><a href="#" id="backToList">← Opskrifter</a></p>
+      <h1>${esc(r.title)}</h1>
+      <p class="sub">${r.category ? esc(r.category) + ' · ' : ''}${(r.tags || []).map(t => `<span class="chip">${esc(t)}</span>`).join(' ')}</p>
+    </div>
+    <div class="rowflex">
+      <button class="iconbtn" id="favBtn" title="Favorit" style="font-size:22px">${r.favorite ? '⭐' : '☆'}</button>
+      <button class="btn" id="cookBtn">👨‍🍳 Kogetilstand</button>
+      <button class="btn" id="shopBtn">🛒 Til indkøbsliste</button>
+      <button class="btn" id="planBtn">📅 Til madplan</button>
+      <button class="btn" id="printBtn">🖨️ Print</button>
+      <button class="btn" id="editBtn">✏️ Redigér</button>
+    </div></div>
+
+  <div class="rowflex" style="margin:6px 0 14px">
+    ${r.prepMin ? `<span class="timechip">🔪 Forberedelse: ${fmtMin(r.prepMin)}</span>` : ''}
+    ${r.cookMin ? `<span class="timechip">🍳 Tilberedning: ${fmtMin(r.cookMin)}</span>` : ''}
+    ${recipeTotalMin(r) ? `<span class="timechip">⏱ I alt: ${fmtMin(recipeTotalMin(r))}</span>` : ''}
+    <span class="stars pick" id="ratePick">${[1, 2, 3, 4, 5].map(i => `<span data-star="${i}" class="${i <= (r.rating || 0) ? '' : 'off'}">★</span>`).join('')}</span>
+  </div>
+
+  <div class="recdetail">
+    <div>
+      ${r.image ? `<div class="recphoto"><img src="${r.image}" alt=""></div>` : ''}
+      ${r.description ? `<p class="muted" style="margin-top:12px">${esc(r.description)}</p>` : ''}
+      <h2>Ingredienser</h2>
+      <div class="rowflex" style="margin-bottom:4px">
+        <span class="servstep">
+          <button class="btn" id="servMinus">−</button>
+          <strong>${S.detailServings} ${/portion|person/i.test(r.yieldText || '') || !r.yieldText ? 'portioner' : esc(r.yieldText.replace(/\d+\s*/, ''))}</strong>
+          <button class="btn" id="servPlus">+</button>
+        </span>
+        ${factor !== 1 ? '<span class="chip on">skaleret</span>' : ''}
+      </div>
+      <ul class="ings">${ingredientsHtml(r, factor)}</ul>
+      ${r.url ? `<p class="small">Kilde: <a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(new URL(r.url).hostname)} ↗</a></p>` : ''}
+    </div>
+    <div>
+      <h2 style="margin-top:0">Fremgangsmåde</h2>
+      <ol class="steps">${instructionsHtml(r)}</ol>
+      ${r.notes ? `<h2>Noter</h2><p style="white-space:pre-wrap">${esc(r.notes)}</p>` : ''}
+      <p class="small muted" style="margin-top:22px">Tip: klik på et minuttal i fremgangsmåden for at starte en timer.</p>
+    </div>
+  </div>`;
+};
+RENDER.recipeDetail_bind = () => {
+  const r = recipeById(S.viewArg);
+  if (!r) return;
+  $('#backToList').onclick = e => { e.preventDefault(); S.detailServings = null; goto('recipes'); };
+  $('#editBtn').onclick = () => recipeModal(r);
+  $('#cookBtn').onclick = () => openCookMode(r);
+  $('#printBtn').onclick = () => printRecipe(r);
+  $('#favBtn').onclick = async () => { r.favorite = !r.favorite; await saveItem(r, true); render(); };
+  $('#shopBtn').onclick = () => addRecipeToShopping(r, S.detailServings / (r.servings || app().defaultServings));
+  $('#planBtn').onclick = () => planEntryModal(null, { recipeId: r.id });
+  $('#servMinus').onclick = () => { S.detailServings = Math.max(1, S.detailServings - 1); render(); };
+  $('#servPlus').onclick = () => { S.detailServings = S.detailServings + 1; render(); };
+  $$('#ratePick [data-star]').forEach(s => s.onclick = async () => {
+    const v = +s.dataset.star;
+    r.rating = r.rating === v ? 0 : v;
+    await saveItem(r, true);
+    render();
+  });
+  bindInlineTimers(r.title);
+};
+
+/* ---------------- print ---------------- */
+function printRecipe(r) {
+  const factor = (S.detailServings || r.servings || 1) / (r.servings || S.detailServings || 1);
+  printSheet(`${printLogoHtml()}
+    <h1>${esc(r.title)}</h1>
+    <p style="text-align:center">${r.category ? esc(r.category) + ' · ' : ''}${S.detailServings || r.servings || ''} portioner
+      ${recipeTotalMin(r) ? ' · ' + fmtMin(recipeTotalMin(r)) : ''}</p>
+    <h2>Ingredienser</h2>
+    <ul>${(r.ingredients || []).map(l => `<li>${esc(scaleIngredient(l, factor))}</li>`).join('')}</ul>
+    <h2>Fremgangsmåde</h2>
+    <ol>${(r.instructions || []).map(s => /^##/.test(s) ? `</ol><h2>${esc(s.replace(/^##\s*/, ''))}</h2><ol>` : `<li>${esc(s)}</li>`).join('')}</ol>
+    ${r.url ? `<p class="pdate">Kilde: ${esc(r.url)}</p>` : ''}`);
+}
+
+/* ---------------- redigerings-modal ---------------- */
+function recipeModal(r, prefill) {
+  const isNew = !r;
+  const d = r || Object.assign({
+    id: uid(), kind: 'recipe', title: '', description: '', image: '', url: '',
+    ingredients: [], instructions: [], prepMin: null, cookMin: null, totalMin: null,
+    servings: app().defaultServings, yieldText: '', category: '', tags: [], rating: 0,
+    favorite: false, notes: '', createdAt: new Date().toISOString()
+  }, prefill || {});
+  const cats = app().categories || [];
+
+  openModal(`<h2>${isNew ? 'Ny opskrift' : 'Redigér opskrift'}</h2>
+    <div class="formgrid" style="grid-template-columns:2fr 1fr">
+      <label class="fld"><span>Titel</span><input id="rmTitle" value="${esc(d.title)}"></label>
+      <label class="fld"><span>Kategori</span><select id="rmCat">
+        <option value="">–</option>${cats.map(c => `<option${c === d.category ? ' selected' : ''}>${esc(c)}</option>`).join('')}
+      </select></label>
+    </div>
+    <label class="fld"><span>Kort beskrivelse</span><textarea id="rmDesc" rows="2">${esc(d.description)}</textarea></label>
+    <div class="formgrid">
+      <label class="fld"><span>Portioner</span><input id="rmServ" type="number" min="1" value="${d.servings || ''}"></label>
+      <label class="fld"><span>Forberedelse (min)</span><input id="rmPrep" type="number" min="0" value="${d.prepMin || ''}"></label>
+      <label class="fld"><span>Tilberedning (min)</span><input id="rmCook" type="number" min="0" value="${d.cookMin || ''}"></label>
+      <label class="fld"><span>Tags (komma-adskilt)</span><input id="rmTags" value="${esc((d.tags || []).join(', '))}"></label>
+    </div>
+    <label class="fld"><span>Ingredienser – én pr. linje ("## Overskrift" laver en gruppe)</span>
+      <textarea id="rmIngs" rows="8">${esc((d.ingredients || []).join('\n'))}</textarea></label>
+    <label class="fld"><span>Fremgangsmåde – ét trin pr. linje ("## Overskrift" laver en sektion)</span>
+      <textarea id="rmSteps" rows="8">${esc((d.instructions || []).join('\n'))}</textarea></label>
+    <label class="fld"><span>Noter (kun til dig selv)</span><textarea id="rmNotes" rows="2">${esc(d.notes || '')}</textarea></label>
+    <div class="formgrid" style="grid-template-columns:2fr 1fr">
+      <label class="fld"><span>Kilde-URL</span><input id="rmUrl" value="${esc(d.url || '')}"></label>
+      <label class="fld"><span>Billede</span>
+        <span class="rowflex">
+          <button class="btn small" id="rmImgPick">${d.image ? 'Skift…' : 'Vælg…'}</button>
+          ${d.image ? '<button class="btn small danger" id="rmImgDel">Fjern</button>' : ''}
+          <input id="rmImgFile" type="file" accept="image/*" hidden>
+        </span></label>
+    </div>
+    <div class="actions">
+      ${isNew ? '' : '<button class="btn danger" id="rmDelete" style="margin-right:auto">Slet opskrift</button>'}
+      <button class="btn" id="rmCancel">Annullér</button>
+      <button class="btn primary" id="rmSave">Gem</button>
+    </div>`, m => {
+    let image = d.image || '';
+    m.querySelector('#rmImgPick').onclick = () => m.querySelector('#rmImgFile').click();
+    m.querySelector('#rmImgFile').onchange = async e => {
+      const f = e.target.files[0];
+      if (!f) return;
+      image = await blobToScaledDataUrl(f);
+      m.querySelector('#rmImgPick').textContent = 'Valgt ✓';
+    };
+    const del = m.querySelector('#rmImgDel');
+    if (del) del.onclick = () => { image = ''; del.disabled = true; m.querySelector('#rmImgPick').textContent = 'Vælg…'; };
+    m.querySelector('#rmCancel').onclick = closeModal;
+    if (!isNew) m.querySelector('#rmDelete').onclick = async () => {
+      if (!await confirmBox(`Slet opskriften "${d.title}"?`)) return;
+      closeModal();
+      await deleteItem(d);
+      S.detailServings = null;
+      goto('recipes');
+    };
+    m.querySelector('#rmSave').onclick = async () => {
+      d.title = m.querySelector('#rmTitle').value.trim();
+      if (!d.title) return toast('Opskriften skal have en titel', true);
+      d.category = m.querySelector('#rmCat').value;
+      d.description = m.querySelector('#rmDesc').value.trim();
+      d.servings = parseInt(m.querySelector('#rmServ').value, 10) || null;
+      d.prepMin = parseInt(m.querySelector('#rmPrep').value, 10) || null;
+      d.cookMin = parseInt(m.querySelector('#rmCook').value, 10) || null;
+      d.tags = m.querySelector('#rmTags').value.split(',').map(t => t.trim()).filter(Boolean);
+      d.ingredients = m.querySelector('#rmIngs').value.split('\n').map(l => l.trim()).filter(Boolean);
+      d.instructions = m.querySelector('#rmSteps').value.split('\n').map(l => l.trim()).filter(Boolean);
+      d.notes = m.querySelector('#rmNotes').value.trim();
+      d.url = m.querySelector('#rmUrl').value.trim();
+      d.image = image;
+      closeModal();
+      await saveItem(d);
+      goto('recipeDetail', d.id);
+    };
+  }, true);
+}
+
+/* ---------------- billeder: skaler til dataURL saa alt gemmes lokalt ---------------- */
+function blobToScaledDataUrl(blob, maxDim) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const max = maxDim || 720;
+      const scale = Math.min(1, max / Math.max(img.width, img.height));
+      const cv = document.createElement('canvas');
+      cv.width = Math.round(img.width * scale);
+      cv.height = Math.round(img.height * scale);
+      cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+      let q = 0.82, url = cv.toDataURL('image/jpeg', q);
+      while (url.length > 160000 && q > 0.4) { q -= 0.12; url = cv.toDataURL('image/jpeg', q); }
+      URL.revokeObjectURL(img.src);
+      resolve(url);
+    };
+    img.onerror = () => { URL.revokeObjectURL(img.src); reject(new Error('Kunne ikke læse billedet')); };
+    img.src = URL.createObjectURL(blob);
+  });
+}
+async function fetchImageAsDataUrl(url) {
+  if (!url) return '';
+  try {
+    const r = await fetch('/api/fetch-image?url=' + encodeURIComponent(url));
+    if (!r.ok) return '';
+    return await blobToScaledDataUrl(await r.blob());
+  } catch (e) { return ''; }
+}
+
+/* ---------------- import fra URL ---------------- */
+function importUrlModal() {
+  openModal(`<h2>🌐 Importér opskrift fra URL</h2>
+    <p class="muted small">Indsæt et link til en opskrift – fx fra Valdemarsro, Arla, Madens Verden
+    eller de fleste andre opskriftsider. Kokkeri trækker selv titel, ingredienser, fremgangsmåde,
+    tider og billede ud og gemmer linket, så du altid kan gå tilbage til originalen.</p>
+    <label class="fld"><span>URL</span><input id="impUrl" placeholder="https://…" autocomplete="off"></label>
+    <p class="small muted" id="impStatus" style="min-height:18px"></p>
+    <div class="actions">
+      <button class="btn" id="impCancel">Annullér</button>
+      <button class="btn primary" id="impGo">Hent opskrift</button>
+    </div>`, m => {
+    const status = m.querySelector('#impStatus');
+    const input = m.querySelector('#impUrl');
+    input.focus();
+    m.querySelector('#impCancel').onclick = closeModal;
+    const go = async () => {
+      let url = input.value.trim();
+      if (!url) return;
+      if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+      const btn = m.querySelector('#impGo');
+      btn.disabled = true;
+      status.textContent = 'Henter siden …';
+      try {
+        const res = await api('/api/fetch-recipe?url=' + encodeURIComponent(url));
+        if (res.recipe) {
+          status.textContent = 'Fandt opskriften – henter billede …';
+          const image = await fetchImageAsDataUrl(res.recipe.image);
+          closeModal();
+          openImportedRecipe(res.recipe, image);
+        } else if (res.pageText) {
+          if (!S.settings.aiKeySet) {
+            status.innerHTML = 'Siden har ingen maskinlæsbar opskrift (JSON-LD). Med en AI-nøgle under <b>Indstillinger</b> kan Kokkeri i stedet læse siden med AI.';
+            btn.disabled = false;
+            return;
+          }
+          status.textContent = 'Ingen maskinlæsbar opskrift – prøver med AI (kan tage ~20 sek.) …';
+          const rec = await aiExtractRecipe(res.pageText, url, res.pageTitle);
+          const image = await fetchImageAsDataUrl(rec.image || res.pageImage);
+          closeModal();
+          openImportedRecipe(Object.assign(rec, { url }), image);
+        } else {
+          status.textContent = 'Kunne ikke finde en opskrift på siden.';
+          btn.disabled = false;
+        }
+      } catch (e) {
+        status.textContent = 'Fejl: ' + e.message;
+        btn.disabled = false;
+      }
+    };
+    m.querySelector('#impGo').onclick = go;
+    input.onkeydown = e => { if (e.key === 'Enter') go(); };
+  });
+}
+
+function openImportedRecipe(rec, image) {
+  /* gaet en kategori ud fra sidens egen kategori-tekst */
+  const cats = app().categories || [];
+  const catGuess = cats.find(c => normName(rec.category || '').includes(normName(c))) || '';
+  recipeModal(null, {
+    title: rec.title || '',
+    description: rec.description || '',
+    image: image || '',
+    url: rec.url || '',
+    ingredients: rec.ingredients || [],
+    instructions: rec.instructions || [],
+    prepMin: rec.prepMin || null,
+    cookMin: rec.cookMin || null,
+    totalMin: rec.totalMin || null,
+    servings: rec.servings || app().defaultServings,
+    yieldText: rec.yieldText || '',
+    category: catGuess,
+    tags: (rec.keywords ? String(rec.keywords).split(',').map(t => t.trim()).filter(Boolean).slice(0, 6) : [])
+  });
+  toast('Opskriften er hentet – tjek den igennem og tryk Gem');
+}
+
+/* AI-fallback: udtraek opskrift af raa sidetekst (eller chat-svar) */
+async function aiExtractRecipe(text, sourceUrl, pageTitle) {
+  const sys = `Du udtrækker madopskrifter af rå tekst. Svar KUN med ét JSON-objekt, ingen forklaring, ingen markdown-hegn.
+Format: {"title": str, "description": str, "servings": tal|null, "prepMin": tal|null, "cookMin": tal|null,
+"ingredients": [str, ...], "instructions": [str, ...], "category": str}
+Ingredienser: én pr. linje med mængde først (fx "500 g hakket oksekød"). Brug "## Overskrift" som linje for grupper/sektioner.
+Fremgangsmåde: ét trin pr. streng, uden numre. Behold dansk sprog (oversæt IKKE en udenlandsk opskrift).
+Findes der ingen opskrift i teksten, svar {"error": "ingen opskrift fundet"}.`;
+  const r = await api('/api/ai', {
+    body: {
+      system: sys,
+      messages: [{ role: 'user', content: (pageTitle ? 'Sidens titel: ' + pageTitle + '\n\n' : '') + text }],
+      maxTokens: 4096
+    }
+  });
+  let j;
+  try {
+    j = JSON.parse(String(r.text).replace(/^[\s\S]*?\{/, '{').replace(/\}[^}]*$/, '}'));
+  } catch (e) { throw new Error('AI-svaret kunne ikke læses som en opskrift'); }
+  if (j.error) throw new Error(j.error);
+  if (!j.title || !Array.isArray(j.ingredients)) throw new Error('AI fandt ingen opskrift på siden');
+  return {
+    title: j.title, description: j.description || '', servings: j.servings || null,
+    prepMin: j.prepMin || null, cookMin: j.cookMin || null,
+    ingredients: j.ingredients.map(String), instructions: (j.instructions || []).map(String),
+    category: j.category || '', url: sourceUrl || ''
+  };
+}
+
+/* ---------------- indkoebsliste fra opskrift ---------------- */
+async function addRecipeToShopping(r, factor) {
+  const lines = (r.ingredients || []).filter(l => !/^##/.test(l));
+  if (!lines.length) return toast('Opskriften har ingen ingredienser', true);
+  const items = lines.map(l => ({
+    id: uid(), kind: 'shopItem', text: scaleIngredient(l, factor || 1),
+    group: r.title, done: false, createdAt: new Date().toISOString()
+  }));
+  await saveBulk(items);
+  toast(`${items.length} varer føjet til indkøbslisten`);
+  renderNav();
+}
+
+/* ---------------- kogetilstand ---------------- */
+const CM = { recipe: null, step: 0, wakeWasOn: false };
+
+function openCookMode(r) {
+  CM.recipe = r;
+  CM.step = 0;
+  CM.wakeWasOn = S.wakeOn;
+  if (!S.wakeOn) setWakeLock(true); // skaermen skal ikke slukke midt i madlavningen
+  drawCookMode();
+  $('#cookMode').hidden = false;
+}
+function closeCookMode() {
+  $('#cookMode').hidden = true;
+  $('#cookMode').innerHTML = '';
+  if (!CM.wakeWasOn && S.wakeOn) setWakeLock(false);
+  CM.recipe = null;
+}
+function drawCookMode() {
+  const r = CM.recipe;
+  const steps = (r.instructions || []).filter(s => !/^##/.test(s));
+  const factor = (S.detailServings || r.servings || 1) / (r.servings || S.detailServings || 1);
+  const step = steps[CM.step] || '';
+  $('#cookMode').innerHTML = `
+    <div class="cmhead">
+      <h2>👨‍🍳 ${esc(r.title)}</h2>
+      ${S.wakeOn ? '<span class="chip on">📱 skærmen holdes tændt</span>' : ''}
+      <button class="btn" id="cmTimer">⏱️ Timer</button>
+      <button class="btn" id="cmClose">✕ Luk</button>
+    </div>
+    <div class="cmbody">
+      <div class="cmings">
+        <h3 style="margin-top:0">Ingredienser</h3>
+        <ul>${ingredientsHtml(r, factor)}</ul>
+      </div>
+      <div>
+        <div class="cmstepnum">Trin ${CM.step + 1} af ${steps.length}</div>
+        <div class="cmstep">${linkifyTimers(esc(step))}</div>
+      </div>
+    </div>
+    <div class="cmfoot">
+      <button class="btn" id="cmPrev" ${CM.step === 0 ? 'disabled' : ''}>← Forrige</button>
+      <div class="cmprogress">${steps.map((_, i) => i === CM.step ? '●' : '○').join(' ')}</div>
+      ${CM.step < steps.length - 1
+        ? '<button class="btn primary" id="cmNext">Næste →</button>'
+        : '<button class="btn primary" id="cmDone">✓ Færdig</button>'}
+    </div>`;
+  $('#cmClose').onclick = closeCookMode;
+  $('#cmTimer').onclick = () => newTimerModal(r.title);
+  $('#cmPrev').onclick = () => { if (CM.step > 0) { CM.step--; drawCookMode(); } };
+  const next = $('#cmNext');
+  if (next) next.onclick = () => { CM.step++; drawCookMode(); };
+  const done = $('#cmDone');
+  if (done) done.onclick = async () => {
+    CM.recipe.timesCooked = (CM.recipe.timesCooked || 0) + 1;
+    CM.recipe.lastCooked = isoDate();
+    await saveItem(CM.recipe, true);
+    closeCookMode();
+    toast('Velbekomme! 🍽️');
+    render();
+  };
+  bindInlineTimers(r.title);
+}
+document.addEventListener('keydown', e => {
+  if ($('#cookMode').hidden || $('#modalHost').innerHTML) return;
+  if (e.key === 'ArrowRight') { const b = $('#cmNext'); if (b) b.click(); }
+  else if (e.key === 'ArrowLeft') { const b = $('#cmPrev'); if (b && !b.disabled) b.click(); }
+  else if (e.key === 'Escape') closeCookMode();
+});
