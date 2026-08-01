@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 2;
+const APP_VERSION = 3;
 
 /* ---------------- state ---------------- */
 const S = {
@@ -292,6 +292,249 @@ function printLogoHtml() {
   return S.settings.logo ? `<div class="plogo"><img src="${S.settings.logo}"></div>` : '';
 }
 
+/* ---------------- mad-hjaelpere: enheder, afdelinger, sammenlaegning, Paprika ---------------- */
+
+/* ---- enhedsomregning (imperial -> metrisk) ---- */
+const IMPERIAL_UNITS = [
+  { re: /\bcups?\b/i,                 factor: 2.4,    unit: 'dl' },
+  { re: /\bfl\.?\s*oz\.?\b/i,         factor: 29.6,   unit: 'ml' },
+  { re: /\b(?:oz|ounces?)\b/i,        factor: 28.35,  unit: 'g' },
+  { re: /\b(?:lbs?|pounds?)\b/i,      factor: 453.6,  unit: 'g' },
+  { re: /\b(?:tsp|teaspoons?)\b/i,    factor: 1,      unit: 'tsk' },
+  { re: /\b(?:tbsp|tablespoons?)\b/i, factor: 1,      unit: 'spsk' },
+  { re: /\bquarts?\b/i,               factor: 9.5,    unit: 'dl' },
+  { re: /\bpints?\b/i,                factor: 4.7,    unit: 'dl' },
+  { re: /\binch(?:es)?\b|\b(\d)"/i,   factor: 2.54,   unit: 'cm' }
+];
+function hasImperial(recipe) {
+  const all = (recipe.ingredients || []).concat(recipe.instructions || []).join('\n');
+  return IMPERIAL_UNITS.some(u => u.re.test(all)) || /\d\s*°?\s*F\b/.test(all);
+}
+function convertLineToMetric(line) {
+  let s = String(line);
+  /* "1 1/2 cups mel" / "3/4 cup" / "1½ oz" / "2,5 lbs" foran en imperial enhed */
+  s = s.replace(/(\d+\s+\d+\s*\/\s*\d+|\d+\s*\/\s*\d+|\d+(?:[.,]\d+)?\s*[½¼¾⅓⅔⅛]?|[½¼¾⅓⅔⅛])\s*(cups?|fl\.?\s*oz\.?|oz|ounces?|lbs?|pounds?|tsp|teaspoons?|tbsp|tablespoons?|quarts?|pints?|inch(?:es)?)\b/gi,
+    (m, qty, unitWord) => {
+      const parsed = parseQty(qty.trim());
+      if (!parsed) return m;
+      const u = IMPERIAL_UNITS.find(x => x.re.test(unitWord));
+      if (!u) return m;
+      const val = parsed.val * u.factor;
+      const rounded = u.unit === 'g' || u.unit === 'ml' ? Math.round(val)
+        : Math.round(val * 10) / 10;
+      return fmtQty(rounded) + ' ' + u.unit;
+    });
+  /* fahrenheit -> celsius (rundes til naermeste 5) */
+  s = s.replace(/(\d{2,3})\s*°?\s*F\b/g, (m, f) => Math.round((+f - 32) * 5 / 9 / 5) * 5 + ' °C');
+  return s;
+}
+function convertRecipeToMetric(r) {
+  r.ingredients = (r.ingredients || []).map(convertLineToMetric);
+  r.instructions = (r.instructions || []).map(convertLineToMetric);
+}
+
+/* ---- indkoebslistens afdelinger (regelbaseret; AI kan tage resten) ---- */
+const SHOP_SECTIONS = ['Frugt & grønt', 'Kød & fisk', 'Mejeri & køl', 'Frost', 'Brød', 'Kolonial', 'Krydderier', 'Drikkevarer', 'Andet'];
+const SECTION_RULES = [
+  ['Frugt & grønt', /løg|hvidløg|kartof|gulerod|guleroedder|gulerødder|tomat(?!.*dåse)|agurk|peberfrug|salat|spinat|broccoli|blomkål|squash|aubergine|champignon|svampe|citron|lime|appelsin|æble|banan|bær|avocado|porre|selleri|ingefær|chili|krydderurt|persille|basilikum|koriander|dild|purløg|forårsløg|rødbede|græskar|majs|ærter(?!.*frost)|bønner(?!.*dåse)|kål|frugt/i],
+  ['Kød & fisk', /kylling|okse|svin|hakket|kød|bacon|skinke|pølse|chorizo|lam|kalkun|and(?:ebryst)?|laks|torsk|fisk|reje|tun(?!.*dåse)|muslinge|filet|mørbrad|culotte|entrecote|frikadelle/i],
+  ['Mejeri & køl', /mælk|fløde|smør(?!rebrød)|ost|yoghurt|skyr|creme fraiche|cremefraiche|æg(?:$|\s)|parmesan|mozzarella|feta|hytteost|kærnemælk|mascarpone|ricotta|halloumi|tortilla(?:pandekage)?|hummus/i],
+  ['Frost', /frost|frossen|frosne|is(?:$|\s)/i],
+  ['Brød', /brød|bolle|baguette|rugbrød|toast|pita|naan|croissant/i],
+  ['Krydderier', /salt|peber(?!frug)|paprika(?:pulver)?|spidskommen|kommen|karry|gurkemeje|kanel|kardemomme|muskat|oregano|timian(?:,)?\s*tørret|tørret timian|laurbær|chiliflager|bouillon|fond|krydderi/i],
+  ['Drikkevarer', /vand(?:$|\s)|juice|sodavand|øl(?:$|\s)|vin(?:$|\s|,)|rødvin|hvidvin|kaffe|te(?:$|\s)/i],
+  ['Kolonial', /mel|sukker|gryn|ris(?:$|\s)|pasta|spaghetti|nudler|olie|eddike|balsamico|dåse|passata|ketchup|sennep|mayo|soja|honning|sirup|chokolade|kakao|nødder|mandler|rosiner|linser|kikærter|kokosmælk|tomatpuré|gær|bagepulver|vanilje|husblas|couscous|bulgur|quinoa|havregryn|müsli|marmelade|peanutbutter|kapers|oliven|ansjos|tortillachips/i]
+];
+function guessSection(text) {
+  const t = normName(text);
+  for (const [section, re] of SECTION_RULES) if (re.test(t)) return section;
+  return '';
+}
+
+/* ---- sammenlaegning af ens varer ---- */
+/* "500 g mel" -> {qty: 500, unit: 'g', name: 'mel'}; uden maengde -> {name} */
+const UNIT_WORDS = /^(g|gram|kg|ml|cl|dl|l|liter|tsk|spsk|stk|styk|knsp|fed|dåse|dåser|glas|pose|poser|bundt|pakke|pakker|bakke|bakker|håndfuld)\.?\s+/i;
+const UNIT_NORM = { gram: 'g', liter: 'l', styk: 'stk', dåser: 'dåse', poser: 'pose', pakker: 'pakke', bakker: 'bakke' };
+function parseShopText(text) {
+  let s = String(text || '').trim();
+  const q2 = parseQty(s);
+  let qty = null, unit = '';
+  if (q2) {
+    qty = q2.val;
+    s = s.slice(q2.len).trim();
+    const um = s.match(UNIT_WORDS);
+    if (um) {
+      unit = um[1].toLowerCase().replace(/\.$/, '');
+      unit = UNIT_NORM[unit] || unit;
+      s = s.slice(um[0].length).trim();
+    }
+  }
+  return { qty, unit, name: s };
+}
+function mergeKey(p) {
+  /* navnet normaliseres let: smaa bogstaver, uden "frisk(e)/finthakket"-stoej efter komma */
+  return p.unit + '|' + normName(p.name.split(',')[0]);
+}
+/* laegger aabne varer med samme navn+enhed sammen; returnerer antal sammenlagte */
+async function mergeShoppingItems() {
+  const open = K('shopItem').filter(i => !i.done);
+  const groups = new Map();
+  for (const it of open) {
+    const p = parseShopText(it.text);
+    if (!p.name) continue;
+    const key = mergeKey(p);
+    (groups.get(key) || groups.set(key, []).get(key)).push({ it, p });
+  }
+  const changed = [];
+  let merged = 0;
+  for (const arr of groups.values()) {
+    if (arr.length < 2) continue;
+    const withQty = arr.filter(x => x.p.qty != null);
+    const keeper = arr[0].it;
+    if (withQty.length >= 2) {
+      const sum = withQty.reduce((a, x) => a + x.p.qty, 0);
+      const p0 = arr[0].p;
+      keeper.text = fmtQty(sum) + (p0.unit ? ' ' + p0.unit : '') + ' ' + p0.name;
+    }
+    keeper.group = arr.every(x => x.it.group === keeper.group) ? keeper.group : 'Flere opskrifter';
+    changed.push(keeper);
+    for (const x of arr.slice(1)) { x.it.deleted = true; changed.push(x.it); merged++; }
+  }
+  if (changed.length) await saveBulk(changed);
+  return merged;
+}
+
+/* ---- forraad: er en ingrediens allerede paa lager? ---- */
+function inPantry(text) {
+  const t = normName(text);
+  return K('pantryItem').some(p => {
+    const n = normName(p.text);
+    return n.length >= 3 && t.includes(n);
+  });
+}
+
+/* ---------------- Paprika-import (.paprikarecipes) ---------------- */
+/* Formatet er et zip-arkiv med en .paprikarecipe-fil (gzippet JSON) pr. opskrift. */
+async function unzipEntries(buf) {
+  const dv = new DataView(buf);
+  /* find End of Central Directory bagfra */
+  let eocd = -1;
+  for (let i = buf.byteLength - 22; i >= Math.max(0, buf.byteLength - 66000); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('Ikke en gyldig zip-fil');
+  const count = dv.getUint16(eocd + 10, true);
+  let off = dv.getUint32(eocd + 16, true);
+  const entries = [];
+  for (let i = 0; i < count; i++) {
+    if (dv.getUint32(off, true) !== 0x02014b50) break;
+    const method = dv.getUint16(off + 10, true);
+    const compSize = dv.getUint32(off + 20, true);
+    const nameLen = dv.getUint16(off + 28, true);
+    const extraLen = dv.getUint16(off + 30, true);
+    const commentLen = dv.getUint16(off + 32, true);
+    const localOff = dv.getUint32(off + 42, true);
+    const name = new TextDecoder().decode(new Uint8Array(buf, off + 46, nameLen));
+    /* datastarten findes via den LOKALE header (dens navn/extra kan afvige) */
+    const lNameLen = dv.getUint16(localOff + 26, true);
+    const lExtraLen = dv.getUint16(localOff + 28, true);
+    const dataStart = localOff + 30 + lNameLen + lExtraLen;
+    entries.push({ name, method, data: new Uint8Array(buf, dataStart, compSize) });
+    off += 46 + nameLen + extraLen + commentLen;
+  }
+  return entries;
+}
+async function decompress(bytes, format) {
+  const ds = new DecompressionStream(format);
+  const stream = new Blob([bytes]).stream().pipeThrough(ds);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+/* "1 hour 15 mins" / "45 min" / "1,5 time" -> minutter */
+function parseTimeText(s) {
+  s = String(s || '').toLowerCase();
+  if (!s.trim()) return null;
+  let min = 0;
+  const h = s.match(/(\d+(?:[.,]\d+)?)\s*(?:hours?|hrs?|timers?|time[rn]?|t\b)/);
+  if (h) min += num(h[1]) * 60;
+  const m = s.match(/(\d+)\s*(?:minutes?|mins?|minutter|min\b)/);
+  if (m) min += +m[1];
+  if (!min) { const bare = s.match(/^(\d+)$/); if (bare) min = +bare[1]; }
+  return min ? Math.round(min) : null;
+}
+function b64ToBlob(b64, mime) {
+  const bin = atob(b64.replace(/\s/g, ''));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime || 'image/jpeg' });
+}
+async function paprikaToRecipe(j) {
+  const cats = app().categories || [];
+  const pCats = Array.isArray(j.categories) ? j.categories : [];
+  const category = cats.find(c => pCats.some(pc => normName(pc) === normName(c))) || '';
+  let image = '';
+  if (j.photo_data) {
+    try { image = await blobToScaledDataUrl(b64ToBlob(j.photo_data)); } catch (e) {}
+  }
+  const split = s => String(s || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+    .map(l => /^[A-ZÆØÅ0-9 &-]{3,40}:$/.test(l) ? '## ' + l.replace(/:$/, '') : l);
+  return {
+    id: uid(), kind: 'recipe',
+    title: String(j.name || '(uden titel)').trim(),
+    description: String(j.description || '').trim(),
+    image,
+    url: String(j.source_url || '').trim(),
+    ingredients: split(j.ingredients),
+    instructions: split(j.directions),
+    prepMin: parseTimeText(j.prep_time),
+    cookMin: parseTimeText(j.cook_time),
+    totalMin: parseTimeText(j.total_time),
+    servings: (() => { const m = String(j.servings || '').match(/\d+/); return m ? +m[0] : null; })(),
+    yieldText: String(j.servings || ''),
+    category,
+    tags: pCats.filter(c => normName(c) !== normName(category)).slice(0, 8),
+    rating: Math.min(5, Math.max(0, parseInt(j.rating, 10) || 0)),
+    favorite: false,
+    notes: [j.notes, j.nutritional_info ? 'Ernæring (fra Paprika): ' + j.nutritional_info : '']
+      .filter(Boolean).join('\n\n').trim(),
+    createdAt: j.created ? new Date(j.created).toISOString() : new Date().toISOString()
+  };
+}
+async function importPaprikaFile(file, onProgress) {
+  if (typeof DecompressionStream === 'undefined') {
+    throw new Error('Din browser understøtter ikke DecompressionStream – prøv en nyere browser');
+  }
+  const buf = await file.arrayBuffer();
+  let payloads = [];
+  if (/\.paprikarecipe$/i.test(file.name)) {
+    payloads = [new Uint8Array(buf)]; // enkelt opskrift (gzip direkte)
+  } else {
+    const entries = await unzipEntries(buf);
+    for (const e of entries) {
+      if (!/\.paprikarecipe$/i.test(e.name)) continue;
+      payloads.push(e.method === 8 ? await decompress(e.data, 'deflate-raw') : e.data);
+    }
+  }
+  if (!payloads.length) throw new Error('Fandt ingen opskrifter i filen – er det en Paprika-eksport (.paprikarecipes)?');
+  const existing = new Set(K('recipe').map(r => normName(r.title)));
+  const out = { imported: 0, skipped: 0, failed: 0 };
+  const batch = [];
+  for (let i = 0; i < payloads.length; i++) {
+    if (onProgress) onProgress(i + 1, payloads.length);
+    try {
+      const jsonBytes = await decompress(payloads[i], 'gzip');
+      const j = JSON.parse(new TextDecoder().decode(jsonBytes));
+      if (existing.has(normName(j.name))) { out.skipped++; continue; }
+      const rec = await paprikaToRecipe(j);
+      existing.add(normName(rec.title));
+      batch.push(rec);
+      out.imported++;
+    } catch (e) { out.failed++; }
+    if (batch.length >= 25) { await saveBulk(batch.splice(0)); }
+  }
+  if (batch.length) await saveBulk(batch);
+  return out;
+}
+
 /* ---------------- navigation og skal ---------------- */
 const VIEWS = [
   { id: 'dash',      ico: '📊', label: 'Overblik' },
@@ -389,6 +632,7 @@ function paletteItems() {
     { ico: '🛒', label: 'Tilføj til indkøbsliste', hint: 'handling', run: () => { goto('shopping'); setTimeout(() => { const el = $('#shopNew'); if (el) el.focus(); }, 50); } },
     { ico: '📱', label: S.wakeOn ? 'Slå skærmlås fra' : 'Hold skærmen tændt', hint: 'handling', run: () => setWakeLock(!S.wakeOn) },
     { ico: '🎲', label: 'Tilfældig opskrift', hint: 'handling', run: randomRecipe },
+    { ico: '🌶️', label: 'Importér Paprika-eksport', hint: 'handling', run: () => { goto('settings'); setTimeout(() => { const b = $('#papImport'); if (b) b.scrollIntoView({ block: 'center' }); }, 60); } },
     { ico: '🌗', label: 'Skift tema', hint: 'handling', run: () => $('#themeQuick').click() }
   );
   /* opskrifter kan findes direkte fra paletten */
@@ -795,7 +1039,13 @@ RENDER.recipeDetail = () => {
     ${r.prepMin ? `<span class="timechip">🔪 Forberedelse: ${fmtMin(r.prepMin)}</span>` : ''}
     ${r.cookMin ? `<span class="timechip">🍳 Tilberedning: ${fmtMin(r.cookMin)}</span>` : ''}
     ${recipeTotalMin(r) ? `<span class="timechip">⏱ I alt: ${fmtMin(recipeTotalMin(r))}</span>` : ''}
+    ${r.nutrition ? `<span class="timechip" title="Pr. portion${r.nutrition.estimated ? ' (AI-estimat)' : ''}">🔥 ${r.nutrition.kcal} kcal · ${r.nutrition.protein} g protein · ${r.nutrition.carbs} g kulhydrat · ${r.nutrition.fat} g fedt</span>` : ''}
     <span class="stars pick" id="ratePick">${[1, 2, 3, 4, 5].map(i => `<span data-star="${i}" class="${i <= (r.rating || 0) ? '' : 'off'}">★</span>`).join('')}</span>
+  </div>
+  <div class="rowflex" style="margin:0 0 14px">
+    <button class="btn small" id="shareBtn">${r.shareToken ? '🔗 Deles – vis link' : '🔗 Del med et link'}</button>
+    ${S.settings.aiKeySet ? `<button class="btn small" id="nutriBtn">🥗 ${r.nutrition ? 'Genberegn ernæring' : 'Estimér ernæring'} (AI)</button>` : ''}
+    ${hasImperial(r) ? '<button class="btn small" id="metricBtn">🌍 Omregn til metrisk (cups → dl …)</button>' : ''}
   </div>
 
   <div class="recdetail">
@@ -840,8 +1090,95 @@ RENDER.recipeDetail_bind = () => {
     await saveItem(r, true);
     render();
   });
+  $('#shareBtn').onclick = () => shareRecipeModal(r);
+  const nutri = $('#nutriBtn');
+  if (nutri) nutri.onclick = () => aiEstimateNutrition(r, nutri);
+  const metric = $('#metricBtn');
+  if (metric) metric.onclick = async () => {
+    if (!await confirmBox('Omregn alle amerikanske mål (cups, oz, lbs, °F …) til metrisk i denne opskrift? Ændringen gemmes.', 'Omregn')) return;
+    convertRecipeToMetric(r);
+    await saveItem(r);
+    render();
+  };
   bindInlineTimers(r.title);
 };
+
+/* ---------------- deling med offentligt link ---------------- */
+function shareRecipeModal(r) {
+  const draw = () => {
+    const link = r.shareToken ? location.origin + '/del/' + r.shareToken : '';
+    openModal(`<h2>🔗 Del "${esc(r.title)}"</h2>
+      ${r.shareToken ? `
+        <p class="small muted">Alle med linket kan se opskriften – uden login. Slå delingen fra igen når som helst.</p>
+        <div class="rowflex">
+          <input id="shareUrl" readonly value="${esc(link)}" style="flex:1;min-width:260px">
+          <button class="btn small" id="shareCopy">Kopiér</button>
+        </div>
+        <div class="actions">
+          <button class="btn danger" id="shareOff" style="margin-right:auto">Slå deling fra</button>
+          <button class="btn" id="shareClose">Luk</button>
+        </div>`
+      : `<p class="small muted">Lav et offentligt link, så familie og venner kan se opskriften uden login.</p>
+        <div class="actions">
+          <button class="btn" id="shareClose">Annullér</button>
+          <button class="btn primary" id="shareOn">Lav link</button>
+        </div>`}`, m => {
+      m.querySelector('#shareClose').onclick = () => { closeModal(); render(); };
+      const on = m.querySelector('#shareOn');
+      if (on) on.onclick = async () => {
+        r.shareToken = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
+        await saveItem(r, true);
+        draw();
+      };
+      const off = m.querySelector('#shareOff');
+      if (off) off.onclick = async () => {
+        delete r.shareToken;
+        await saveItem(r, true);
+        toast('Delingen er slået fra');
+        closeModal();
+        render();
+      };
+      const copy = m.querySelector('#shareCopy');
+      if (copy) copy.onclick = () => {
+        m.querySelector('#shareUrl').select();
+        navigator.clipboard.writeText(link).then(() => toast('Link kopieret'));
+      };
+    });
+  };
+  draw();
+}
+
+/* ---------------- ernaering (AI-estimat pr. portion) ---------------- */
+async function aiEstimateNutrition(r, btn) {
+  btn.disabled = true;
+  btn.textContent = '🥗 Beregner …';
+  try {
+    const sys = `Du estimerer næringsindhold for madopskrifter. Svar KUN med ét JSON-objekt, ingen forklaring:
+{"kcal": tal, "protein": tal, "carbs": tal, "fat": tal} – alle PR. PORTION, afrundet til hele tal.`;
+    const res = await api('/api/ai', {
+      body: {
+        system: sys,
+        messages: [{ role: 'user', content: `Opskrift: ${r.title}\nPortioner: ${r.servings || app().defaultServings}\nIngredienser:\n${(r.ingredients || []).join('\n')}` }],
+        maxTokens: 512
+      }
+    });
+    let j;
+    try { j = JSON.parse(String(res.text).replace(/^[\s\S]*?\{/, '{').replace(/\}[^}]*$/, '}')); }
+    catch (e) { throw new Error('AI-svaret kunne ikke læses'); }
+    if (typeof j.kcal !== 'number') throw new Error('AI gav ikke et brugbart estimat');
+    r.nutrition = {
+      kcal: Math.round(j.kcal), protein: Math.round(j.protein || 0),
+      carbs: Math.round(j.carbs || 0), fat: Math.round(j.fat || 0), estimated: true
+    };
+    await saveItem(r, true);
+    toast('Ernæring estimeret (pr. portion)');
+    render();
+  } catch (e) {
+    toast('Kunne ikke estimere: ' + e.message, true);
+    btn.disabled = false;
+    btn.textContent = '🥗 Estimér ernæring (AI)';
+  }
+}
 
 /* ---------------- print ---------------- */
 function printRecipe(r) {
@@ -1076,24 +1413,36 @@ Findes der ingen opskrift i teksten, svar {"error": "ingen opskrift fundet"}.`;
 }
 
 /* ---------------- indkoebsliste fra opskrift ---------------- */
+/* springer varer over, der ligger i forraadet, gaetter afdeling og laegger
+ * ens varer sammen med det, der allerede staar paa listen */
 async function addRecipeToShopping(r, factor) {
   const lines = (r.ingredients || []).filter(l => !/^##/.test(l));
   if (!lines.length) return toast('Opskriften har ingen ingredienser', true);
-  const items = lines.map(l => ({
-    id: uid(), kind: 'shopItem', text: scaleIngredient(l, factor || 1),
-    group: r.title, done: false, createdAt: new Date().toISOString()
-  }));
-  await saveBulk(items);
-  toast(`${items.length} varer føjet til indkøbslisten`);
+  let skipped = 0;
+  const items = [];
+  for (const l of lines) {
+    const text = scaleIngredient(l, factor || 1);
+    if (inPantry(text)) { skipped++; continue; }
+    items.push({
+      id: uid(), kind: 'shopItem', text, group: r.title,
+      section: guessSection(text), done: false, createdAt: new Date().toISOString()
+    });
+  }
+  if (items.length) await saveBulk(items);
+  const merged = await mergeShoppingItems();
+  toast(`${items.length} varer føjet til listen` +
+    (skipped ? ` · ${skipped} sprunget over (i forråd)` : '') +
+    (merged ? ` · ${merged} lagt sammen` : ''));
   renderNav();
 }
 
 /* ---------------- kogetilstand ---------------- */
-const CM = { recipe: null, step: 0, wakeWasOn: false };
+const CM = { recipe: null, step: 0, wakeWasOn: false, checked: new Set() };
 
 function openCookMode(r) {
   CM.recipe = r;
   CM.step = 0;
+  CM.checked = new Set();
   CM.wakeWasOn = S.wakeOn;
   if (!S.wakeOn) setWakeLock(true); // skaermen skal ikke slukke midt i madlavningen
   drawCookMode();
@@ -1120,8 +1469,13 @@ function drawCookMode() {
     </div>
     <div class="cmbody">
       <div class="cmings">
-        <h3 style="margin-top:0">Ingredienser</h3>
-        <ul>${ingredientsHtml(r, factor)}</ul>
+        <h3 style="margin-top:0">Ingredienser <span class="muted small">(kryds af undervejs)</span></h3>
+        <ul>${(r.ingredients || []).map((line, i) => {
+          if (/^##\s*/.test(line)) return `<li style="border:0;font-weight:700;color:var(--amber);padding-top:12px">${esc(line.replace(/^##\s*/, ''))}</li>`;
+          return `<li><label class="chk cmck${CM.checked.has(i) ? ' done' : ''}">
+            <input type="checkbox" data-cmck="${i}" ${CM.checked.has(i) ? 'checked' : ''}>
+            <span>${esc(scaleIngredient(line, factor))}</span></label></li>`;
+        }).join('')}</ul>
       </div>
       <div>
         <div class="cmstepnum">Trin ${CM.step + 1} af ${steps.length}</div>
@@ -1138,6 +1492,11 @@ function drawCookMode() {
   $('#cmClose').onclick = closeCookMode;
   $('#cmWake').onclick = () => setWakeLock(!S.wakeOn);
   $('#cmTimer').onclick = () => newTimerModal(r.title);
+  $$('[data-cmck]').forEach(cb => cb.onchange = () => {
+    const i = +cb.dataset.cmck;
+    if (cb.checked) CM.checked.add(i); else CM.checked.delete(i);
+    cb.closest('label').classList.toggle('done', cb.checked);
+  });
   $('#cmPrev').onclick = () => { if (CM.step > 0) { CM.step--; drawCookMode(); } };
   const next = $('#cmNext');
   if (next) next.onclick = () => { CM.step++; drawCookMode(); };
@@ -1163,6 +1522,17 @@ document.addEventListener('keydown', e => {
 
 function weekDatesOf(monday) { return [...Array(7)].map((_, i) => addDays(monday, i)); }
 
+/* maaltids-typer; gamle entries uden slot regnes som aftensmad */
+const SLOTS = [
+  { id: 'breakfast', label: 'Morgenmad', ico: '🌅' },
+  { id: 'lunch',     label: 'Frokost',   ico: '🥪' },
+  { id: 'dinner',    label: 'Aftensmad', ico: '' },
+  { id: 'other',     label: 'Andet',     ico: '📌' }
+];
+const slotOf = e => e.slot || 'dinner';
+const slotOrder = id => SLOTS.findIndex(s => s.id === id);
+const slotInfo = id => SLOTS.find(s => s.id === id) || SLOTS[2];
+
 RENDER.plan = () => {
   const monday = S.weekStart || mondayOf();
   const dates = weekDatesOf(monday);
@@ -1178,16 +1548,20 @@ RENDER.plan = () => {
         <button class="btn" id="wkShop">🛒 Indkøbsliste for ugen</button>
         <button class="btn" id="wkPrint">🖨️ Print</button>
         <button class="btn" id="wkFill">📖 Udfyld fra biblioteket</button>
+        <button class="btn" id="wkSaveMenu">💾 Gem som skabelon</button>
+        <button class="btn" id="wkApplyMenu" ${K('menu').length ? '' : 'disabled'}>📋 Skabeloner…</button>
         ${S.settings.aiKeySet ? '<button class="btn primary" id="wkAi">✨ Foreslå madplan (AI)</button>' : ''}
       </div>`) + `
   <div class="weekgrid">
     ${dates.map((d, i) => `
       <div class="daycol${d === today ? ' today' : ''}" data-date="${d}">
         <div class="dhead">${WEEKDAYS_DA[i]} <span style="float:right;font-weight:400">${d.slice(8)}/${+d.slice(5, 7)}</span></div>
-        ${(entriesByDate[d] || []).map(e => {
+        ${(entriesByDate[d] || []).slice().sort((a, b) => slotOrder(slotOf(a)) - slotOrder(slotOf(b))).map(e => {
           const r = e.recipeId ? recipeById(e.recipeId) : null;
+          const si = slotInfo(slotOf(e));
+          const slotTag = slotOf(e) !== 'dinner' ? `<span class="muted">${si.ico} ${si.label} · </span>` : '';
           return `<div class="planentry" data-entry="${e.id}" draggable="true">
-            ${r ? esc(r.title) : esc(e.text || '')}
+            ${slotTag}${r ? esc(r.title) : esc(e.text || '')}
             ${r && recipeTotalMin(r) ? `<div class="pmeta">⏱ ${fmtMin(recipeTotalMin(r))}${e.servings ? ' · ' + e.servings + ' pers.' : ''}</div>` : (e.servings ? `<div class="pmeta">${e.servings} pers.</div>` : '')}
           </div>`;
         }).join('')}
@@ -1204,6 +1578,8 @@ RENDER.plan_bind = () => {
   $('#wkShop').onclick = weekToShopping;
   $('#wkPrint').onclick = printWeekPlan;
   $('#wkFill').onclick = autoFillWeek;
+  $('#wkSaveMenu').onclick = saveWeekAsMenu;
+  $('#wkApplyMenu').onclick = menuListModal;
   const ai = $('#wkAi');
   if (ai) ai.onclick = aiSuggestWeek;
   $$('.dayadd').forEach(b => b.onclick = () => planEntryModal(null, { date: b.dataset.date }));
@@ -1231,16 +1607,104 @@ RENDER.plan_bind = () => {
 };
 
 /* flyt en madplan-linje til en anden dag; ligger der allerede noget paa
- * maaldagen, bytter de plads (de fortraengte ryger til den dag, der traekkes fra) */
+ * maaldagen I SAMME maaltid, bytter de plads (de fortraengte ryger til den
+ * dag, der traekkes fra) - morgenmad fortraenger ikke aftensmad */
 async function movePlanEntry(entryId, toDate) {
   const e = K('planEntry').find(x => x.id === entryId);
   if (!e || !toDate || e.date === toDate) return;
   const fromDate = e.date;
-  const displaced = K('planEntry').filter(x => x.date === toDate && x.id !== e.id);
+  const displaced = K('planEntry').filter(x =>
+    x.date === toDate && x.id !== e.id && slotOf(x) === slotOf(e));
   e.date = toDate;
   displaced.forEach(x => { x.date = fromDate; });
   await saveBulk([e, ...displaced]);
   toast(displaced.length ? 'Byttet om 🔄' : 'Flyttet til ' + fmtDate(toDate));
+  render();
+}
+
+/* ---------------- skabeloner (genbrugelige uge-menuer) ---------------- */
+async function saveWeekAsMenu() {
+  const monday = S.weekStart || mondayOf();
+  const dates = weekDatesOf(monday);
+  const entries = K('planEntry').filter(e => dates.includes(e.date));
+  if (!entries.length) return toast('Ugen er tom – der er intet at gemme', true);
+  openModal(`<h2>💾 Gem ugen som skabelon</h2>
+    <p class="small muted">Skabelonen gemmer ugedag + måltid + ret (${entries.length} linjer) og kan
+    lægges ind i en hvilken som helst uge bagefter.</p>
+    <label class="fld"><span>Navn</span><input id="menuName" placeholder="fx Hverdagsuge eller Sommeruge" maxlength="60"></label>
+    <div class="actions">
+      <button class="btn" id="menuCancel">Annullér</button>
+      <button class="btn primary" id="menuSave">Gem skabelon</button>
+    </div>`, m => {
+    m.querySelector('#menuName').focus();
+    m.querySelector('#menuCancel').onclick = closeModal;
+    m.querySelector('#menuSave').onclick = async () => {
+      const title = m.querySelector('#menuName').value.trim();
+      if (!title) return toast('Giv skabelonen et navn', true);
+      const menu = {
+        id: uid(), kind: 'menu', title, createdAt: new Date().toISOString(),
+        entries: entries.map(e => ({
+          wd: (new Date(e.date + 'T00:00:00').getDay() + 6) % 7,
+          slot: slotOf(e), recipeId: e.recipeId || '', text: e.text || '', servings: e.servings || null
+        }))
+      };
+      closeModal();
+      await saveItem(menu);
+      render();
+    };
+  });
+}
+
+function menuListModal() {
+  const menus = K('menu').slice().sort((a, b) => String(a.title).localeCompare(String(b.title), 'da'));
+  if (!menus.length) return toast('Ingen skabeloner endnu – gem først en uge', true);
+  openModal(`<h2>📋 Madplan-skabeloner</h2>
+    <p class="small muted">Lægges ind i den viste uge. Dage/måltider, der allerede er udfyldt, springes over.</p>
+    <table class="data"><tbody>
+      ${menus.map(mn => `<tr>
+        <td><b>${esc(mn.title)}</b><div class="small muted">${mn.entries.length} linjer:
+          ${esc(mn.entries.slice(0, 4).map(e => e.recipeId ? (recipeById(e.recipeId) || {}).title || '(slettet)' : e.text).join(', '))}${mn.entries.length > 4 ? ' …' : ''}</div></td>
+        <td class="right nowrap">
+          <button class="btn small primary" data-apply="${mn.id}">Læg ind i ugen</button>
+          <button class="iconbtn" data-mdel="${mn.id}" title="Slet skabelon">✕</button>
+        </td></tr>`).join('')}
+    </tbody></table>
+    <div class="actions"><button class="btn" id="menuClose">Luk</button></div>`, m => {
+    m.querySelector('#menuClose').onclick = closeModal;
+    m.querySelectorAll('[data-apply]').forEach(b => b.onclick = () => applyMenu(b.dataset.apply));
+    m.querySelectorAll('[data-mdel]').forEach(b => b.onclick = async () => {
+      const mn = K('menu').find(x => x.id === b.dataset.mdel);
+      if (mn && await confirmBox(`Slet skabelonen "${mn.title}"?`)) {
+        await deleteItem(mn);
+        closeModal();
+        render();
+      }
+    });
+  });
+}
+
+async function applyMenu(menuId) {
+  const mn = K('menu').find(x => x.id === menuId);
+  if (!mn) return;
+  const monday = S.weekStart || mondayOf();
+  const items = [];
+  let skipped = 0;
+  for (const e of mn.entries) {
+    const date = addDays(monday, e.wd);
+    if (e.recipeId && !recipeById(e.recipeId)) { skipped++; continue; } // opskriften er slettet
+    if (K('planEntry').some(x => x.date === date && slotOf(x) === (e.slot || 'dinner'))) { skipped++; continue; }
+    items.push({
+      id: uid(), kind: 'planEntry', date, slot: e.slot || 'dinner',
+      recipeId: e.recipeId || '', text: e.text || '', servings: e.servings || null
+    });
+  }
+  if (!items.length) {
+    toast('Alt i skabelonen var allerede udfyldt' + (skipped ? ` (${skipped} sprunget over)` : ''), true);
+    return;
+  }
+  await saveBulk(items);
+  closeModal();
+  toast(`Skabelonen "${mn.title}" lagt ind – ${items.length} måltider` + (skipped ? `, ${skipped} sprunget over` : ''));
   render();
 }
 
@@ -1250,7 +1714,7 @@ async function movePlanEntry(entryId, toDate) {
 async function autoFillWeek() {
   const monday = S.weekStart || mondayOf();
   const dates = weekDatesOf(monday);
-  const free = dates.filter(d => !K('planEntry').some(e => e.date === d));
+  const free = dates.filter(d => !K('planEntry').some(e => e.date === d && slotOf(e) === 'dinner'));
   if (!free.length) return toast('Alle ugens dage har allerede noget på madplanen', true);
   const recipes = K('recipe');
   if (!recipes.length) return toast('Biblioteket er tomt – tilføj nogle opskrifter først', true);
@@ -1271,7 +1735,7 @@ async function autoFillWeek() {
   };
 
   const items = free.map(d => ({
-    id: uid(), kind: 'planEntry', date: d, recipeId: draw().id, text: '', servings: null
+    id: uid(), kind: 'planEntry', date: d, slot: 'dinner', recipeId: draw().id, text: '', servings: null
   }));
   await saveBulk(items);
   toast(`${items.length} dage udfyldt – træk retterne rundt, som du vil`);
@@ -1281,12 +1745,15 @@ async function autoFillWeek() {
 function planEntryModal(entry, prefill) {
   const isNew = !entry;
   const d = entry || Object.assign({
-    id: uid(), kind: 'planEntry', date: isoDate(), recipeId: '', text: '', servings: null
+    id: uid(), kind: 'planEntry', date: isoDate(), slot: 'dinner', recipeId: '', text: '', servings: null
   }, prefill || {});
 
   openModal(`<h2>${isNew ? 'Tilføj til madplan' : 'Redigér madplan'}</h2>
     <div class="formgrid">
       <label class="fld"><span>Dato</span><input id="pmDate" type="date" value="${esc(d.date)}"></label>
+      <label class="fld"><span>Måltid</span><select id="pmSlot">
+        ${SLOTS.map(s => `<option value="${s.id}"${slotOf(d) === s.id ? ' selected' : ''}>${s.ico} ${s.label}</option>`).join('')}
+      </select></label>
       <label class="fld"><span>Personer (valgfrit)</span><input id="pmServ" type="number" min="1" value="${d.servings || ''}"></label>
     </div>
     <label class="fld"><span>Opskrift fra biblioteket</span><select id="pmRec">${recipeOptions(d.recipeId)}</select></label>
@@ -1306,6 +1773,7 @@ function planEntryModal(entry, prefill) {
     m.querySelector('#pmSave').onclick = async () => {
       d.date = m.querySelector('#pmDate').value;
       if (!d.date) return toast('Vælg en dato', true);
+      d.slot = m.querySelector('#pmSlot').value;
       d.recipeId = m.querySelector('#pmRec').value;
       d.text = m.querySelector('#pmText').value.trim();
       if (!d.recipeId && !d.text) return toast('Vælg en opskrift eller skriv en tekst', true);
@@ -1324,19 +1792,24 @@ async function weekToShopping() {
   const entries = K('planEntry').filter(e => dates.includes(e.date) && e.recipeId);
   if (!entries.length) return toast('Ugen har ingen opskrifter på madplanen', true);
   const items = [];
+  let skipped = 0;
   for (const e of entries) {
     const r = recipeById(e.recipeId);
     if (!r) continue;
     const factor = e.servings && r.servings ? e.servings / r.servings : 1;
     for (const l of (r.ingredients || []).filter(l => !/^##/.test(l))) {
+      const text = scaleIngredient(l, factor);
+      if (inPantry(text)) { skipped++; continue; }
       items.push({
-        id: uid(), kind: 'shopItem', text: scaleIngredient(l, factor),
-        group: r.title, done: false, createdAt: new Date().toISOString()
+        id: uid(), kind: 'shopItem', text, group: r.title,
+        section: guessSection(text), done: false, createdAt: new Date().toISOString()
       });
     }
   }
-  await saveBulk(items);
-  toast(`${items.length} varer føjet til indkøbslisten`);
+  if (items.length) await saveBulk(items);
+  const merged = await mergeShoppingItems();
+  toast(`${items.length} varer føjet til listen` +
+    (skipped ? ` · ${skipped} i forråd` : '') + (merged ? ` · ${merged} lagt sammen` : ''));
   goto('shopping');
 }
 
@@ -1349,9 +1822,10 @@ function printWeekPlan() {
     ${dates.map((d, i) => {
       const entries = K('planEntry').filter(e => e.date === d);
       return `<tr><td style="width:130px"><b>${WEEKDAYS_DA[i]}</b><br>${fmtDate(d)}</td>
-        <td>${entries.map(e => {
+        <td>${entries.slice().sort((a, b) => slotOrder(slotOf(a)) - slotOrder(slotOf(b))).map(e => {
           const r = e.recipeId ? recipeById(e.recipeId) : null;
-          return esc(r ? r.title : e.text || '') + (e.servings ? ` (${e.servings} pers.)` : '');
+          const pre = slotOf(e) !== 'dinner' ? slotInfo(slotOf(e)).label + ': ' : '';
+          return pre + esc(r ? r.title : e.text || '') + (e.servings ? ` (${e.servings} pers.)` : '');
         }).join('<br>') || '&nbsp;'}</td></tr>`;
     }).join('')}
     </tbody></table>
@@ -1362,7 +1836,7 @@ function printWeekPlan() {
 async function aiSuggestWeek() {
   const monday = S.weekStart || mondayOf();
   const dates = weekDatesOf(monday);
-  const free = dates.filter(d => !K('planEntry').some(e => e.date === d));
+  const free = dates.filter(d => !K('planEntry').some(e => e.date === d && slotOf(e) === 'dinner'));
   if (!free.length) return toast('Alle ugens dage har allerede noget på madplanen', true);
   const recipes = K('recipe');
   if (recipes.length < 2) return toast('Tilføj nogle opskrifter først, så AI\'en har noget at vælge imellem', true);
@@ -1392,7 +1866,7 @@ Svar KUN med JSON: [{"date": "YYYY-MM-DD", "recipeId": "..."}] – én pr. dato,
     for (const p of plan) {
       if (!free.includes(p.date) || !recipeById(p.recipeId)) continue;
       if (items.some(i => i.date === p.date)) continue;
-      items.push({ id: uid(), kind: 'planEntry', date: p.date, recipeId: p.recipeId, text: '', servings: null });
+      items.push({ id: uid(), kind: 'planEntry', date: p.date, slot: 'dinner', recipeId: p.recipeId, text: '', servings: null });
     }
     if (!items.length) throw new Error('AI\'en foreslog ingen brugbare dage');
     await saveBulk(items);
@@ -1404,32 +1878,59 @@ Svar KUN med JSON: [{"date": "YYYY-MM-DD", "recipeId": "..."}] – én pr. dato,
 }
 
 /* ---------------- Indkøbsliste ---------------- */
+/* Grupperes pr. butiksafdeling (standard) eller pr. opskrift. Afdelingen
+ * gaettes regelbaseret ved tilfoejelse; AI kan sortere resten. */
+
+function shopSectionOf(i) { return i.section || guessSection(i.text) || 'Andet'; }
+function shopGroupBy() {
+  try { return localStorage.getItem('kk_shopgroup') || 'section'; } catch (e) { return 'section'; }
+}
+
 RENDER.shopping = () => {
-  const items = K('shopItem').slice().sort((a, b) =>
-    String(a.group || 'zzz').localeCompare(String(b.group || 'zzz'), 'da') ||
+  const bySection = shopGroupBy() === 'section';
+  const items = K('shopItem').slice();
+  const keyOf = i => bySection ? shopSectionOf(i) : (i.group || 'Andet');
+  const sortKey = i => bySection
+    ? String(SHOP_SECTIONS.indexOf(shopSectionOf(i))).padStart(2, '0')
+    : (i.group || 'zzz');
+  items.sort((a, b) => sortKey(a).localeCompare(sortKey(b), 'da') ||
     String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
   const open = items.filter(i => !i.done), done = items.filter(i => i.done);
+  const unsorted = open.filter(i => !i.section && !guessSection(i.text)).length;
 
   const listHtml = arr => {
     let out = '', lastGroup = null;
     for (const i of arr) {
-      const g = i.group || 'Andet';
+      const g = keyOf(i);
       if (g !== lastGroup) { out += `<li class="shopgroup">${esc(g)}</li>`; lastGroup = g; }
       out += `<li class="${i.done ? 'done' : ''}" data-shop="${i.id}">
         <input type="checkbox" ${i.done ? 'checked' : ''}>
         <span class="txt">${esc(i.text)}</span>
+        ${bySection && i.group ? `<span class="muted small nowrap">${esc(i.group)}</span>` : ''}
         <button class="iconbtn" data-del="${i.id}" title="Fjern">✕</button>
       </li>`;
     }
     return out;
   };
 
+  const pantry = K('pantryItem').slice().sort((a, b) =>
+    String(a.expires || '9999').localeCompare(String(b.expires || '9999')) ||
+    String(a.text).localeCompare(String(b.text), 'da'));
+  const soon = addDays(isoDate(), 7);
+
   return pageHead('Indkøbsliste', `${open.length} varer mangler`,
       `<div class="rowflex">
         <button class="btn" id="shopPrint">🖨️ Print</button>
+        <button class="btn" id="shopMerge" ${open.length > 1 ? '' : 'disabled'}>🧮 Læg ens varer sammen</button>
+        ${S.settings.aiKeySet && unsorted ? `<button class="btn" id="shopAiSort">✨ Sortér ${unsorted} med AI</button>` : ''}
+        ${S.settings.haSet ? '<button class="btn" id="shopHa">🏠 Send til Home Assistant</button>' : ''}
         <button class="btn" id="shopClearDone" ${done.length ? '' : 'disabled'}>Ryd afkrydsede</button>
         <button class="btn danger" id="shopClearAll" ${items.length ? '' : 'disabled'}>Tøm listen</button>
       </div>`) + `
+  <div class="rowflex" style="margin-bottom:4px">
+    <span class="chip chipbtn${bySection ? ' sel' : ''}" data-grp="section">Pr. afdeling</span>
+    <span class="chip chipbtn${bySection ? '' : ' sel'}" data-grp="recipe">Pr. opskrift</span>
+  </div>
   <div class="panelbox">
     <div class="rowflex">
       <input id="shopNew" placeholder="Tilføj vare – fx 2 L mælk" style="flex:1;min-width:200px">
@@ -1438,20 +1939,45 @@ RENDER.shopping = () => {
     <ul class="shoplist">${listHtml(open) || '<li class="muted" style="border:0">Listen er tom 🎉</li>'}</ul>
     ${done.length ? `<h3 class="muted">Afkrydset (${done.length})</h3><ul class="shoplist">${listHtml(done)}</ul>` : ''}
   </div>
-  <p class="small muted">Tilføj en hel opskrift fra opskriftens side (🛒) eller hele ugen fra madplanen.</p>`;
+
+  <div class="panelbox">
+    <h2 style="margin-top:0">🏺 Forråd <span class="muted small">– varer du har hjemme, springes over på indkøbslisten</span></h2>
+    <div class="rowflex">
+      <input id="pantryNew" placeholder="fx pasta, olivenolie, hvidløg …" style="flex:1;min-width:180px">
+      <input id="pantryExp" type="date" title="Udløbsdato (valgfri)">
+      <button class="btn" id="pantryAdd">Tilføj til forråd</button>
+    </div>
+    ${pantry.length ? `<ul class="shoplist">${pantry.map(p => `
+      <li data-pantry="${p.id}">
+        <span class="txt" style="cursor:default">${esc(p.text)}</span>
+        ${p.expires ? `<span class="small nowrap ${p.expires < isoDate() ? 'warn' : p.expires <= soon ? '' : 'muted'}"
+          style="${p.expires <= soon && p.expires >= isoDate() ? 'color:var(--amber)' : ''}">
+          ${p.expires < isoDate() ? '⚠️ udløbet ' : 'udløber '}${fmtDate(p.expires)}</span>` : ''}
+        <button class="iconbtn" data-pdel="${p.id}" title="Fjern">✕</button>
+      </li>`).join('')}</ul>`
+    : '<p class="small muted" style="margin-bottom:0">Forrådet er tomt. Tilføj basisvarer som salt, olie og pasta, så ryger de ikke med på indkøbslisten hver gang.</p>'}
+  </div>`;
 };
+
 RENDER.shopping_bind = () => {
+  $$('[data-grp]').forEach(c => c.onclick = () => {
+    try { localStorage.setItem('kk_shopgroup', c.dataset.grp); } catch (e) {}
+    render();
+  });
+
   const add = async () => {
     const el = $('#shopNew');
     const text = el.value.trim();
     if (!text) return;
-    await saveItem({ id: uid(), kind: 'shopItem', text, group: '', done: false, createdAt: new Date().toISOString() }, true);
+    await saveItem({
+      id: uid(), kind: 'shopItem', text, group: '', section: guessSection(text),
+      done: false, createdAt: new Date().toISOString()
+    }, true);
     render();
     setTimeout(() => { const n = $('#shopNew'); if (n) n.focus(); }, 30);
   };
   $('#shopAdd').onclick = add;
   $('#shopNew').onkeydown = e => { if (e.key === 'Enter') add(); };
-  $('#shopNew').focus();
 
   $$('[data-shop]').forEach(li => {
     const it = K('shopItem').find(x => x.id === li.dataset.shop);
@@ -1465,6 +1991,25 @@ RENDER.shopping_bind = () => {
     const it = K('shopItem').find(x => x.id === b.dataset.del);
     if (it) { it.deleted = true; await saveItem(it, true); render(); }
   });
+
+  $('#shopMerge').onclick = async () => {
+    const n = await mergeShoppingItems();
+    toast(n ? `${n} varer lagt sammen` : 'Ingen ens varer at lægge sammen');
+    render();
+  };
+  const aiSort = $('#shopAiSort');
+  if (aiSort) aiSort.onclick = () => aiSortSections(aiSort);
+  const ha = $('#shopHa');
+  if (ha) ha.onclick = async () => {
+    ha.disabled = true;
+    ha.textContent = '🏠 Sender …';
+    try {
+      const r = await api('/api/ha/push-shopping', { body: {} });
+      toast(`${r.pushed} varer sendt til Home Assistant` + (r.failed ? ` (${r.failed} fejlede)` : ''));
+    } catch (e) { toast(e.message, true); }
+    render();
+  };
+
   $('#shopClearDone').onclick = async () => {
     const done = K('shopItem').filter(i => i.done);
     await saveBulk(done.map(i => Object.assign(i, { deleted: true })));
@@ -1475,18 +2020,70 @@ RENDER.shopping_bind = () => {
     await saveBulk(K('shopItem').map(i => Object.assign(i, { deleted: true })));
     render();
   };
-  $('#shopPrint').onclick = () => {
-    const items = K('shopItem').filter(i => !i.done);
-    let lastGroup = null, rows = '';
-    for (const i of items.slice().sort((a, b) => String(a.group || 'zzz').localeCompare(String(b.group || 'zzz'), 'da'))) {
-      const g = i.group || 'Andet';
-      if (g !== lastGroup) { rows += `<h2>${esc(g)}</h2>`; lastGroup = g; }
-      rows += `<p style="margin:2px 0">☐ ${esc(i.text)}</p>`;
-    }
-    printSheet(`${printLogoHtml()}<h1>Indkøbsliste</h1>${rows}<p class="pdate">${fmtDate(isoDate())}</p>`);
+  $('#shopPrint').onclick = printShoppingList;
+
+  /* forraad */
+  const pAdd = async () => {
+    const text = $('#pantryNew').value.trim();
+    if (!text) return;
+    await saveItem({
+      id: uid(), kind: 'pantryItem', text, expires: $('#pantryExp').value || '',
+      createdAt: new Date().toISOString()
+    }, true);
+    render();
+    setTimeout(() => { const n = $('#pantryNew'); if (n) n.focus(); }, 30);
   };
+  $('#pantryAdd').onclick = pAdd;
+  $('#pantryNew').onkeydown = e => { if (e.key === 'Enter') pAdd(); };
+  $$('[data-pdel]').forEach(b => b.onclick = async () => {
+    const p = K('pantryItem').find(x => x.id === b.dataset.pdel);
+    if (p) { p.deleted = true; await saveItem(p, true); render(); }
+  });
 };
 
+function printShoppingList() {
+  const bySection = shopGroupBy() === 'section';
+  const items = K('shopItem').filter(i => !i.done);
+  const keyOf = i => bySection ? shopSectionOf(i) : (i.group || 'Andet');
+  const sortKey = i => bySection
+    ? String(SHOP_SECTIONS.indexOf(shopSectionOf(i))).padStart(2, '0') : (i.group || 'zzz');
+  let lastGroup = null, rows = '';
+  for (const i of items.slice().sort((a, b) => sortKey(a).localeCompare(sortKey(b), 'da'))) {
+    const g = keyOf(i);
+    if (g !== lastGroup) { rows += `<h2>${esc(g)}</h2>`; lastGroup = g; }
+    rows += `<p style="margin:2px 0">☐ ${esc(i.text)}</p>`;
+  }
+  printSheet(`${printLogoHtml()}<h1>Indkøbsliste</h1>${rows}<p class="pdate">${fmtDate(isoDate())}</p>`);
+}
+
+/* AI saetter afdeling paa de varer, reglerne ikke kender */
+async function aiSortSections(btn) {
+  const unknown = K('shopItem').filter(i => !i.done && !i.section && !guessSection(i.text));
+  if (!unknown.length) return;
+  btn.disabled = true;
+  btn.textContent = '✨ Sorterer …';
+  try {
+    const sys = `Du sorterer dagligvarer i supermarkeds-afdelinger. Svar KUN med ét JSON-objekt der
+mapper hver vare til præcis én af disse afdelinger: ${JSON.stringify(SHOP_SECTIONS)}.
+Format: {"vare-tekst": "afdeling", ...}`;
+    const r = await api('/api/ai', {
+      body: { system: sys, messages: [{ role: 'user', content: JSON.stringify(unknown.map(i => i.text)) }], maxTokens: 1500 }
+    });
+    let map;
+    try { map = JSON.parse(String(r.text).replace(/^[\s\S]*?\{/, '{').replace(/\}[^}]*$/, '}')); }
+    catch (e) { throw new Error('AI-svaret kunne ikke læses'); }
+    const changed = [];
+    for (const it of unknown) {
+      const sec = map[it.text];
+      if (SHOP_SECTIONS.includes(sec)) { it.section = sec; changed.push(it); }
+    }
+    if (changed.length) await saveBulk(changed);
+    toast(`${changed.length} varer sorteret i afdelinger`);
+  } catch (e) {
+    toast('Kunne ikke sortere: ' + e.message, true);
+  }
+  render();
+}
 /* ---------------- Timere ---------------- */
 /* Timerne lever i localStorage (kk_timers), saa de overlever en genindlaesning.
  * {id, label, totalMs, endsAt (epoch-ms), remainMs (ved pause), paused, ringing} */
@@ -1820,6 +2417,23 @@ RENDER.settings = () => {
   </div>
 
   <div class="panelbox">
+    <h2 style="margin-top:0">🏠 Home Assistant</h2>
+    <p class="small muted">Send indkøbslisten til en todo-liste i Home Assistant med ét klik fra
+      Indkøbsliste-siden. Opret en langtids-token under din HA-profil (Sikkerhed → Long-lived access tokens)
+      og en todo-liste (Indstillinger → Enheder → Hjælpere → Indkøbsliste).
+      Status: ${S.settings.haSet ? '<span class="good">forbundet ✓</span>' : '<span class="warn">ikke sat op</span>'}</p>
+    <div class="formgrid">
+      <label class="fld"><span>HA-adresse (fx http://homeassistant.local:8123)</span>
+        <input id="haUrl" value="${esc(S.settings.haUrl || '')}" placeholder="http://…"></label>
+      <label class="fld"><span>Token ${S.settings.haSet ? '(udfyld kun for at skifte)' : ''}</span>
+        <input id="haToken" type="password" autocomplete="off"></label>
+      <label class="fld"><span>Todo-enhed (fx todo.indkobsliste)</span>
+        <input id="haEntity" value="${esc(S.settings.haEntity || '')}" placeholder="todo.…"></label>
+    </div>
+    <button class="btn primary" id="haSave">Gem Home Assistant</button>
+  </div>
+
+  <div class="panelbox">
     <h2 style="margin-top:0">📅 Madplan i din kalender</h2>
     <p class="small muted">Abonnér på madplanen i Apple/Google Kalender med dette link:</p>
     <div class="rowflex">
@@ -1829,12 +2443,19 @@ RENDER.settings = () => {
   </div>
 
   <div class="panelbox">
-    <h2 style="margin-top:0">Backup</h2>
+    <h2 style="margin-top:0">Backup & import</h2>
     <div class="rowflex">
       <button class="btn" id="bakJson">⬇️ Download backup (JSON)</button>
       ${S.me.isAdmin ? '<button class="btn" id="bakDb">⬇️ Download database (.db)</button>' : ''}
       ${S.me.isAdmin ? '<button class="btn" id="bakRestore">⬆️ Gendan fra JSON…</button><input id="bakFile" type="file" accept=".json" hidden>' : ''}
     </div>
+    <h3>🌶️ Flyt fra Paprika</h3>
+    <p class="small muted">Eksportér hele dit bibliotek i Paprika (Indstillinger → Export → Paprika Recipe Format)
+      og vælg <b>.paprikarecipes</b>-filen her. Opskrifter, billeder, tider, kategorier og vurderinger følger med;
+      dubletter (samme titel) springes over.</p>
+    <button class="btn" id="papImport">⬆️ Importér Paprika-eksport…</button>
+    <input id="papFile" type="file" accept=".paprikarecipes,.paprikarecipe" hidden>
+    <span class="small muted" id="papStatus"></span>
   </div>
 
   <div class="panelbox">
@@ -1899,6 +2520,41 @@ RENDER.settings_bind = () => {
     if (!await confirmBox('Fjern AI-nøglen fra serveren?', 'Fjern')) return;
     await saveSettings({ ai_key: '' });
     render();
+  };
+
+  $('#haSave').onclick = async () => {
+    const settings = {
+      ha_url: $('#haUrl').value.trim().replace(/\/+$/, ''),
+      ha_entity: $('#haEntity').value.trim()
+    };
+    const token = $('#haToken').value.trim();
+    if (token) settings.ha_token = token;
+    await saveSettings(settings);
+    render();
+  };
+
+  $('#papImport').onclick = () => $('#papFile').click();
+  $('#papFile').onchange = async e => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const status = $('#papStatus');
+    const btn = $('#papImport');
+    btn.disabled = true;
+    status.textContent = 'Læser filen …';
+    try {
+      const res = await importPaprikaFile(f, (i, total) => {
+        status.textContent = `Importerer ${i} af ${total} …`;
+      });
+      toast(`Paprika-import: ${res.imported} nye opskrifter` +
+        (res.skipped ? `, ${res.skipped} dubletter sprunget over` : '') +
+        (res.failed ? `, ${res.failed} fejlede` : ''));
+      status.textContent = '';
+      render();
+    } catch (err2) {
+      status.textContent = '';
+      btn.disabled = false;
+      toast('Import fejlede: ' + err2.message, true);
+    }
   };
 
   $('#icalCopy').onclick = () => {

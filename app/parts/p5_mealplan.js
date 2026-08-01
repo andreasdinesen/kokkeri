@@ -2,6 +2,17 @@
 
 function weekDatesOf(monday) { return [...Array(7)].map((_, i) => addDays(monday, i)); }
 
+/* maaltids-typer; gamle entries uden slot regnes som aftensmad */
+const SLOTS = [
+  { id: 'breakfast', label: 'Morgenmad', ico: '🌅' },
+  { id: 'lunch',     label: 'Frokost',   ico: '🥪' },
+  { id: 'dinner',    label: 'Aftensmad', ico: '' },
+  { id: 'other',     label: 'Andet',     ico: '📌' }
+];
+const slotOf = e => e.slot || 'dinner';
+const slotOrder = id => SLOTS.findIndex(s => s.id === id);
+const slotInfo = id => SLOTS.find(s => s.id === id) || SLOTS[2];
+
 RENDER.plan = () => {
   const monday = S.weekStart || mondayOf();
   const dates = weekDatesOf(monday);
@@ -17,16 +28,20 @@ RENDER.plan = () => {
         <button class="btn" id="wkShop">🛒 Indkøbsliste for ugen</button>
         <button class="btn" id="wkPrint">🖨️ Print</button>
         <button class="btn" id="wkFill">📖 Udfyld fra biblioteket</button>
+        <button class="btn" id="wkSaveMenu">💾 Gem som skabelon</button>
+        <button class="btn" id="wkApplyMenu" ${K('menu').length ? '' : 'disabled'}>📋 Skabeloner…</button>
         ${S.settings.aiKeySet ? '<button class="btn primary" id="wkAi">✨ Foreslå madplan (AI)</button>' : ''}
       </div>`) + `
   <div class="weekgrid">
     ${dates.map((d, i) => `
       <div class="daycol${d === today ? ' today' : ''}" data-date="${d}">
         <div class="dhead">${WEEKDAYS_DA[i]} <span style="float:right;font-weight:400">${d.slice(8)}/${+d.slice(5, 7)}</span></div>
-        ${(entriesByDate[d] || []).map(e => {
+        ${(entriesByDate[d] || []).slice().sort((a, b) => slotOrder(slotOf(a)) - slotOrder(slotOf(b))).map(e => {
           const r = e.recipeId ? recipeById(e.recipeId) : null;
+          const si = slotInfo(slotOf(e));
+          const slotTag = slotOf(e) !== 'dinner' ? `<span class="muted">${si.ico} ${si.label} · </span>` : '';
           return `<div class="planentry" data-entry="${e.id}" draggable="true">
-            ${r ? esc(r.title) : esc(e.text || '')}
+            ${slotTag}${r ? esc(r.title) : esc(e.text || '')}
             ${r && recipeTotalMin(r) ? `<div class="pmeta">⏱ ${fmtMin(recipeTotalMin(r))}${e.servings ? ' · ' + e.servings + ' pers.' : ''}</div>` : (e.servings ? `<div class="pmeta">${e.servings} pers.</div>` : '')}
           </div>`;
         }).join('')}
@@ -43,6 +58,8 @@ RENDER.plan_bind = () => {
   $('#wkShop').onclick = weekToShopping;
   $('#wkPrint').onclick = printWeekPlan;
   $('#wkFill').onclick = autoFillWeek;
+  $('#wkSaveMenu').onclick = saveWeekAsMenu;
+  $('#wkApplyMenu').onclick = menuListModal;
   const ai = $('#wkAi');
   if (ai) ai.onclick = aiSuggestWeek;
   $$('.dayadd').forEach(b => b.onclick = () => planEntryModal(null, { date: b.dataset.date }));
@@ -70,16 +87,104 @@ RENDER.plan_bind = () => {
 };
 
 /* flyt en madplan-linje til en anden dag; ligger der allerede noget paa
- * maaldagen, bytter de plads (de fortraengte ryger til den dag, der traekkes fra) */
+ * maaldagen I SAMME maaltid, bytter de plads (de fortraengte ryger til den
+ * dag, der traekkes fra) - morgenmad fortraenger ikke aftensmad */
 async function movePlanEntry(entryId, toDate) {
   const e = K('planEntry').find(x => x.id === entryId);
   if (!e || !toDate || e.date === toDate) return;
   const fromDate = e.date;
-  const displaced = K('planEntry').filter(x => x.date === toDate && x.id !== e.id);
+  const displaced = K('planEntry').filter(x =>
+    x.date === toDate && x.id !== e.id && slotOf(x) === slotOf(e));
   e.date = toDate;
   displaced.forEach(x => { x.date = fromDate; });
   await saveBulk([e, ...displaced]);
   toast(displaced.length ? 'Byttet om 🔄' : 'Flyttet til ' + fmtDate(toDate));
+  render();
+}
+
+/* ---------------- skabeloner (genbrugelige uge-menuer) ---------------- */
+async function saveWeekAsMenu() {
+  const monday = S.weekStart || mondayOf();
+  const dates = weekDatesOf(monday);
+  const entries = K('planEntry').filter(e => dates.includes(e.date));
+  if (!entries.length) return toast('Ugen er tom – der er intet at gemme', true);
+  openModal(`<h2>💾 Gem ugen som skabelon</h2>
+    <p class="small muted">Skabelonen gemmer ugedag + måltid + ret (${entries.length} linjer) og kan
+    lægges ind i en hvilken som helst uge bagefter.</p>
+    <label class="fld"><span>Navn</span><input id="menuName" placeholder="fx Hverdagsuge eller Sommeruge" maxlength="60"></label>
+    <div class="actions">
+      <button class="btn" id="menuCancel">Annullér</button>
+      <button class="btn primary" id="menuSave">Gem skabelon</button>
+    </div>`, m => {
+    m.querySelector('#menuName').focus();
+    m.querySelector('#menuCancel').onclick = closeModal;
+    m.querySelector('#menuSave').onclick = async () => {
+      const title = m.querySelector('#menuName').value.trim();
+      if (!title) return toast('Giv skabelonen et navn', true);
+      const menu = {
+        id: uid(), kind: 'menu', title, createdAt: new Date().toISOString(),
+        entries: entries.map(e => ({
+          wd: (new Date(e.date + 'T00:00:00').getDay() + 6) % 7,
+          slot: slotOf(e), recipeId: e.recipeId || '', text: e.text || '', servings: e.servings || null
+        }))
+      };
+      closeModal();
+      await saveItem(menu);
+      render();
+    };
+  });
+}
+
+function menuListModal() {
+  const menus = K('menu').slice().sort((a, b) => String(a.title).localeCompare(String(b.title), 'da'));
+  if (!menus.length) return toast('Ingen skabeloner endnu – gem først en uge', true);
+  openModal(`<h2>📋 Madplan-skabeloner</h2>
+    <p class="small muted">Lægges ind i den viste uge. Dage/måltider, der allerede er udfyldt, springes over.</p>
+    <table class="data"><tbody>
+      ${menus.map(mn => `<tr>
+        <td><b>${esc(mn.title)}</b><div class="small muted">${mn.entries.length} linjer:
+          ${esc(mn.entries.slice(0, 4).map(e => e.recipeId ? (recipeById(e.recipeId) || {}).title || '(slettet)' : e.text).join(', '))}${mn.entries.length > 4 ? ' …' : ''}</div></td>
+        <td class="right nowrap">
+          <button class="btn small primary" data-apply="${mn.id}">Læg ind i ugen</button>
+          <button class="iconbtn" data-mdel="${mn.id}" title="Slet skabelon">✕</button>
+        </td></tr>`).join('')}
+    </tbody></table>
+    <div class="actions"><button class="btn" id="menuClose">Luk</button></div>`, m => {
+    m.querySelector('#menuClose').onclick = closeModal;
+    m.querySelectorAll('[data-apply]').forEach(b => b.onclick = () => applyMenu(b.dataset.apply));
+    m.querySelectorAll('[data-mdel]').forEach(b => b.onclick = async () => {
+      const mn = K('menu').find(x => x.id === b.dataset.mdel);
+      if (mn && await confirmBox(`Slet skabelonen "${mn.title}"?`)) {
+        await deleteItem(mn);
+        closeModal();
+        render();
+      }
+    });
+  });
+}
+
+async function applyMenu(menuId) {
+  const mn = K('menu').find(x => x.id === menuId);
+  if (!mn) return;
+  const monday = S.weekStart || mondayOf();
+  const items = [];
+  let skipped = 0;
+  for (const e of mn.entries) {
+    const date = addDays(monday, e.wd);
+    if (e.recipeId && !recipeById(e.recipeId)) { skipped++; continue; } // opskriften er slettet
+    if (K('planEntry').some(x => x.date === date && slotOf(x) === (e.slot || 'dinner'))) { skipped++; continue; }
+    items.push({
+      id: uid(), kind: 'planEntry', date, slot: e.slot || 'dinner',
+      recipeId: e.recipeId || '', text: e.text || '', servings: e.servings || null
+    });
+  }
+  if (!items.length) {
+    toast('Alt i skabelonen var allerede udfyldt' + (skipped ? ` (${skipped} sprunget over)` : ''), true);
+    return;
+  }
+  await saveBulk(items);
+  closeModal();
+  toast(`Skabelonen "${mn.title}" lagt ind – ${items.length} måltider` + (skipped ? `, ${skipped} sprunget over` : ''));
   render();
 }
 
@@ -89,7 +194,7 @@ async function movePlanEntry(entryId, toDate) {
 async function autoFillWeek() {
   const monday = S.weekStart || mondayOf();
   const dates = weekDatesOf(monday);
-  const free = dates.filter(d => !K('planEntry').some(e => e.date === d));
+  const free = dates.filter(d => !K('planEntry').some(e => e.date === d && slotOf(e) === 'dinner'));
   if (!free.length) return toast('Alle ugens dage har allerede noget på madplanen', true);
   const recipes = K('recipe');
   if (!recipes.length) return toast('Biblioteket er tomt – tilføj nogle opskrifter først', true);
@@ -110,7 +215,7 @@ async function autoFillWeek() {
   };
 
   const items = free.map(d => ({
-    id: uid(), kind: 'planEntry', date: d, recipeId: draw().id, text: '', servings: null
+    id: uid(), kind: 'planEntry', date: d, slot: 'dinner', recipeId: draw().id, text: '', servings: null
   }));
   await saveBulk(items);
   toast(`${items.length} dage udfyldt – træk retterne rundt, som du vil`);
@@ -120,12 +225,15 @@ async function autoFillWeek() {
 function planEntryModal(entry, prefill) {
   const isNew = !entry;
   const d = entry || Object.assign({
-    id: uid(), kind: 'planEntry', date: isoDate(), recipeId: '', text: '', servings: null
+    id: uid(), kind: 'planEntry', date: isoDate(), slot: 'dinner', recipeId: '', text: '', servings: null
   }, prefill || {});
 
   openModal(`<h2>${isNew ? 'Tilføj til madplan' : 'Redigér madplan'}</h2>
     <div class="formgrid">
       <label class="fld"><span>Dato</span><input id="pmDate" type="date" value="${esc(d.date)}"></label>
+      <label class="fld"><span>Måltid</span><select id="pmSlot">
+        ${SLOTS.map(s => `<option value="${s.id}"${slotOf(d) === s.id ? ' selected' : ''}>${s.ico} ${s.label}</option>`).join('')}
+      </select></label>
       <label class="fld"><span>Personer (valgfrit)</span><input id="pmServ" type="number" min="1" value="${d.servings || ''}"></label>
     </div>
     <label class="fld"><span>Opskrift fra biblioteket</span><select id="pmRec">${recipeOptions(d.recipeId)}</select></label>
@@ -145,6 +253,7 @@ function planEntryModal(entry, prefill) {
     m.querySelector('#pmSave').onclick = async () => {
       d.date = m.querySelector('#pmDate').value;
       if (!d.date) return toast('Vælg en dato', true);
+      d.slot = m.querySelector('#pmSlot').value;
       d.recipeId = m.querySelector('#pmRec').value;
       d.text = m.querySelector('#pmText').value.trim();
       if (!d.recipeId && !d.text) return toast('Vælg en opskrift eller skriv en tekst', true);
@@ -163,19 +272,24 @@ async function weekToShopping() {
   const entries = K('planEntry').filter(e => dates.includes(e.date) && e.recipeId);
   if (!entries.length) return toast('Ugen har ingen opskrifter på madplanen', true);
   const items = [];
+  let skipped = 0;
   for (const e of entries) {
     const r = recipeById(e.recipeId);
     if (!r) continue;
     const factor = e.servings && r.servings ? e.servings / r.servings : 1;
     for (const l of (r.ingredients || []).filter(l => !/^##/.test(l))) {
+      const text = scaleIngredient(l, factor);
+      if (inPantry(text)) { skipped++; continue; }
       items.push({
-        id: uid(), kind: 'shopItem', text: scaleIngredient(l, factor),
-        group: r.title, done: false, createdAt: new Date().toISOString()
+        id: uid(), kind: 'shopItem', text, group: r.title,
+        section: guessSection(text), done: false, createdAt: new Date().toISOString()
       });
     }
   }
-  await saveBulk(items);
-  toast(`${items.length} varer føjet til indkøbslisten`);
+  if (items.length) await saveBulk(items);
+  const merged = await mergeShoppingItems();
+  toast(`${items.length} varer føjet til listen` +
+    (skipped ? ` · ${skipped} i forråd` : '') + (merged ? ` · ${merged} lagt sammen` : ''));
   goto('shopping');
 }
 
@@ -188,9 +302,10 @@ function printWeekPlan() {
     ${dates.map((d, i) => {
       const entries = K('planEntry').filter(e => e.date === d);
       return `<tr><td style="width:130px"><b>${WEEKDAYS_DA[i]}</b><br>${fmtDate(d)}</td>
-        <td>${entries.map(e => {
+        <td>${entries.slice().sort((a, b) => slotOrder(slotOf(a)) - slotOrder(slotOf(b))).map(e => {
           const r = e.recipeId ? recipeById(e.recipeId) : null;
-          return esc(r ? r.title : e.text || '') + (e.servings ? ` (${e.servings} pers.)` : '');
+          const pre = slotOf(e) !== 'dinner' ? slotInfo(slotOf(e)).label + ': ' : '';
+          return pre + esc(r ? r.title : e.text || '') + (e.servings ? ` (${e.servings} pers.)` : '');
         }).join('<br>') || '&nbsp;'}</td></tr>`;
     }).join('')}
     </tbody></table>
@@ -201,7 +316,7 @@ function printWeekPlan() {
 async function aiSuggestWeek() {
   const monday = S.weekStart || mondayOf();
   const dates = weekDatesOf(monday);
-  const free = dates.filter(d => !K('planEntry').some(e => e.date === d));
+  const free = dates.filter(d => !K('planEntry').some(e => e.date === d && slotOf(e) === 'dinner'));
   if (!free.length) return toast('Alle ugens dage har allerede noget på madplanen', true);
   const recipes = K('recipe');
   if (recipes.length < 2) return toast('Tilføj nogle opskrifter først, så AI\'en har noget at vælge imellem', true);
@@ -231,7 +346,7 @@ Svar KUN med JSON: [{"date": "YYYY-MM-DD", "recipeId": "..."}] – én pr. dato,
     for (const p of plan) {
       if (!free.includes(p.date) || !recipeById(p.recipeId)) continue;
       if (items.some(i => i.date === p.date)) continue;
-      items.push({ id: uid(), kind: 'planEntry', date: p.date, recipeId: p.recipeId, text: '', servings: null });
+      items.push({ id: uid(), kind: 'planEntry', date: p.date, slot: 'dinner', recipeId: p.recipeId, text: '', servings: null });
     }
     if (!items.length) throw new Error('AI\'en foreslog ingen brugbare dage');
     await saveBulk(items);

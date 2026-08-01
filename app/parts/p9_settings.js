@@ -38,6 +38,23 @@ RENDER.settings = () => {
   </div>
 
   <div class="panelbox">
+    <h2 style="margin-top:0">🏠 Home Assistant</h2>
+    <p class="small muted">Send indkøbslisten til en todo-liste i Home Assistant med ét klik fra
+      Indkøbsliste-siden. Opret en langtids-token under din HA-profil (Sikkerhed → Long-lived access tokens)
+      og en todo-liste (Indstillinger → Enheder → Hjælpere → Indkøbsliste).
+      Status: ${S.settings.haSet ? '<span class="good">forbundet ✓</span>' : '<span class="warn">ikke sat op</span>'}</p>
+    <div class="formgrid">
+      <label class="fld"><span>HA-adresse (fx http://homeassistant.local:8123)</span>
+        <input id="haUrl" value="${esc(S.settings.haUrl || '')}" placeholder="http://…"></label>
+      <label class="fld"><span>Token ${S.settings.haSet ? '(udfyld kun for at skifte)' : ''}</span>
+        <input id="haToken" type="password" autocomplete="off"></label>
+      <label class="fld"><span>Todo-enhed (fx todo.indkobsliste)</span>
+        <input id="haEntity" value="${esc(S.settings.haEntity || '')}" placeholder="todo.…"></label>
+    </div>
+    <button class="btn primary" id="haSave">Gem Home Assistant</button>
+  </div>
+
+  <div class="panelbox">
     <h2 style="margin-top:0">📅 Madplan i din kalender</h2>
     <p class="small muted">Abonnér på madplanen i Apple/Google Kalender med dette link:</p>
     <div class="rowflex">
@@ -47,12 +64,19 @@ RENDER.settings = () => {
   </div>
 
   <div class="panelbox">
-    <h2 style="margin-top:0">Backup</h2>
+    <h2 style="margin-top:0">Backup & import</h2>
     <div class="rowflex">
       <button class="btn" id="bakJson">⬇️ Download backup (JSON)</button>
       ${S.me.isAdmin ? '<button class="btn" id="bakDb">⬇️ Download database (.db)</button>' : ''}
       ${S.me.isAdmin ? '<button class="btn" id="bakRestore">⬆️ Gendan fra JSON…</button><input id="bakFile" type="file" accept=".json" hidden>' : ''}
     </div>
+    <h3>🌶️ Flyt fra Paprika</h3>
+    <p class="small muted">Eksportér hele dit bibliotek i Paprika (Indstillinger → Export → Paprika Recipe Format)
+      og vælg <b>.paprikarecipes</b>-filen her. Opskrifter, billeder, tider, kategorier og vurderinger følger med;
+      dubletter (samme titel) springes over.</p>
+    <button class="btn" id="papImport">⬆️ Importér Paprika-eksport…</button>
+    <input id="papFile" type="file" accept=".paprikarecipes,.paprikarecipe" hidden>
+    <span class="small muted" id="papStatus"></span>
   </div>
 
   <div class="panelbox">
@@ -117,6 +141,41 @@ RENDER.settings_bind = () => {
     if (!await confirmBox('Fjern AI-nøglen fra serveren?', 'Fjern')) return;
     await saveSettings({ ai_key: '' });
     render();
+  };
+
+  $('#haSave').onclick = async () => {
+    const settings = {
+      ha_url: $('#haUrl').value.trim().replace(/\/+$/, ''),
+      ha_entity: $('#haEntity').value.trim()
+    };
+    const token = $('#haToken').value.trim();
+    if (token) settings.ha_token = token;
+    await saveSettings(settings);
+    render();
+  };
+
+  $('#papImport').onclick = () => $('#papFile').click();
+  $('#papFile').onchange = async e => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const status = $('#papStatus');
+    const btn = $('#papImport');
+    btn.disabled = true;
+    status.textContent = 'Læser filen …';
+    try {
+      const res = await importPaprikaFile(f, (i, total) => {
+        status.textContent = `Importerer ${i} af ${total} …`;
+      });
+      toast(`Paprika-import: ${res.imported} nye opskrifter` +
+        (res.skipped ? `, ${res.skipped} dubletter sprunget over` : '') +
+        (res.failed ? `, ${res.failed} fejlede` : ''));
+      status.textContent = '';
+      render();
+    } catch (err2) {
+      status.textContent = '';
+      btn.disabled = false;
+      toast('Import fejlede: ' + err2.message, true);
+    }
   };
 
   $('#icalCopy').onclick = () => {

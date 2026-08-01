@@ -66,6 +66,19 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v3** (august 2026): **Paprika-import** (hele biblioteket fra en
+  .paprikarecipes-eksport inkl. billeder, tider, kategorier og vurderinger).
+  **Smart indkøbsliste**: ens varer lægges sammen, varerne grupperes pr.
+  butiksafdeling (regelbaseret + AI for resten), og et **forråd** holder
+  basisvarer ude af listen (med udløbsdatoer). **Madplan-skabeloner** (gem en
+  uge, læg den ind i enhver anden uge) og **måltids-typer**
+  (morgenmad/frokost/aftensmad/andet). Kogetilstand: **kryds ingredienser af**
+  undervejs. **Ernærings-estimat** pr. portion via AI. **Offline-støtte**
+  (service worker – appen og senest sete opskrifter virker uden net).
+  **Del en opskrift** med et offentligt link (kan slås fra igen).
+  **Home Assistant**: send indkøbslisten til en todo-liste med ét klik.
+  **Enhedsomregning**: cups/oz/lbs/°F → dl/g/°C med én knap.
+
 - **v2** (august 2026): Madplan kan auto-udfyldes fra biblioteket (uden AI) og
   retterne kan trækkes mellem dagene – ligger der allerede noget, bytter de
   plads. Aktive timere vises i venstremenuen med nedtælling. Timer-dialogen

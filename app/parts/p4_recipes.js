@@ -130,7 +130,13 @@ RENDER.recipeDetail = () => {
     ${r.prepMin ? `<span class="timechip">🔪 Forberedelse: ${fmtMin(r.prepMin)}</span>` : ''}
     ${r.cookMin ? `<span class="timechip">🍳 Tilberedning: ${fmtMin(r.cookMin)}</span>` : ''}
     ${recipeTotalMin(r) ? `<span class="timechip">⏱ I alt: ${fmtMin(recipeTotalMin(r))}</span>` : ''}
+    ${r.nutrition ? `<span class="timechip" title="Pr. portion${r.nutrition.estimated ? ' (AI-estimat)' : ''}">🔥 ${r.nutrition.kcal} kcal · ${r.nutrition.protein} g protein · ${r.nutrition.carbs} g kulhydrat · ${r.nutrition.fat} g fedt</span>` : ''}
     <span class="stars pick" id="ratePick">${[1, 2, 3, 4, 5].map(i => `<span data-star="${i}" class="${i <= (r.rating || 0) ? '' : 'off'}">★</span>`).join('')}</span>
+  </div>
+  <div class="rowflex" style="margin:0 0 14px">
+    <button class="btn small" id="shareBtn">${r.shareToken ? '🔗 Deles – vis link' : '🔗 Del med et link'}</button>
+    ${S.settings.aiKeySet ? `<button class="btn small" id="nutriBtn">🥗 ${r.nutrition ? 'Genberegn ernæring' : 'Estimér ernæring'} (AI)</button>` : ''}
+    ${hasImperial(r) ? '<button class="btn small" id="metricBtn">🌍 Omregn til metrisk (cups → dl …)</button>' : ''}
   </div>
 
   <div class="recdetail">
@@ -175,8 +181,95 @@ RENDER.recipeDetail_bind = () => {
     await saveItem(r, true);
     render();
   });
+  $('#shareBtn').onclick = () => shareRecipeModal(r);
+  const nutri = $('#nutriBtn');
+  if (nutri) nutri.onclick = () => aiEstimateNutrition(r, nutri);
+  const metric = $('#metricBtn');
+  if (metric) metric.onclick = async () => {
+    if (!await confirmBox('Omregn alle amerikanske mål (cups, oz, lbs, °F …) til metrisk i denne opskrift? Ændringen gemmes.', 'Omregn')) return;
+    convertRecipeToMetric(r);
+    await saveItem(r);
+    render();
+  };
   bindInlineTimers(r.title);
 };
+
+/* ---------------- deling med offentligt link ---------------- */
+function shareRecipeModal(r) {
+  const draw = () => {
+    const link = r.shareToken ? location.origin + '/del/' + r.shareToken : '';
+    openModal(`<h2>🔗 Del "${esc(r.title)}"</h2>
+      ${r.shareToken ? `
+        <p class="small muted">Alle med linket kan se opskriften – uden login. Slå delingen fra igen når som helst.</p>
+        <div class="rowflex">
+          <input id="shareUrl" readonly value="${esc(link)}" style="flex:1;min-width:260px">
+          <button class="btn small" id="shareCopy">Kopiér</button>
+        </div>
+        <div class="actions">
+          <button class="btn danger" id="shareOff" style="margin-right:auto">Slå deling fra</button>
+          <button class="btn" id="shareClose">Luk</button>
+        </div>`
+      : `<p class="small muted">Lav et offentligt link, så familie og venner kan se opskriften uden login.</p>
+        <div class="actions">
+          <button class="btn" id="shareClose">Annullér</button>
+          <button class="btn primary" id="shareOn">Lav link</button>
+        </div>`}`, m => {
+      m.querySelector('#shareClose').onclick = () => { closeModal(); render(); };
+      const on = m.querySelector('#shareOn');
+      if (on) on.onclick = async () => {
+        r.shareToken = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
+        await saveItem(r, true);
+        draw();
+      };
+      const off = m.querySelector('#shareOff');
+      if (off) off.onclick = async () => {
+        delete r.shareToken;
+        await saveItem(r, true);
+        toast('Delingen er slået fra');
+        closeModal();
+        render();
+      };
+      const copy = m.querySelector('#shareCopy');
+      if (copy) copy.onclick = () => {
+        m.querySelector('#shareUrl').select();
+        navigator.clipboard.writeText(link).then(() => toast('Link kopieret'));
+      };
+    });
+  };
+  draw();
+}
+
+/* ---------------- ernaering (AI-estimat pr. portion) ---------------- */
+async function aiEstimateNutrition(r, btn) {
+  btn.disabled = true;
+  btn.textContent = '🥗 Beregner …';
+  try {
+    const sys = `Du estimerer næringsindhold for madopskrifter. Svar KUN med ét JSON-objekt, ingen forklaring:
+{"kcal": tal, "protein": tal, "carbs": tal, "fat": tal} – alle PR. PORTION, afrundet til hele tal.`;
+    const res = await api('/api/ai', {
+      body: {
+        system: sys,
+        messages: [{ role: 'user', content: `Opskrift: ${r.title}\nPortioner: ${r.servings || app().defaultServings}\nIngredienser:\n${(r.ingredients || []).join('\n')}` }],
+        maxTokens: 512
+      }
+    });
+    let j;
+    try { j = JSON.parse(String(res.text).replace(/^[\s\S]*?\{/, '{').replace(/\}[^}]*$/, '}')); }
+    catch (e) { throw new Error('AI-svaret kunne ikke læses'); }
+    if (typeof j.kcal !== 'number') throw new Error('AI gav ikke et brugbart estimat');
+    r.nutrition = {
+      kcal: Math.round(j.kcal), protein: Math.round(j.protein || 0),
+      carbs: Math.round(j.carbs || 0), fat: Math.round(j.fat || 0), estimated: true
+    };
+    await saveItem(r, true);
+    toast('Ernæring estimeret (pr. portion)');
+    render();
+  } catch (e) {
+    toast('Kunne ikke estimere: ' + e.message, true);
+    btn.disabled = false;
+    btn.textContent = '🥗 Estimér ernæring (AI)';
+  }
+}
 
 /* ---------------- print ---------------- */
 function printRecipe(r) {
@@ -411,24 +504,36 @@ Findes der ingen opskrift i teksten, svar {"error": "ingen opskrift fundet"}.`;
 }
 
 /* ---------------- indkoebsliste fra opskrift ---------------- */
+/* springer varer over, der ligger i forraadet, gaetter afdeling og laegger
+ * ens varer sammen med det, der allerede staar paa listen */
 async function addRecipeToShopping(r, factor) {
   const lines = (r.ingredients || []).filter(l => !/^##/.test(l));
   if (!lines.length) return toast('Opskriften har ingen ingredienser', true);
-  const items = lines.map(l => ({
-    id: uid(), kind: 'shopItem', text: scaleIngredient(l, factor || 1),
-    group: r.title, done: false, createdAt: new Date().toISOString()
-  }));
-  await saveBulk(items);
-  toast(`${items.length} varer føjet til indkøbslisten`);
+  let skipped = 0;
+  const items = [];
+  for (const l of lines) {
+    const text = scaleIngredient(l, factor || 1);
+    if (inPantry(text)) { skipped++; continue; }
+    items.push({
+      id: uid(), kind: 'shopItem', text, group: r.title,
+      section: guessSection(text), done: false, createdAt: new Date().toISOString()
+    });
+  }
+  if (items.length) await saveBulk(items);
+  const merged = await mergeShoppingItems();
+  toast(`${items.length} varer føjet til listen` +
+    (skipped ? ` · ${skipped} sprunget over (i forråd)` : '') +
+    (merged ? ` · ${merged} lagt sammen` : ''));
   renderNav();
 }
 
 /* ---------------- kogetilstand ---------------- */
-const CM = { recipe: null, step: 0, wakeWasOn: false };
+const CM = { recipe: null, step: 0, wakeWasOn: false, checked: new Set() };
 
 function openCookMode(r) {
   CM.recipe = r;
   CM.step = 0;
+  CM.checked = new Set();
   CM.wakeWasOn = S.wakeOn;
   if (!S.wakeOn) setWakeLock(true); // skaermen skal ikke slukke midt i madlavningen
   drawCookMode();
@@ -455,8 +560,13 @@ function drawCookMode() {
     </div>
     <div class="cmbody">
       <div class="cmings">
-        <h3 style="margin-top:0">Ingredienser</h3>
-        <ul>${ingredientsHtml(r, factor)}</ul>
+        <h3 style="margin-top:0">Ingredienser <span class="muted small">(kryds af undervejs)</span></h3>
+        <ul>${(r.ingredients || []).map((line, i) => {
+          if (/^##\s*/.test(line)) return `<li style="border:0;font-weight:700;color:var(--amber);padding-top:12px">${esc(line.replace(/^##\s*/, ''))}</li>`;
+          return `<li><label class="chk cmck${CM.checked.has(i) ? ' done' : ''}">
+            <input type="checkbox" data-cmck="${i}" ${CM.checked.has(i) ? 'checked' : ''}>
+            <span>${esc(scaleIngredient(line, factor))}</span></label></li>`;
+        }).join('')}</ul>
       </div>
       <div>
         <div class="cmstepnum">Trin ${CM.step + 1} af ${steps.length}</div>
@@ -473,6 +583,11 @@ function drawCookMode() {
   $('#cmClose').onclick = closeCookMode;
   $('#cmWake').onclick = () => setWakeLock(!S.wakeOn);
   $('#cmTimer').onclick = () => newTimerModal(r.title);
+  $$('[data-cmck]').forEach(cb => cb.onchange = () => {
+    const i = +cb.dataset.cmck;
+    if (cb.checked) CM.checked.add(i); else CM.checked.delete(i);
+    cb.closest('label').classList.toggle('done', cb.checked);
+  });
   $('#cmPrev').onclick = () => { if (CM.step > 0) { CM.step--; drawCookMode(); } };
   const next = $('#cmNext');
   if (next) next.onclick = () => { CM.step++; drawCookMode(); };

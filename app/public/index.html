@@ -62,5 +62,10 @@ else document.documentElement.dataset.theme='dark';}catch(e){}})();
 <div id="printHost" class="printsheet"></div>
 
 <script src="app.js"></script>
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(function () {});
+}
+</script>
 </body>
 </html>

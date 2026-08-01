@@ -95,6 +95,7 @@ function paletteItems() {
     { ico: '🛒', label: 'Tilføj til indkøbsliste', hint: 'handling', run: () => { goto('shopping'); setTimeout(() => { const el = $('#shopNew'); if (el) el.focus(); }, 50); } },
     { ico: '📱', label: S.wakeOn ? 'Slå skærmlås fra' : 'Hold skærmen tændt', hint: 'handling', run: () => setWakeLock(!S.wakeOn) },
     { ico: '🎲', label: 'Tilfældig opskrift', hint: 'handling', run: randomRecipe },
+    { ico: '🌶️', label: 'Importér Paprika-eksport', hint: 'handling', run: () => { goto('settings'); setTimeout(() => { const b = $('#papImport'); if (b) b.scrollIntoView({ block: 'center' }); }, 60); } },
     { ico: '🌗', label: 'Skift tema', hint: 'handling', run: () => $('#themeQuick').click() }
   );
   /* opskrifter kan findes direkte fra paletten */

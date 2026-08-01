@@ -42,7 +42,7 @@ def b64_wrap(s, width=100):
 # sh -c-argument, og Linux' MAX_ARG_STRLEN (~128 KiB) saetter loftet.
 import io, tarfile, gzip
 FILES = ['app/server.js', 'app/public/index.html', 'app/public/style.css',
-         'app/public/app.js', 'app/public/icon-192.png', 'app/public/icon-512.png']
+         'app/public/app.js', 'app/public/sw.js', 'app/public/icon-192.png', 'app/public/icon-512.png']
 buf = io.BytesIO()
 with tarfile.open(fileobj=buf, mode='w') as tar:
     for path in FILES:

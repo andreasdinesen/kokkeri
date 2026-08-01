@@ -294,6 +294,9 @@ ul.shoplist .shopgroup { font-weight: 700; border-bottom: 2px solid var(--border
 #cookMode .cmings { font-size: 14.5px; }
 #cookMode .cmings li { padding: 4px 0; border-bottom: 1px solid var(--border); list-style: none; }
 #cookMode .cmings ul { padding: 0; margin: 6px 0; }
+#cookMode .cmck { cursor: pointer; align-items: flex-start; }
+#cookMode .cmck input { margin-top: 3px; flex: none; }
+#cookMode .cmck.done span { text-decoration: line-through; color: var(--muted); }
 #cookMode .cmstep { font-size: 24px; line-height: 1.5; max-width: 720px; }
 #cookMode .cmstepnum { color: var(--amber); font-weight: 700; font-size: 15px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 10px; }
 #cookMode .cmfoot {

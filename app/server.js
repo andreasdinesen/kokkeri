@@ -24,9 +24,11 @@ const DB_PATH = path.join(DATA_DIR, 'kokkeri.db');
 /* Datatyper frontenden må gemme. Holdes som whitelist så API'et ikke kan
  * bruges som vilkårligt lager. */
 const KINDS = new Set([
-  'recipe',    // opskrift (titel, ingredienser, fremgangsmåde, kilde-URL, billede ...)
-  'planEntry', // madplan-linje (dato + opskrift eller fritekst)
-  'shopItem'   // indkøbsliste-linje (tekst, evt. opskrift-reference, afkrydset)
+  'recipe',     // opskrift (titel, ingredienser, fremgangsmåde, kilde-URL, billede ...)
+  'planEntry',  // madplan-linje (dato + slot + opskrift eller fritekst)
+  'shopItem',   // indkøbsliste-linje (tekst, evt. opskrift-reference, afdeling, afkrydset)
+  'menu',       // gemt madplan-skabelon (ugedag+slot+opskrift pr. linje)
+  'pantryItem'  // forråd (vare man har hjemme, evt. udløbsdato)
 ]);
 
 /* ---------------- database ---------------- */
@@ -321,8 +323,10 @@ function validPassword(p) { return typeof p === 'string' && p.length >= 8 && p.l
 /* Whitelist af setting-nøgler frontenden må skrive. `app` er hoved-JSON'en
  * med parametre; `logo` er et data-URL-billede. `ai_key` er Claude API-nøglen –
  * den gemmes her, men returneres ALDRIG til frontenden (kun aiKeySet: true). */
-const SETTING_KEYS = new Set(['app', 'logo', 'allow_registration', 'ai_key', 'ai_model']);
-const SETTING_MAX = { app: 200000, logo: 900000, allow_registration: 4, ai_key: 300, ai_model: 100 };
+const SETTING_KEYS = new Set(['app', 'logo', 'allow_registration', 'ai_key', 'ai_model',
+  'ha_url', 'ha_token', 'ha_entity']);
+const SETTING_MAX = { app: 200000, logo: 900000, allow_registration: 4, ai_key: 300, ai_model: 100,
+  ha_url: 300, ha_token: 2000, ha_entity: 200 };
 
 function sanitizeItem(it) {
   if (!it || typeof it !== 'object') return null;
@@ -348,6 +352,10 @@ function appSettingsJson() {
   }
   out.aiKeySet = !!setting('ai_key', '');
   out.aiModel = setting('ai_model', '');
+  /* Home Assistant: token'et forlader aldrig serveren */
+  out.haUrl = setting('ha_url', '');
+  out.haEntity = setting('ha_entity', '');
+  out.haSet = !!(setting('ha_url', '') && setting('ha_token', '') && setting('ha_entity', ''));
   return out;
 }
 
@@ -602,9 +610,52 @@ const server = http.createServer(async (req, res) => {
                 { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' }]
       }));
     }
-    if (req.method === 'GET' && /^\/(app\.js|style\.css|icon-\d+\.png|favicon\.ico)$/.test(p)) {
+    if (req.method === 'GET' && /^\/(app\.js|style\.css|sw\.js|icon-\d+\.png|favicon\.ico)$/.test(p)) {
       return serveStatic(res, p === '/favicon.ico' ? 'icon-192.png' : p.slice(1));
     }
+
+    /* offentlig delt opskrift (ingen session - beskyttet af unikt token pr. opskrift) */
+    if (p.startsWith('/del/') && req.method === 'GET') {
+      const token = decodeURIComponent(p.slice(5)).replace(/[^0-9a-f]/g, '');
+      if (token.length < 16) return err(res, 404, 'Ikke fundet');
+      const rec = q.itemsByKind.all('recipe').map(r => JSON.parse(r.data)).find(r => r.shareToken === token);
+      if (!rec) return err(res, 404, 'Opskriften findes ikke – delingen kan være slået fra');
+      const H = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+      const ings = (rec.ingredients || []).map(l => /^##\s*/.test(l)
+        ? `<li class="grp">${H(l.replace(/^##\s*/, ''))}</li>` : `<li>${H(l)}</li>`).join('');
+      const steps = (rec.instructions || []).map(s2 => /^##\s*/.test(s2)
+        ? `</ol><h3>${H(s2.replace(/^##\s*/, ''))}</h3><ol>` : `<li>${H(s2)}</li>`).join('');
+      const meta = [rec.category, rec.servings ? rec.servings + ' portioner' : '',
+        rec.totalMin || rec.cookMin ? '⏱ ' + (rec.totalMin || ((rec.prepMin || 0) + (rec.cookMin || 0))) + ' min' : '']
+        .filter(Boolean).join(' · ');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(`<!doctype html><html lang="da"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${H(rec.title)}</title>
+<style>
+body{font:16px/1.5 system-ui,-apple-system,sans-serif;margin:0;background:#0b0f14;color:#e6edf3}
+@media(prefers-color-scheme:light){body{background:#f4f5f7;color:#1c2128}.wrap{background:#fff}}
+.wrap{max-width:760px;margin:0 auto;padding:28px 22px 60px}
+img{max-width:100%;border-radius:12px}
+h1{margin:8px 0 4px}.meta{color:#8b98a5;margin-bottom:18px}
+ul{list-style:none;padding:0}ul li{padding:6px 0;border-bottom:1px solid rgba(128,148,168,.25)}
+ul li.grp{font-weight:700;color:#e0703c;border:0;padding-top:14px}
+ol li{padding:5px 0 5px 4px}
+.foot{margin-top:36px;color:#8b98a5;font-size:13px}
+a{color:#539bf5;text-decoration:none}
+</style></head><body><div class="wrap">
+${rec.image ? `<img src="${rec.image}" alt="">` : ''}
+<h1>${H(rec.title)}</h1>
+<div class="meta">${H(meta)}</div>
+${rec.description ? `<p>${H(rec.description)}</p>` : ''}
+<h2>Ingredienser</h2><ul>${ings}</ul>
+<h2>Fremgangsmåde</h2><ol>${steps}</ol>
+${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${H(rec.url)}</a></p>` : ''}
+<p class="foot">Delt fra ${H(APP_NAME)} 🍳</p>
+</div></body></html>`);
+    }
+
     if (!p.startsWith('/api/')) return err(res, 404, 'Ikke fundet');
 
     /* --- API --- */
@@ -624,10 +675,12 @@ const server = http.createServer(async (req, res) => {
       const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15) + 'Z';
       const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Kokkeri//DA', 'CALSCALE:GREGORIAN',
         'X-WR-CALNAME:' + icsEsc(APP_NAME + ' madplan'), 'X-WR-TIMEZONE:Europe/Copenhagen'];
+      const SLOT_DA = { breakfast: 'Morgenmad', lunch: 'Frokost', other: 'Andet' };
       for (const e of entries) {
         if (!e.date || !/^\d{4}-\d{2}-\d{2}$/.test(e.date)) continue;
         const rec = e.recipeId ? recipes.get(e.recipeId) : null;
-        const title = rec ? rec.title : (e.text || 'Madplan');
+        const slotPre = SLOT_DA[e.slot] ? SLOT_DA[e.slot] + ': ' : '';
+        const title = slotPre + (rec ? rec.title : (e.text || 'Madplan'));
         lines.push('BEGIN:VEVENT', `UID:${e.id}@kokkeri`, 'DTSTAMP:' + stamp,
           `DTSTART;VALUE=DATE:${e.date.replace(/-/g, '')}`,
           'SUMMARY:' + icsEsc('🍽 ' + title));
@@ -865,6 +918,33 @@ const server = http.createServer(async (req, res) => {
       } catch (e) {
         return err(res, e.status || 502, e.message);
       }
+    }
+
+    /* ---- Home Assistant: skub aabne indkoebsvarer til en todo-liste ----
+     * Token'et bor kun paa serveren (settings ha_token). En vare ad gangen via
+     * todo.add_item - HA har ingen bulk-service. */
+    if (p === '/api/ha/push-shopping' && req.method === 'POST') {
+      const haUrl = setting('ha_url', '').replace(/\/+$/, '');
+      const haToken = setting('ha_token', '');
+      const haEntity = setting('ha_entity', '');
+      if (!haUrl || !haToken || !haEntity) return err(res, 400, 'Home Assistant er ikke sat op – udfyld URL, token og todo-enhed under Indstillinger');
+      const items = q.itemsByKind.all('shopItem').map(r => JSON.parse(r.data)).filter(i => !i.done);
+      if (!items.length) return err(res, 400, 'Indkøbslisten er tom');
+      let ok = 0, failed = 0, lastErr = '';
+      for (const it of items.slice(0, 200)) {
+        try {
+          const r = await fetch(haUrl + '/api/services/todo/add_item', {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + haToken, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ entity_id: haEntity, item: String(it.text || '').slice(0, 250) }),
+            signal: AbortSignal.timeout(10000)
+          });
+          if (r.ok) ok++; else { failed++; lastErr = 'HA svarede ' + r.status; }
+        } catch (e) { failed++; lastErr = e.message; }
+        if (failed >= 3 && ok === 0) break; // giv op hurtigt hvis intet virker
+      }
+      if (!ok) return err(res, 502, 'Kunne ikke sende til Home Assistant: ' + lastErr);
+      return send(res, 200, { pushed: ok, failed });
     }
 
     /* ---- backup / restore ---- */
