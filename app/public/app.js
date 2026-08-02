@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 4;
+const APP_VERSION = 5;
 
 /* ---------------- state ---------------- */
 const S = {
@@ -628,6 +628,7 @@ function paletteItems() {
   items.push(
     { ico: '📖', label: 'Ny opskrift', hint: 'handling', run: () => { goto('recipes'); recipeModal(null); } },
     { ico: '🌐', label: 'Importér opskrift fra URL', hint: 'handling', run: () => { goto('recipes'); importUrlModal(); } },
+    { ico: '📋', label: 'Importér fra indsat HTML/noter', hint: 'handling', run: () => { goto('recipes'); importUrlModal(); setTimeout(() => { const d = $('#impPasteBox'); if (d) { d.open = true; $('#impPaste').focus(); } }, 60); } },
     { ico: '⏱️', label: 'Ny timer', hint: 'handling', run: () => { goto('timers'); newTimerModal(); } },
     { ico: '🛒', label: 'Tilføj til indkøbsliste', hint: 'handling', run: () => { goto('shopping'); setTimeout(() => { const el = $('#shopNew'); if (el) el.focus(); }, 50); } },
     { ico: '📱', label: S.wakeOn ? 'Slå skærmlås fra' : 'Hold skærmen tændt', hint: 'handling', run: () => setWakeLock(!S.wakeOn) },
@@ -1308,11 +1309,22 @@ async function fetchImageAsDataUrl(url) {
 
 /* ---------------- import fra URL ---------------- */
 function importUrlModal() {
-  openModal(`<h2>🌐 Importér opskrift fra URL</h2>
+  openModal(`<h2>🌐 Importér opskrift</h2>
     <p class="muted small">Indsæt et link til en opskrift – fx fra Valdemarsro, Arla, Madens Verden
     eller de fleste andre opskriftsider. Kokkeri trækker selv titel, ingredienser, fremgangsmåde,
     tider og billede ud og gemmer linket, så du altid kan gå tilbage til originalen.</p>
     <label class="fld"><span>URL</span><input id="impUrl" placeholder="https://…" autocomplete="off"></label>
+    <details style="margin-top:12px" id="impPasteBox">
+      <summary class="small muted" style="cursor:pointer">Siden kræver login? Eller opskriften står i dine noter? Indsæt indholdet her</summary>
+      <p class="small muted" style="margin:8px 0 6px">
+        <b>Side bag login:</b> åbn opskriften i din browser (logget ind), vis sidens kilde
+        (<span class="kbd">⌘⌥U</span> / <span class="kbd">Ctrl+U</span>), kopiér det hele og indsæt her –
+        så bruges din egen adgang, og Kokkeri parser HTML'en præcis som ved et link.
+        Alternativt: markér al tekst på siden (<span class="kbd">⌘A</span>, <span class="kbd">⌘C</span>) og indsæt.<br>
+        <b>Fra noter:</b> indsæt bare opskrift-teksten${S.settings.aiKeySet ? ' – AI\'en strukturerer den' : ' (kræver AI-nøgle under Indstillinger)'}.
+      </p>
+      <textarea id="impPaste" rows="7" style="width:100%" placeholder="Indsæt HTML eller opskrift-tekst her …"></textarea>
+    </details>
     <p class="small muted" id="impStatus" style="min-height:18px"></p>
     <div class="actions">
       <button class="btn" id="impCancel">Annullér</button>
@@ -1320,36 +1332,64 @@ function importUrlModal() {
     </div>`, m => {
     const status = m.querySelector('#impStatus');
     const input = m.querySelector('#impUrl');
+    const paste = m.querySelector('#impPaste');
     input.focus();
     m.querySelector('#impCancel').onclick = closeModal;
+
+    /* faelles afslutning: recipe-objekt eller AI-fallback paa raa tekst */
+    const finish = async (res, url) => {
+      if (res.recipe) {
+        status.textContent = 'Fandt opskriften – henter billede …';
+        const image = await fetchImageAsDataUrl(res.recipe.image);
+        closeModal();
+        openImportedRecipe(res.recipe, image);
+        return true;
+      }
+      if (res.pageText) {
+        if (!S.settings.aiKeySet) {
+          status.innerHTML = 'Ingen maskinlæsbar opskrift (JSON-LD/microdata). Med en AI-nøgle under <b>Indstillinger</b> kan Kokkeri i stedet læse indholdet med AI.';
+          return false;
+        }
+        status.textContent = 'Ingen maskinlæsbar opskrift – prøver med AI (kan tage ~20 sek.) …';
+        const rec = await aiExtractRecipe(res.pageText, url, res.pageTitle);
+        const image = await fetchImageAsDataUrl(rec.image || res.pageImage);
+        closeModal();
+        openImportedRecipe(Object.assign(rec, { url }), image);
+        return true;
+      }
+      status.textContent = 'Kunne ikke finde en opskrift.';
+      return false;
+    };
+
     const go = async () => {
       let url = input.value.trim();
-      if (!url) return;
-      if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+      if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
+      const raw = paste.value.trim();
+      if (!url && !raw) return;
       const btn = m.querySelector('#impGo');
       btn.disabled = true;
-      status.textContent = 'Henter siden …';
       try {
-        const res = await api('/api/fetch-recipe?url=' + encodeURIComponent(url));
-        if (res.recipe) {
-          status.textContent = 'Fandt opskriften – henter billede …';
-          const image = await fetchImageAsDataUrl(res.recipe.image);
-          closeModal();
-          openImportedRecipe(res.recipe, image);
-        } else if (res.pageText) {
-          if (!S.settings.aiKeySet) {
-            status.innerHTML = 'Siden har ingen maskinlæsbar opskrift (JSON-LD). Med en AI-nøgle under <b>Indstillinger</b> kan Kokkeri i stedet læse siden med AI.';
-            btn.disabled = false;
-            return;
+        if (raw) {
+          /* indsat indhold vinder over URL'en (som saa kun bruges som kilde-link) */
+          const looksHtml = /<\/(div|p|html|body|head|script|li|span|h\d|article)>/i.test(raw) || /<html[\s>]/i.test(raw);
+          if (looksHtml) {
+            status.textContent = 'Analyserer HTML …';
+            if (!await finish(await api('/api/parse-recipe', { body: { html: raw, url } }), url)) btn.disabled = false;
+          } else {
+            if (!S.settings.aiKeySet) {
+              status.innerHTML = 'Ren tekst kræver en AI-nøgle under <b>Indstillinger</b> – eller indsæt sidens HTML i stedet.';
+              btn.disabled = false;
+              return;
+            }
+            status.textContent = 'AI\'en strukturerer teksten (kan tage ~20 sek.) …';
+            const rec = await aiExtractRecipe(raw.slice(0, 30000), url, '');
+            const image = await fetchImageAsDataUrl(rec.image);
+            closeModal();
+            openImportedRecipe(Object.assign(rec, { url }), image);
           }
-          status.textContent = 'Ingen maskinlæsbar opskrift – prøver med AI (kan tage ~20 sek.) …';
-          const rec = await aiExtractRecipe(res.pageText, url, res.pageTitle);
-          const image = await fetchImageAsDataUrl(rec.image || res.pageImage);
-          closeModal();
-          openImportedRecipe(Object.assign(rec, { url }), image);
         } else {
-          status.textContent = 'Kunne ikke finde en opskrift på siden.';
-          btn.disabled = false;
+          status.textContent = 'Henter siden …';
+          if (!await finish(await api('/api/fetch-recipe?url=' + encodeURIComponent(url)), url)) btn.disabled = false;
         }
       } catch (e) {
         status.textContent = 'Fejl: ' + e.message;

@@ -66,6 +66,12 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v5** (august 2026): **Import fra indsat HTML/tekst** – til opskriftsider bag
+  login (kopiér sidens kilde fra din egen indloggede browser og indsæt; Kokkeri
+  parser HTML'en præcis som ved et link) og til opskrifter fra noter (indsæt
+  ren tekst, AI'en strukturerer den). Findes som fold-ud-felt i
+  import-dialogen og som handling i kommandopaletten.
+
 - **v4** (august 2026): **Todoist**-integration – send indkøbslisten til et valgt
   Todoist-projekt med ét klik (butiksafdeling og opskrift følger med som note).
   Bruger Todoists unified API v1; det gamle `/rest/v2` blev pensioneret i 2026.

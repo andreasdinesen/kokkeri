@@ -893,6 +893,28 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
       }
     }
 
+    /* ---- opskrift-parsning af indsat HTML ----
+     * Til sider bag login: brugeren kopierer sidens HTML (vis kilde / Cmd+A)
+     * fra sin egen indloggede browser og indsaetter den - serveren koerer
+     * praecis samme parser som ved URL-import (JSON-LD -> microdata). */
+    if (p === '/api/parse-recipe' && req.method === 'POST') {
+      const html = typeof body.html === 'string' ? body.html.slice(0, 3e6) : '';
+      if (!html.trim()) return err(res, 400, 'Ingen HTML at analysere');
+      let pageUrl = '';
+      try { pageUrl = body.url ? new URL(String(body.url)).href : ''; } catch (e) {}
+      const recipe = extractRecipe(html, pageUrl);
+      if (recipe) return send(res, 200, { recipe });
+      const titleM = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+      const ogImg = html.match(/<meta[^>]+property\s*=\s*["']og:image["'][^>]+content\s*=\s*["']([^"']+)["']/i) ||
+                    html.match(/<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+property\s*=\s*["']og:image["']/i);
+      return send(res, 200, {
+        recipe: null,
+        pageTitle: titleM ? decodeEntities(titleM[1]).trim().slice(0, 300) : '',
+        pageImage: ogImg ? ogImg[1] : '',
+        pageText: stripHtml(html).slice(0, 30000)
+      });
+    }
+
     /* ---- billed-proxy (til at gemme opskrift-billeder lokalt som dataURL) ---- */
     if (p === '/api/fetch-image' && req.method === 'GET') {
       let target;
