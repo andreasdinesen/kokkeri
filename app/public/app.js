@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 3;
+const APP_VERSION = 4;
 
 /* ---------------- state ---------------- */
 const S = {
@@ -1454,6 +1454,38 @@ function closeCookMode() {
   if (!CM.wakeWasOn && S.wakeOn) setWakeLock(false);
   CM.recipe = null;
 }
+/* aktive timere som stribe oeverst i kogetilstanden.
+ * Bruger samme [data-timerid]/.ttime-kontrakt som timer-motoren, saa
+ * nedtaellingen opdateres uden at hele kogetilstanden gentegnes. */
+function cookTimersHtml() {
+  if (!S.timers.length) return '';
+  return S.timers.map(t => `
+    <button class="cmtimer${t.ringing ? ' ringing' : ''}${t.paused ? ' paused' : ''}" data-timerid="${t.id}"
+      data-cmtimer="${t.id}" title="${t.ringing ? 'Klik for at stoppe alarmen' : 'Klik for at pause/fortsætte'}">
+      <span>${t.ringing ? '⏰' : t.paused ? '⏸' : '⏱'}</span>
+      <span class="tlbl">${esc(t.label)}</span>
+      <span class="ttime">${t.ringing ? '0:00' : fmtTimer(timerRemainMs(t))}</span>
+    </button>`).join('');
+}
+function refreshCookTimers() {
+  const host = $('#cmTimers');
+  if (!host) return;
+  host.innerHTML = cookTimersHtml();
+  bindCookTimers();
+}
+function bindCookTimers() {
+  $$('[data-cmtimer]').forEach(b => b.onclick = () => {
+    const t = S.timers.find(x => x.id === b.dataset.cmtimer);
+    if (!t) return;
+    if (t.ringing) S.timers = S.timers.filter(x => x.id !== t.id);
+    else if (t.paused) { t.endsAt = Date.now() + t.remainMs; t.remainMs = null; t.paused = false; }
+    else { t.remainMs = timerRemainMs(t); t.paused = true; }
+    saveTimers();
+    refreshCookTimers();
+    renderNav();
+  });
+}
+
 function drawCookMode() {
   const r = CM.recipe;
   const steps = (r.instructions || []).filter(s => !/^##/.test(s));
@@ -1467,6 +1499,7 @@ function drawCookMode() {
       <button class="btn" id="cmTimer">⏱️ Timer</button>
       <button class="btn" id="cmClose">✕ Luk</button>
     </div>
+    <div class="cmtimers" id="cmTimers">${cookTimersHtml()}</div>
     <div class="cmbody">
       <div class="cmings">
         <h3 style="margin-top:0">Ingredienser <span class="muted small">(kryds af undervejs)</span></h3>
@@ -1492,6 +1525,7 @@ function drawCookMode() {
   $('#cmClose').onclick = closeCookMode;
   $('#cmWake').onclick = () => setWakeLock(!S.wakeOn);
   $('#cmTimer').onclick = () => newTimerModal(r.title);
+  bindCookTimers();
   $$('[data-cmck]').forEach(cb => cb.onchange = () => {
     const i = +cb.dataset.cmck;
     if (cb.checked) CM.checked.add(i); else CM.checked.delete(i);
@@ -1924,6 +1958,7 @@ RENDER.shopping = () => {
         <button class="btn" id="shopMerge" ${open.length > 1 ? '' : 'disabled'}>🧮 Læg ens varer sammen</button>
         ${S.settings.aiKeySet && unsorted ? `<button class="btn" id="shopAiSort">✨ Sortér ${unsorted} med AI</button>` : ''}
         ${S.settings.haSet ? '<button class="btn" id="shopHa">🏠 Send til Home Assistant</button>' : ''}
+        ${S.settings.todoistSet ? '<button class="btn" id="shopTd">✅ Send til Todoist</button>' : ''}
         <button class="btn" id="shopClearDone" ${done.length ? '' : 'disabled'}>Ryd afkrydsede</button>
         <button class="btn danger" id="shopClearAll" ${items.length ? '' : 'disabled'}>Tøm listen</button>
       </div>`) + `
@@ -2006,6 +2041,16 @@ RENDER.shopping_bind = () => {
     try {
       const r = await api('/api/ha/push-shopping', { body: {} });
       toast(`${r.pushed} varer sendt til Home Assistant` + (r.failed ? ` (${r.failed} fejlede)` : ''));
+    } catch (e) { toast(e.message, true); }
+    render();
+  };
+  const td = $('#shopTd');
+  if (td) td.onclick = async () => {
+    td.disabled = true;
+    td.textContent = '✅ Sender …';
+    try {
+      const r = await api('/api/todoist/push-shopping', { body: {} });
+      toast(`${r.pushed} varer sendt til Todoist` + (r.failed ? ` (${r.failed} fejlede)` : ''));
     } catch (e) { toast(e.message, true); }
     render();
   };
@@ -2106,6 +2151,7 @@ function startTimer(ms, label) {
     Notification.requestPermission().catch(() => {});
   }
   if (S.view === 'timers') render(); else renderNav();
+  refreshCookTimers();
 }
 function timerRemainMs(t) {
   return t.paused ? t.remainMs : Math.max(0, t.endsAt - Date.now());
@@ -2159,6 +2205,7 @@ function startTimerEngine() {
     if (changed) {
       saveTimers();
       if (S.view === 'timers' || S.view === 'dash') render(); else renderNav();
+      refreshCookTimers();
     }
     /* opdater viste tider uden fuld gen-rendering */
     $$('[data-timerid]').forEach(card => {
@@ -2434,6 +2481,24 @@ RENDER.settings = () => {
   </div>
 
   <div class="panelbox">
+    <h2 style="margin-top:0">✅ Todoist</h2>
+    <p class="small muted">Send indkøbslisten til Todoist med ét klik fra Indkøbsliste-siden.
+      Hent dit API-token i Todoist under Indstillinger → Integrationer → Udvikler.
+      Butiksafdeling og opskrift følger med som note på opgaven.
+      Status: ${S.settings.todoistSet ? '<span class="good">forbundet ✓</span>' : '<span class="warn">ikke sat op</span>'}</p>
+    <div class="formgrid">
+      <label class="fld"><span>API-token ${S.settings.todoistSet ? '(udfyld kun for at skifte)' : ''}</span>
+        <input id="tdToken" type="password" autocomplete="off" placeholder="fx 0123456789abcdef…"></label>
+      <label class="fld"><span>Projekt</span>
+        <span class="rowflex">
+          <select id="tdProject" style="flex:1"><option value="${esc(S.settings.todoistProject || '')}">${S.settings.todoistProject ? 'Gemt projekt (hent listen for at skifte)' : 'Indbakke (standard)'}</option></select>
+          <button class="btn small" id="tdLoad" ${S.settings.todoistSet ? '' : 'disabled'}>Hent</button>
+        </span></label>
+    </div>
+    <button class="btn primary" id="tdSave">Gem Todoist</button>
+  </div>
+
+  <div class="panelbox">
     <h2 style="margin-top:0">📅 Madplan i din kalender</h2>
     <p class="small muted">Abonnér på madplanen i Apple/Google Kalender med dette link:</p>
     <div class="rowflex">
@@ -2529,6 +2594,29 @@ RENDER.settings_bind = () => {
     };
     const token = $('#haToken').value.trim();
     if (token) settings.ha_token = token;
+    await saveSettings(settings);
+    render();
+  };
+
+  $('#tdLoad').onclick = async () => {
+    const btn = $('#tdLoad');
+    btn.disabled = true;
+    btn.textContent = 'Henter …';
+    try {
+      const r = await api('/api/todoist/projects');
+      const sel = $('#tdProject');
+      const cur = S.settings.todoistProject || '';
+      sel.innerHTML = '<option value="">Indbakke (standard)</option>' +
+        r.projects.map(p2 => `<option value="${esc(p2.id)}"${p2.id === cur ? ' selected' : ''}>${esc(p2.name)}</option>`).join('');
+      toast('Hentede ' + r.projects.length + ' projekter – vælg ét og tryk Gem');
+    } catch (e) { toast(e.message, true); }
+    btn.disabled = false;
+    btn.textContent = 'Hent';
+  };
+  $('#tdSave').onclick = async () => {
+    const settings = { todoist_project: $('#tdProject').value };
+    const token = $('#tdToken').value.trim();
+    if (token) settings.todoist_token = token;
     await saveSettings(settings);
     render();
   };

@@ -545,6 +545,38 @@ function closeCookMode() {
   if (!CM.wakeWasOn && S.wakeOn) setWakeLock(false);
   CM.recipe = null;
 }
+/* aktive timere som stribe oeverst i kogetilstanden.
+ * Bruger samme [data-timerid]/.ttime-kontrakt som timer-motoren, saa
+ * nedtaellingen opdateres uden at hele kogetilstanden gentegnes. */
+function cookTimersHtml() {
+  if (!S.timers.length) return '';
+  return S.timers.map(t => `
+    <button class="cmtimer${t.ringing ? ' ringing' : ''}${t.paused ? ' paused' : ''}" data-timerid="${t.id}"
+      data-cmtimer="${t.id}" title="${t.ringing ? 'Klik for at stoppe alarmen' : 'Klik for at pause/fortsætte'}">
+      <span>${t.ringing ? '⏰' : t.paused ? '⏸' : '⏱'}</span>
+      <span class="tlbl">${esc(t.label)}</span>
+      <span class="ttime">${t.ringing ? '0:00' : fmtTimer(timerRemainMs(t))}</span>
+    </button>`).join('');
+}
+function refreshCookTimers() {
+  const host = $('#cmTimers');
+  if (!host) return;
+  host.innerHTML = cookTimersHtml();
+  bindCookTimers();
+}
+function bindCookTimers() {
+  $$('[data-cmtimer]').forEach(b => b.onclick = () => {
+    const t = S.timers.find(x => x.id === b.dataset.cmtimer);
+    if (!t) return;
+    if (t.ringing) S.timers = S.timers.filter(x => x.id !== t.id);
+    else if (t.paused) { t.endsAt = Date.now() + t.remainMs; t.remainMs = null; t.paused = false; }
+    else { t.remainMs = timerRemainMs(t); t.paused = true; }
+    saveTimers();
+    refreshCookTimers();
+    renderNav();
+  });
+}
+
 function drawCookMode() {
   const r = CM.recipe;
   const steps = (r.instructions || []).filter(s => !/^##/.test(s));
@@ -558,6 +590,7 @@ function drawCookMode() {
       <button class="btn" id="cmTimer">⏱️ Timer</button>
       <button class="btn" id="cmClose">✕ Luk</button>
     </div>
+    <div class="cmtimers" id="cmTimers">${cookTimersHtml()}</div>
     <div class="cmbody">
       <div class="cmings">
         <h3 style="margin-top:0">Ingredienser <span class="muted small">(kryds af undervejs)</span></h3>
@@ -583,6 +616,7 @@ function drawCookMode() {
   $('#cmClose').onclick = closeCookMode;
   $('#cmWake').onclick = () => setWakeLock(!S.wakeOn);
   $('#cmTimer').onclick = () => newTimerModal(r.title);
+  bindCookTimers();
   $$('[data-cmck]').forEach(cb => cb.onchange = () => {
     const i = +cb.dataset.cmck;
     if (cb.checked) CM.checked.add(i); else CM.checked.delete(i);

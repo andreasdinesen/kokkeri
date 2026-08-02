@@ -45,6 +45,7 @@ RENDER.shopping = () => {
         <button class="btn" id="shopMerge" ${open.length > 1 ? '' : 'disabled'}>🧮 Læg ens varer sammen</button>
         ${S.settings.aiKeySet && unsorted ? `<button class="btn" id="shopAiSort">✨ Sortér ${unsorted} med AI</button>` : ''}
         ${S.settings.haSet ? '<button class="btn" id="shopHa">🏠 Send til Home Assistant</button>' : ''}
+        ${S.settings.todoistSet ? '<button class="btn" id="shopTd">✅ Send til Todoist</button>' : ''}
         <button class="btn" id="shopClearDone" ${done.length ? '' : 'disabled'}>Ryd afkrydsede</button>
         <button class="btn danger" id="shopClearAll" ${items.length ? '' : 'disabled'}>Tøm listen</button>
       </div>`) + `
@@ -127,6 +128,16 @@ RENDER.shopping_bind = () => {
     try {
       const r = await api('/api/ha/push-shopping', { body: {} });
       toast(`${r.pushed} varer sendt til Home Assistant` + (r.failed ? ` (${r.failed} fejlede)` : ''));
+    } catch (e) { toast(e.message, true); }
+    render();
+  };
+  const td = $('#shopTd');
+  if (td) td.onclick = async () => {
+    td.disabled = true;
+    td.textContent = '✅ Sender …';
+    try {
+      const r = await api('/api/todoist/push-shopping', { body: {} });
+      toast(`${r.pushed} varer sendt til Todoist` + (r.failed ? ` (${r.failed} fejlede)` : ''));
     } catch (e) { toast(e.message, true); }
     render();
   };

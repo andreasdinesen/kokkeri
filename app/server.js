@@ -324,9 +324,9 @@ function validPassword(p) { return typeof p === 'string' && p.length >= 8 && p.l
  * med parametre; `logo` er et data-URL-billede. `ai_key` er Claude API-nøglen –
  * den gemmes her, men returneres ALDRIG til frontenden (kun aiKeySet: true). */
 const SETTING_KEYS = new Set(['app', 'logo', 'allow_registration', 'ai_key', 'ai_model',
-  'ha_url', 'ha_token', 'ha_entity']);
+  'ha_url', 'ha_token', 'ha_entity', 'todoist_token', 'todoist_project']);
 const SETTING_MAX = { app: 200000, logo: 900000, allow_registration: 4, ai_key: 300, ai_model: 100,
-  ha_url: 300, ha_token: 2000, ha_entity: 200 };
+  ha_url: 300, ha_token: 2000, ha_entity: 200, todoist_token: 200, todoist_project: 120 };
 
 function sanitizeItem(it) {
   if (!it || typeof it !== 'object') return null;
@@ -352,10 +352,12 @@ function appSettingsJson() {
   }
   out.aiKeySet = !!setting('ai_key', '');
   out.aiModel = setting('ai_model', '');
-  /* Home Assistant: token'et forlader aldrig serveren */
+  /* Home Assistant + Todoist: tokens forlader aldrig serveren */
   out.haUrl = setting('ha_url', '');
   out.haEntity = setting('ha_entity', '');
   out.haSet = !!(setting('ha_url', '') && setting('ha_token', '') && setting('ha_entity', ''));
+  out.todoistProject = setting('todoist_project', '');
+  out.todoistSet = !!setting('todoist_token', '');
   return out;
 }
 
@@ -945,6 +947,75 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
       }
       if (!ok) return err(res, 502, 'Kunne ikke sende til Home Assistant: ' + lastErr);
       return send(res, 200, { pushed: ok, failed });
+    }
+
+    /* ---- Todoist ----
+     * Token'et bor kun paa serveren (settings todoist_token).
+     * Bruger den UNIFIED API v1 (api.todoist.com/api/v1) - det gamle
+     * /rest/v2 blev pensioneret i 2026 og svarer nu 410 Gone.
+     * GET /projects (pagineret: {results, next_cursor}) og POST /tasks. */
+    if (p.startsWith('/api/todoist/')) {
+      const tdToken = setting('todoist_token', '');
+      if (!tdToken) return err(res, 400, 'Todoist er ikke sat op – indsæt dit API-token under Indstillinger');
+      const td = async (path2, opts) => {
+        const r = await fetch('https://api.todoist.com/api/v1' + path2, Object.assign({
+          headers: Object.assign({ 'Authorization': 'Bearer ' + tdToken }, (opts && opts.headers) || {}),
+          signal: AbortSignal.timeout(15000)
+        }, opts || {}));
+        if (r.status === 401 || r.status === 403) { const e = new Error('Todoist afviste tokenet – tjek at det er kopieret rigtigt'); e.status = 401; throw e; }
+        if (r.status === 429) { const e = new Error('Todoist beder om at vente lidt (for mange kald)'); e.status = 429; throw e; }
+        if (!r.ok) { const e = new Error('Todoist svarede ' + r.status); e.status = 502; throw e; }
+        return r.status === 204 ? null : r.json();
+      };
+
+      /* projektliste, saa brugeren kan vaelge hvor varerne skal lande */
+      if (p === '/api/todoist/projects' && req.method === 'GET') {
+        try {
+          const projects = [];
+          let cursor = '';
+          /* v1 er pagineret; hent maks 5 sider (=250 projekter) */
+          for (let page = 0; page < 5; page++) {
+            const r = await td('/projects?limit=50' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : ''));
+            const rows = Array.isArray(r) ? r : (r && Array.isArray(r.results) ? r.results : []);
+            for (const x of rows) {
+              projects.push({ id: String(x.id), name: x.name, isInbox: !!(x.is_inbox_project || x.inbox_project) });
+            }
+            cursor = (r && r.next_cursor) || '';
+            if (!cursor) break;
+          }
+          return send(res, 200, { projects });
+        } catch (e) { return err(res, e.status || 502, e.message); }
+      }
+
+      if (p === '/api/todoist/push-shopping' && req.method === 'POST') {
+        const items = q.itemsByKind.all('shopItem').map(r => JSON.parse(r.data)).filter(i => !i.done);
+        if (!items.length) return err(res, 400, 'Indkøbslisten er tom');
+        const projectId = setting('todoist_project', '');
+        let ok = 0, failed = 0, lastErr = '', lastStatus = 502;
+        for (const it of items.slice(0, 200)) {
+          const task = { content: String(it.text || '').slice(0, 500) };
+          if (projectId) task.project_id = projectId;
+          /* butiksafdeling/opskrift som beskrivelse - godt naar man staar i butikken */
+          const note = [it.section, it.group].filter(Boolean).join(' · ');
+          if (note) task.description = note.slice(0, 500);
+          try {
+            await td('/tasks', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-Request-Id': crypto.randomUUID() },
+              body: JSON.stringify(task)
+            });
+            ok++;
+          } catch (e) {
+            failed++;
+            lastErr = e.message;
+            lastStatus = e.status || 502;
+            if (e.status === 401 || e.status === 429) break; // ugyldigt token / rate limit - stop straks
+          }
+          if (failed >= 3 && ok === 0) break;
+        }
+        if (!ok) return err(res, lastStatus === 401 ? 401 : 502, 'Kunne ikke sende til Todoist: ' + lastErr);
+        return send(res, 200, { pushed: ok, failed });
+      }
     }
 
     /* ---- backup / restore ---- */

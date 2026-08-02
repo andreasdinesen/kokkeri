@@ -290,6 +290,25 @@ ul.shoplist .shopgroup { font-weight: 700; border-bottom: 2px solid var(--border
   border-bottom: 1px solid var(--border); background: var(--panel);
 }
 #cookMode .cmhead h2 { margin: 0; flex: 1; font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* aktive timere som stribe under kogetilstandens topbar */
+#cookMode .cmtimers:empty { display: none; }
+#cookMode .cmtimers {
+  display: flex; gap: 10px; flex-wrap: wrap; padding: 10px 20px;
+  border-bottom: 1px solid var(--border); background: var(--panel);
+}
+#cookMode .cmtimer {
+  display: flex; align-items: center; gap: 8px;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--card2); color: var(--text); font: inherit; font-size: 15px;
+  padding: 7px 16px; cursor: pointer;
+}
+#cookMode .cmtimer:hover { border-color: var(--muted); }
+#cookMode .cmtimer .tlbl { color: var(--muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#cookMode .cmtimer .ttime { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 19px; }
+#cookMode .cmtimer.paused { opacity: .6; }
+#cookMode .cmtimer.ringing { border-color: var(--red); animation: ring .8s ease infinite; }
+#cookMode .cmtimer.ringing .ttime { color: var(--red); }
+
 #cookMode .cmbody { flex: 1; overflow-y: auto; padding: 24px; display: grid; grid-template-columns: 300px 1fr; gap: 26px; }
 #cookMode .cmings { font-size: 14.5px; }
 #cookMode .cmings li { padding: 4px 0; border-bottom: 1px solid var(--border); list-style: none; }

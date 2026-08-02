@@ -55,6 +55,24 @@ RENDER.settings = () => {
   </div>
 
   <div class="panelbox">
+    <h2 style="margin-top:0">✅ Todoist</h2>
+    <p class="small muted">Send indkøbslisten til Todoist med ét klik fra Indkøbsliste-siden.
+      Hent dit API-token i Todoist under Indstillinger → Integrationer → Udvikler.
+      Butiksafdeling og opskrift følger med som note på opgaven.
+      Status: ${S.settings.todoistSet ? '<span class="good">forbundet ✓</span>' : '<span class="warn">ikke sat op</span>'}</p>
+    <div class="formgrid">
+      <label class="fld"><span>API-token ${S.settings.todoistSet ? '(udfyld kun for at skifte)' : ''}</span>
+        <input id="tdToken" type="password" autocomplete="off" placeholder="fx 0123456789abcdef…"></label>
+      <label class="fld"><span>Projekt</span>
+        <span class="rowflex">
+          <select id="tdProject" style="flex:1"><option value="${esc(S.settings.todoistProject || '')}">${S.settings.todoistProject ? 'Gemt projekt (hent listen for at skifte)' : 'Indbakke (standard)'}</option></select>
+          <button class="btn small" id="tdLoad" ${S.settings.todoistSet ? '' : 'disabled'}>Hent</button>
+        </span></label>
+    </div>
+    <button class="btn primary" id="tdSave">Gem Todoist</button>
+  </div>
+
+  <div class="panelbox">
     <h2 style="margin-top:0">📅 Madplan i din kalender</h2>
     <p class="small muted">Abonnér på madplanen i Apple/Google Kalender med dette link:</p>
     <div class="rowflex">
@@ -150,6 +168,29 @@ RENDER.settings_bind = () => {
     };
     const token = $('#haToken').value.trim();
     if (token) settings.ha_token = token;
+    await saveSettings(settings);
+    render();
+  };
+
+  $('#tdLoad').onclick = async () => {
+    const btn = $('#tdLoad');
+    btn.disabled = true;
+    btn.textContent = 'Henter …';
+    try {
+      const r = await api('/api/todoist/projects');
+      const sel = $('#tdProject');
+      const cur = S.settings.todoistProject || '';
+      sel.innerHTML = '<option value="">Indbakke (standard)</option>' +
+        r.projects.map(p2 => `<option value="${esc(p2.id)}"${p2.id === cur ? ' selected' : ''}>${esc(p2.name)}</option>`).join('');
+      toast('Hentede ' + r.projects.length + ' projekter – vælg ét og tryk Gem');
+    } catch (e) { toast(e.message, true); }
+    btn.disabled = false;
+    btn.textContent = 'Hent';
+  };
+  $('#tdSave').onclick = async () => {
+    const settings = { todoist_project: $('#tdProject').value };
+    const token = $('#tdToken').value.trim();
+    if (token) settings.todoist_token = token;
     await saveSettings(settings);
     render();
   };

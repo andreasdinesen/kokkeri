@@ -20,6 +20,7 @@ function startTimer(ms, label) {
     Notification.requestPermission().catch(() => {});
   }
   if (S.view === 'timers') render(); else renderNav();
+  refreshCookTimers();
 }
 function timerRemainMs(t) {
   return t.paused ? t.remainMs : Math.max(0, t.endsAt - Date.now());
@@ -73,6 +74,7 @@ function startTimerEngine() {
     if (changed) {
       saveTimers();
       if (S.view === 'timers' || S.view === 'dash') render(); else renderNav();
+      refreshCookTimers();
     }
     /* opdater viste tider uden fuld gen-rendering */
     $$('[data-timerid]').forEach(card => {

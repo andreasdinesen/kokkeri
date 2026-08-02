@@ -66,6 +66,12 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v4** (august 2026): **Todoist**-integration – send indkøbslisten til et valgt
+  Todoist-projekt med ét klik (butiksafdeling og opskrift følger med som note).
+  Bruger Todoists unified API v1; det gamle `/rest/v2` blev pensioneret i 2026.
+  Aktive **timere vises nu i kogetilstanden** som en stribe med live nedtælling;
+  klik for at pause/fortsætte eller stoppe alarmen.
+
 - **v3** (august 2026): **Paprika-import** (hele biblioteket fra en
   .paprikarecipes-eksport inkl. billeder, tider, kategorier og vurderinger).
   **Smart indkøbsliste**: ens varer lægges sammen, varerne grupperes pr.
@@ -76,7 +82,7 @@ genererede filer direkte.
   undervejs. **Ernærings-estimat** pr. portion via AI. **Offline-støtte**
   (service worker – appen og senest sete opskrifter virker uden net).
   **Del en opskrift** med et offentligt link (kan slås fra igen).
-  **Home Assistant**: send indkøbslisten til en todo-liste med ét klik.
+  **Home Assistant** og **Todoist**: send indkøbslisten videre med ét klik.
   **Enhedsomregning**: cups/oz/lbs/°F → dl/g/°C med én knap.
 
 - **v2** (august 2026): Madplan kan auto-udfyldes fra biblioteket (uden AI) og
