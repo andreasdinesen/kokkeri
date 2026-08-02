@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 6;
+const APP_VERSION = 7;
 
 /* ---------------- state ---------------- */
 const S = {
@@ -284,8 +284,17 @@ document.addEventListener('visibilitychange', () => {
 });
 
 /* ---------------- print ---------------- */
-function printSheet(html) {
+/* document.title bliver browserens forslag til PDF-filnavn - saet et paent et
+ * under print og gendan bagefter. */
+function printSheet(html, filename) {
   $('#printHost').innerHTML = html;
+  const orig = document.title;
+  if (filename) {
+    document.title = String(filename).replace(/[\\/:*?"<>|]/g, '-').slice(0, 80) + '-' + isoDate();
+    const restore = () => { document.title = orig; window.removeEventListener('afterprint', restore); };
+    window.addEventListener('afterprint', restore);
+    setTimeout(restore, 60000); // sikkerhedsnet hvis afterprint aldrig fyrer
+  }
   setTimeout(() => window.print(), 60);
 }
 function printLogoHtml() {
@@ -1192,7 +1201,7 @@ function printRecipe(r) {
     <ul>${(r.ingredients || []).map(l => `<li>${esc(scaleIngredient(l, factor))}</li>`).join('')}</ul>
     <h2>Fremgangsmåde</h2>
     <ol>${(r.instructions || []).map(s => /^##/.test(s) ? `</ol><h2>${esc(s.replace(/^##\s*/, ''))}</h2><ol>` : `<li>${esc(s)}</li>`).join('')}</ol>
-    ${r.url ? `<p class="pdate">Kilde: ${esc(r.url)}</p>` : ''}`);
+    ${r.url ? `<p class="pdate">Kilde: ${esc(r.url)}</p>` : ''}`, r.title);
 }
 
 /* ---------------- redigerings-modal ---------------- */
@@ -1279,7 +1288,9 @@ function recipeModal(r, prefill) {
 }
 
 /* ---------------- billeder: skaler til dataURL saa alt gemmes lokalt ---------------- */
-function blobToScaledDataUrl(blob, maxDim) {
+/* opts.png = behold PNG (bevarer gennemsigtighed - JPEG goer transparent til SORT,
+ * hvilket oedelaegger logoer). Fotos gemmes som JPEG for pladsens skyld. */
+function blobToScaledDataUrl(blob, maxDim, opts) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
@@ -1289,8 +1300,22 @@ function blobToScaledDataUrl(blob, maxDim) {
       cv.width = Math.round(img.width * scale);
       cv.height = Math.round(img.height * scale);
       cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
-      let q = 0.82, url = cv.toDataURL('image/jpeg', q);
-      while (url.length > 160000 && q > 0.4) { q -= 0.12; url = cv.toDataURL('image/jpeg', q); }
+      let url;
+      if (opts && opts.png) {
+        url = cv.toDataURL('image/png');
+        /* PNG kan ikke kvalitets-skrues ned - skalér i stedet, hvis den er for stor */
+        let w = cv.width, h = cv.height;
+        while (url.length > 160000 && w > 64) {
+          w = Math.round(w * 0.8); h = Math.round(h * 0.8);
+          cv.width = w; cv.height = h;
+          cv.getContext('2d').drawImage(img, 0, 0, w, h);
+          url = cv.toDataURL('image/png');
+        }
+      } else {
+        let q = 0.82;
+        url = cv.toDataURL('image/jpeg', q);
+        while (url.length > 160000 && q > 0.4) { q -= 0.12; url = cv.toDataURL('image/jpeg', q); }
+      }
       URL.revokeObjectURL(img.src);
       resolve(url);
     };
@@ -1903,7 +1928,7 @@ function printWeekPlan() {
         }).join('<br>') || '&nbsp;'}</td></tr>`;
     }).join('')}
     </tbody></table>
-    <p class="pdate">Printet ${fmtDate(isoDate())}</p>`);
+    <p class="pdate">Printet ${fmtDate(isoDate())}</p>`, 'Madplan-uge-' + isoWeekNo(monday));
 }
 
 /* ---------------- AI: foreslaa en uge-madplan ---------------- */
@@ -2138,7 +2163,7 @@ function printShoppingList() {
     if (g !== lastGroup) { rows += `<h2>${esc(g)}</h2>`; lastGroup = g; }
     rows += `<p style="margin:2px 0">☐ ${esc(i.text)}</p>`;
   }
-  printSheet(`${printLogoHtml()}<h1>Indkøbsliste</h1>${rows}<p class="pdate">${fmtDate(isoDate())}</p>`);
+  printSheet(`${printLogoHtml()}<h1>Indkøbsliste</h1>${rows}<p class="pdate">${fmtDate(isoDate())}</p>`, 'Indkoebsliste');
 }
 
 /* AI saetter afdeling paa de varer, reglerne ikke kender */
@@ -2616,7 +2641,7 @@ RENDER.settings_bind = () => {
   $('#logoFile').onchange = async e => {
     const f = e.target.files[0];
     if (!f) return;
-    logoData = await blobToScaledDataUrl(f, 400);
+    logoData = await blobToScaledDataUrl(f, 400, { png: true }); // PNG bevarer transparens
     $('#logoPick').textContent = 'Logo valgt ✓';
   };
   const ld = $('#logoDel');

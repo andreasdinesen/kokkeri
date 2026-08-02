@@ -4,8 +4,12 @@
  * der er net (ingen versions-bump noedvendig); ryger nettet, virker appen og
  * de senest sete data (GET /api/items m.m.) stadig - fx kogetilstand i koekkenet. */
 
-const CACHE = 'kokkeri-v1';
-const CORE = ['/', '/app.js', '/style.css', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'];
+/* APP_VER stemples af build_rune.py - roer den ikke i haanden.
+ * Ny version => nyt cache-navn => de gamle filer ryddes ved aktivering. */
+const APP_VER = '7';
+const CACHE = 'kokkeri-v' + APP_VER;
+const CORE = ['/', '/app.js?v=' + APP_VER, '/style.css?v=' + APP_VER,
+  '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(CORE)).then(() => self.skipWaiting()));

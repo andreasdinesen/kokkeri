@@ -309,7 +309,7 @@ function printWeekPlan() {
         }).join('<br>') || '&nbsp;'}</td></tr>`;
     }).join('')}
     </tbody></table>
-    <p class="pdate">Printet ${fmtDate(isoDate())}</p>`);
+    <p class="pdate">Printet ${fmtDate(isoDate())}</p>`, 'Madplan-uge-' + isoWeekNo(monday));
 }
 
 /* ---------------- AI: foreslaa en uge-madplan ---------------- */

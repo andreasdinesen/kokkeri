@@ -19,7 +19,6 @@ with open('app/public/app.js', 'w', encoding='utf-8') as f:
 subprocess.run(['node', '--check', 'app/public/app.js'], check=True)
 
 server_js = read('app/server.js')
-index_html = read('app/public/index.html')
 style_css = read('app/public/style.css')
 
 m = re.search(r'const APP_VERSION = (\d+);', app_js)
@@ -27,8 +26,26 @@ if not m:
     sys.exit('FEJL: APP_VERSION ikke fundet i app-delene')
 app_version = m.group(1)
 
+# Cache-bust: Cloudflare edge-cacher .js/.css i timevis og ignorerer no-cache.
+# Versionerede URL'er giver hver release sin egen cache-noegle, saa opdateringer
+# slaar igennem med det samme (serveren sender HTML som no-store).
+index_html = read('app/public/index.html')
+index_html = re.sub(r'(style\.css|app\.js)(\?v=\d+)?', rf'\1?v={app_version}', index_html)
+with open('app/public/index.html', 'w', encoding='utf-8') as f:
+    f.write(index_html)
+
+# Service workeren skal have samme version: cache-navnet bumpes (saa gamle filer
+# ryddes ved aktivering) og precachen peger paa de versionerede URL'er.
+sw_js = read('app/public/sw.js')
+sw_js = re.sub(r"const APP_VER = '[^']*';", f"const APP_VER = '{app_version}';", sw_js)
+with open('app/public/sw.js', 'w', encoding='utf-8') as f:
+    f.write(sw_js)
+if f"const APP_VER = '{app_version}';" not in sw_js:
+    sys.exit('FEJL: APP_VER ikke fundet/stemplet i sw.js')
+
 # --- sikkerhedstjek ---
-for name, txt in [('server.js', server_js), ('index.html', index_html), ('app.js', app_js), ('style.css', style_css)]:
+for name, txt in [('server.js', server_js), ('index.html', index_html), ('app.js', app_js),
+                  ('style.css', style_css), ('sw.js', sw_js)]:
     hits = set(re.findall(r'\{\{[A-Z_]+\}\}', txt))
     if hits:
         sys.exit(f'FEJL: {name} indeholder skabelon-kollisioner: {hits}')

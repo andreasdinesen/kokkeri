@@ -307,9 +307,12 @@ function serveStatic(res, relPath) {
   if (!full.startsWith(PUBLIC_DIR)) return err(res, 404, 'Ikke fundet');
   fs.readFile(full, (e, data) => {
     if (e) return err(res, 404, 'Ikke fundet');
+    // no-store paa HTML: Cloudflare edge-cacher .js/.css i timevis (den ignorerer
+    // no-cache), men ikke HTML - og HTML'en peger paa versionerede ?v=N-URL'er,
+    // saa en ny release altid slaar igennem med det samme.
     res.writeHead(200, {
       'Content-Type': MIME[path.extname(full)] || 'application/octet-stream',
-      'Cache-Control': 'no-cache',
+      'Cache-Control': path.extname(full) === '.html' ? 'no-store' : 'no-cache',
       'X-Content-Type-Options': 'nosniff'
     });
     res.end(data);

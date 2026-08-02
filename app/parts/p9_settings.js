@@ -150,7 +150,7 @@ RENDER.settings_bind = () => {
   $('#logoFile').onchange = async e => {
     const f = e.target.files[0];
     if (!f) return;
-    logoData = await blobToScaledDataUrl(f, 400);
+    logoData = await blobToScaledDataUrl(f, 400, { png: true }); // PNG bevarer transparens
     $('#logoPick').textContent = 'Logo valgt ✓';
   };
   const ld = $('#logoDel');

@@ -185,7 +185,7 @@ function printShoppingList() {
     if (g !== lastGroup) { rows += `<h2>${esc(g)}</h2>`; lastGroup = g; }
     rows += `<p style="margin:2px 0">☐ ${esc(i.text)}</p>`;
   }
-  printSheet(`${printLogoHtml()}<h1>Indkøbsliste</h1>${rows}<p class="pdate">${fmtDate(isoDate())}</p>`);
+  printSheet(`${printLogoHtml()}<h1>Indkøbsliste</h1>${rows}<p class="pdate">${fmtDate(isoDate())}</p>`, 'Indkoebsliste');
 }
 
 /* AI saetter afdeling paa de varer, reglerne ikke kender */

@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 6;
+const APP_VERSION = 7;
 
 /* ---------------- state ---------------- */
 const S = {
@@ -284,8 +284,17 @@ document.addEventListener('visibilitychange', () => {
 });
 
 /* ---------------- print ---------------- */
-function printSheet(html) {
+/* document.title bliver browserens forslag til PDF-filnavn - saet et paent et
+ * under print og gendan bagefter. */
+function printSheet(html, filename) {
   $('#printHost').innerHTML = html;
+  const orig = document.title;
+  if (filename) {
+    document.title = String(filename).replace(/[\\/:*?"<>|]/g, '-').slice(0, 80) + '-' + isoDate();
+    const restore = () => { document.title = orig; window.removeEventListener('afterprint', restore); };
+    window.addEventListener('afterprint', restore);
+    setTimeout(restore, 60000); // sikkerhedsnet hvis afterprint aldrig fyrer
+  }
   setTimeout(() => window.print(), 60);
 }
 function printLogoHtml() {

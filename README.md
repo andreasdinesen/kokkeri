@@ -66,6 +66,12 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v7** (august 2026): Hærdet efter den fælles rune-erfaringsfil:
+  **cache-bust** (`?v=N` på app.js/style.css + `no-store` på HTML + versioneret
+  service-worker-cache), så opdateringer slår igennem med det samme bag
+  Cloudflare; **logo-upload gemmes som PNG**, så gennemsigtige logoer ikke
+  bliver sorte; **print sætter PDF-filnavnet** (opskriftens titel + dato).
+
 - **v6** (august 2026): **Egen AI-server** – under Indstillinger kan udbyderen
   nu skiftes fra Claude API til en OpenAI-kompatibel server på eget netværk
   (LM Studio, Ollama, llama.cpp …), så alle AI-funktioner kører lokalt og

@@ -282,7 +282,7 @@ function printRecipe(r) {
     <ul>${(r.ingredients || []).map(l => `<li>${esc(scaleIngredient(l, factor))}</li>`).join('')}</ul>
     <h2>Fremgangsmåde</h2>
     <ol>${(r.instructions || []).map(s => /^##/.test(s) ? `</ol><h2>${esc(s.replace(/^##\s*/, ''))}</h2><ol>` : `<li>${esc(s)}</li>`).join('')}</ol>
-    ${r.url ? `<p class="pdate">Kilde: ${esc(r.url)}</p>` : ''}`);
+    ${r.url ? `<p class="pdate">Kilde: ${esc(r.url)}</p>` : ''}`, r.title);
 }
 
 /* ---------------- redigerings-modal ---------------- */
@@ -369,7 +369,9 @@ function recipeModal(r, prefill) {
 }
 
 /* ---------------- billeder: skaler til dataURL saa alt gemmes lokalt ---------------- */
-function blobToScaledDataUrl(blob, maxDim) {
+/* opts.png = behold PNG (bevarer gennemsigtighed - JPEG goer transparent til SORT,
+ * hvilket oedelaegger logoer). Fotos gemmes som JPEG for pladsens skyld. */
+function blobToScaledDataUrl(blob, maxDim, opts) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
@@ -379,8 +381,22 @@ function blobToScaledDataUrl(blob, maxDim) {
       cv.width = Math.round(img.width * scale);
       cv.height = Math.round(img.height * scale);
       cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
-      let q = 0.82, url = cv.toDataURL('image/jpeg', q);
-      while (url.length > 160000 && q > 0.4) { q -= 0.12; url = cv.toDataURL('image/jpeg', q); }
+      let url;
+      if (opts && opts.png) {
+        url = cv.toDataURL('image/png');
+        /* PNG kan ikke kvalitets-skrues ned - skalér i stedet, hvis den er for stor */
+        let w = cv.width, h = cv.height;
+        while (url.length > 160000 && w > 64) {
+          w = Math.round(w * 0.8); h = Math.round(h * 0.8);
+          cv.width = w; cv.height = h;
+          cv.getContext('2d').drawImage(img, 0, 0, w, h);
+          url = cv.toDataURL('image/png');
+        }
+      } else {
+        let q = 0.82;
+        url = cv.toDataURL('image/jpeg', q);
+        while (url.length > 160000 && q > 0.4) { q -= 0.12; url = cv.toDataURL('image/jpeg', q); }
+      }
       URL.revokeObjectURL(img.src);
       resolve(url);
     };
