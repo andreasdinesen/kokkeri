@@ -23,18 +23,42 @@ RENDER.settings = () => {
   </div>
 
   <div class="panelbox">
-    <h2 style="margin-top:0">✨ AI-assistent (Claude API)</h2>
-    <p class="small muted">Nøglen gemmes kun på serveren og sendes aldrig til browseren.
-      Opret en API-nøgle på <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>.
-      Status: ${S.settings.aiKeySet ? '<span class="good">nøgle er sat ✓</span>' : '<span class="warn">ingen nøgle</span>'}</p>
-    <div class="formgrid" style="grid-template-columns:2fr 1fr auto">
-      <label class="fld"><span>API-nøgle ${S.settings.aiKeySet ? '(udfyld kun for at skifte)' : ''}</span>
-        <input id="aiKey" type="password" placeholder="sk-ant-…" autocomplete="off"></label>
-      <label class="fld"><span>Model (tom = standard)</span>
-        <input id="aiModel" placeholder="claude-sonnet-5" value="${esc(S.settings.aiModel || '')}"></label>
-      <label class="fld"><span>&nbsp;</span><button class="btn primary" id="aiSave">Gem AI</button></label>
+    <h2 style="margin-top:0">✨ AI-assistent</h2>
+    <p class="small muted">Nøgle og adresse gemmes kun på serveren og sendes aldrig til browseren.
+      Status: ${S.settings.aiKeySet
+        ? (S.settings.aiProvider === 'openai'
+            ? '<span class="good">egen server ✓</span> <span class="muted">(' + esc(S.settings.aiUrl) + ')</span>'
+            : '<span class="good">Claude-nøgle er sat ✓</span>')
+        : '<span class="warn">ikke sat op</span>'}</p>
+    <label class="fld" style="max-width:420px"><span>Udbyder</span>
+      <select id="aiProv">
+        <option value="claude"${S.settings.aiProvider !== 'openai' ? ' selected' : ''}>Claude API (Anthropic)</option>
+        <option value="openai"${S.settings.aiProvider === 'openai' ? ' selected' : ''}>Egen server – OpenAI-kompatibel (LM Studio, Ollama …)</option>
+      </select></label>
+    <div id="aiClaudeFields" ${S.settings.aiProvider === 'openai' ? 'hidden' : ''}>
+      <p class="small muted" style="margin:10px 0 0">Opret en API-nøgle på
+        <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>.</p>
+      <div class="formgrid" style="grid-template-columns:2fr 1fr">
+        <label class="fld"><span>API-nøgle ${S.settings.aiKeySet && S.settings.aiProvider !== 'openai' ? '(udfyld kun for at skifte)' : ''}</span>
+          <input id="aiKey" type="password" placeholder="sk-ant-…" autocomplete="off"></label>
+        <label class="fld"><span>Model (tom = standard)</span>
+          <input id="aiModel" placeholder="claude-sonnet-5" value="${esc(S.settings.aiModel || '')}"></label>
+      </div>
     </div>
-    ${S.settings.aiKeySet ? '<button class="btn small danger" id="aiClearKey">Fjern nøglen</button>' : ''}
+    <div id="aiLocalFields" ${S.settings.aiProvider === 'openai' ? '' : 'hidden'}>
+      <p class="small muted" style="margin:10px 0 0">Peg på en OpenAI-kompatibel server på dit netværk –
+        fx LM Studio (<b>Developer → Start server</b>) eller Ollama. Alt kører så lokalt og gratis.</p>
+      <div class="formgrid" style="grid-template-columns:2fr 1fr">
+        <label class="fld"><span>Serverens adresse (inkl. /v1)</span>
+          <input id="aiUrl" placeholder="http://192.168.1.197:1234/v1" value="${esc(S.settings.aiUrl || '')}"></label>
+        <label class="fld"><span>Model (tom = første på serveren)</span>
+          <input id="aiModelLocal" placeholder="fx qwen/qwen3-27b" value="${esc(S.settings.aiModel || '')}"></label>
+      </div>
+    </div>
+    <div class="rowflex" style="margin-top:10px">
+      <button class="btn primary" id="aiSave">Gem AI</button>
+      ${S.settings.aiKeySet && S.settings.aiProvider !== 'openai' ? '<button class="btn small danger" id="aiClearKey">Fjern nøglen</button>' : ''}
+    </div>
   </div>
 
   <div class="panelbox">
@@ -145,12 +169,22 @@ RENDER.settings_bind = () => {
     render();
   };
 
+  $('#aiProv').onchange = () => {
+    const local = $('#aiProv').value === 'openai';
+    $('#aiClaudeFields').hidden = local;
+    $('#aiLocalFields').hidden = !local;
+  };
   $('#aiSave').onclick = async () => {
-    const settings = {};
-    const key = $('#aiKey').value.trim();
-    if (key) settings.ai_key = key;
-    settings.ai_model = $('#aiModel').value.trim();
-    if (!Object.keys(settings).length) return;
+    const local = $('#aiProv').value === 'openai';
+    const settings = { ai_provider: local ? 'openai' : 'claude' };
+    if (local) {
+      settings.ai_url = $('#aiUrl').value.trim().replace(/\/+$/, '');
+      settings.ai_model = $('#aiModelLocal').value.trim();
+    } else {
+      const key = $('#aiKey').value.trim();
+      if (key) settings.ai_key = key;
+      settings.ai_model = $('#aiModel').value.trim();
+    }
     await saveSettings(settings);
     render();
   };

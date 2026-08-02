@@ -34,9 +34,9 @@ RENDER.assistant = () => {
     <div class="panelbox center" style="padding:40px">
       <div style="font-size:40px">✨</div>
       <h2 style="margin-top:8px">Assistenten er ikke sat op endnu</h2>
-      <p class="muted">Tilføj din Claude API-nøgle under Indstillinger, så kan assistenten hjælpe med
-      opskrift-idéer, madplaner, ingrediens-erstatninger og import af opskrifter fra sider uden
-      maskinlæsbare data.</p>
+      <p class="muted">Tilføj en Claude API-nøgle – eller din egen lokale AI-server (LM Studio/Ollama) –
+      under Indstillinger, så kan assistenten hjælpe med opskrift-idéer, madplaner,
+      ingrediens-erstatninger og import af opskrifter fra sider uden maskinlæsbare data.</p>
       <button class="btn primary" id="aiToSettings">⚙️ Gå til Indstillinger</button>
     </div>`;
   }

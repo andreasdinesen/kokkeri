@@ -66,6 +66,12 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v6** (august 2026): **Egen AI-server** – under Indstillinger kan udbyderen
+  nu skiftes fra Claude API til en OpenAI-kompatibel server på eget netværk
+  (LM Studio, Ollama, llama.cpp …), så alle AI-funktioner kører lokalt og
+  gratis. Angives ingen model, bruges den første på serveren; `<think>`-blokke
+  fra ræsonnerende modeller (qwen3 m.fl.) filtreres fra.
+
 - **v5** (august 2026): **Import fra indsat HTML/tekst** – til opskriftsider bag
   login (kopiér sidens kilde fra din egen indloggede browser og indsæt; Kokkeri
   parser HTML'en præcis som ved et link) og til opskrifter fra noter (indsæt

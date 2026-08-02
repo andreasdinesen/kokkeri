@@ -324,8 +324,9 @@ function validPassword(p) { return typeof p === 'string' && p.length >= 8 && p.l
  * med parametre; `logo` er et data-URL-billede. `ai_key` er Claude API-nøglen –
  * den gemmes her, men returneres ALDRIG til frontenden (kun aiKeySet: true). */
 const SETTING_KEYS = new Set(['app', 'logo', 'allow_registration', 'ai_key', 'ai_model',
-  'ha_url', 'ha_token', 'ha_entity', 'todoist_token', 'todoist_project']);
+  'ai_provider', 'ai_url', 'ha_url', 'ha_token', 'ha_entity', 'todoist_token', 'todoist_project']);
 const SETTING_MAX = { app: 200000, logo: 900000, allow_registration: 4, ai_key: 300, ai_model: 100,
+  ai_provider: 20, ai_url: 300,
   ha_url: 300, ha_token: 2000, ha_entity: 200, todoist_token: 200, todoist_project: 120 };
 
 function sanitizeItem(it) {
@@ -350,7 +351,10 @@ function appSettingsJson() {
     if (row.key === 'app') { try { out.app = JSON.parse(row.value); } catch (e) { out.app = {}; } }
     else if (row.key === 'logo') out.logo = row.value;
   }
-  out.aiKeySet = !!setting('ai_key', '');
+  /* aiKeySet = "AI er klar til brug" uanset udbyder */
+  out.aiProvider = setting('ai_provider', 'claude');
+  out.aiUrl = setting('ai_url', '');
+  out.aiKeySet = out.aiProvider === 'openai' ? !!setting('ai_url', '') : !!setting('ai_key', '');
   out.aiModel = setting('ai_model', '');
   /* Home Assistant + Todoist: tokens forlader aldrig serveren */
   out.haUrl = setting('ha_url', '');
@@ -559,22 +563,72 @@ async function fetchPage(url) {
   return buf.toString('utf8');
 }
 
-/* ---------------- AI-proxy (Claude API) ---------------- */
+/* ---------------- AI-proxy ----------------
+ * To udbydere: Claude API (Anthropic) eller en egen OpenAI-kompatibel server
+ * (LM Studio, Ollama, llama.cpp ...). Valget bor i settings `ai_provider`;
+ * noegle/URL forlader aldrig serveren. */
 const AI_DEFAULT_MODEL = 'claude-sonnet-5';
-async function aiMessage(body) {
-  const key = setting('ai_key', '');
-  if (!key) { const e = new Error('Ingen AI-nøgle sat – tilføj din Claude API-nøgle under Indstillinger'); e.status = 400; throw e; }
-  const model = setting('ai_model', '') || AI_DEFAULT_MODEL;
+
+function aiSanitizeMessages(body) {
   const messages = Array.isArray(body.messages) ? body.messages
     .filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
     .slice(-40).map(m => ({ role: m.role, content: String(m.content).slice(0, 60000) })) : [];
   if (!messages.length) { const e = new Error('Ingen beskeder'); e.status = 400; throw e; }
-  const payload = {
-    model,
-    max_tokens: Math.min(Math.max(parseInt(body.maxTokens, 10) || 2048, 256), 8192),
-    messages
-  };
-  if (typeof body.system === 'string' && body.system) payload.system = String(body.system).slice(0, 60000);
+  return messages;
+}
+
+async function aiMessage(body) {
+  const provider = setting('ai_provider', 'claude');
+  const messages = aiSanitizeMessages(body);
+  const maxTokens = Math.min(Math.max(parseInt(body.maxTokens, 10) || 2048, 256), 8192);
+  const system = typeof body.system === 'string' && body.system ? String(body.system).slice(0, 60000) : '';
+
+  if (provider === 'openai') {
+    const base = setting('ai_url', '').replace(/\/+$/, '');
+    if (!base) { const e = new Error('Ingen AI-server sat op – angiv serverens adresse under Indstillinger'); e.status = 400; throw e; }
+    const key = setting('ai_key', '');
+    const headers = { 'Content-Type': 'application/json' };
+    if (key) headers['Authorization'] = 'Bearer ' + key;
+    let model = setting('ai_model', '');
+    if (!model) {
+      /* LM Studio kraever et modelnavn - tag den foerst indlaeste fra /models */
+      try {
+        const r0 = await fetch(base + '/models', { headers, signal: AbortSignal.timeout(10000) });
+        const j0 = await r0.json();
+        model = (j0 && j0.data && j0.data[0] && j0.data[0].id) || '';
+      } catch (e) {}
+      if (!model) { const e = new Error('Kunne ikke finde en model på AI-serveren – angiv modelnavnet under Indstillinger'); e.status = 400; throw e; }
+    }
+    const payload = {
+      model, max_tokens: maxTokens,
+      messages: (system ? [{ role: 'system', content: system }] : []).concat(messages)
+    };
+    let r;
+    try {
+      /* lokale modeller kan vaere langsomme - giv dem god tid */
+      r = await fetch(base + '/chat/completions', {
+        method: 'POST', headers, body: JSON.stringify(payload), signal: AbortSignal.timeout(300000)
+      });
+    } catch (e2) {
+      const e = new Error('Kunne ikke nå AI-serveren på ' + base + ' (' + e2.message + ')'); e.status = 502; throw e;
+    }
+    const j = await r.json().catch(() => null);
+    if (!r.ok) {
+      const msg = (j && j.error && (j.error.message || j.error)) || ('AI-serveren svarede ' + r.status);
+      const e = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg).slice(0, 300)); e.status = 502; throw e;
+    }
+    let text = (j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '';
+    /* raesonnerende lokale modeller (qwen3 m.fl.) pakker taenkning ind i <think>-blokke */
+    text = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    return { text, model: (j && j.model) || model, usage: (j && j.usage) || null };
+  }
+
+  /* --- Claude API (standard) --- */
+  const key = setting('ai_key', '');
+  if (!key) { const e = new Error('Ingen AI-nøgle sat – tilføj din Claude API-nøgle under Indstillinger'); e.status = 400; throw e; }
+  const model = setting('ai_model', '') || AI_DEFAULT_MODEL;
+  const payload = { model, max_tokens: maxTokens, messages };
+  if (system) payload.system = system;
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
