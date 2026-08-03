@@ -227,10 +227,14 @@ function showLogin() {
 }
 
 async function enterApp() {
-  const [settings, items] = await Promise.all([api('/api/settings'), api('/api/items')]);
+  /* Kun kort-felterne ved login - resten hentes i baggrunden af hydrateItems().
+   * Med billederne inde i opskrifterne var dette kald 248 MB ved 2534 opskrifter. */
+  const [settings, items] = await Promise.all([api('/api/settings'), api('/api/items?fields=card')]);
   S.settings = Object.assign({ app: {}, logo: '' }, settings);
   S.items = items.items || [];
+  S.hydrated = false;
   reindex();
+  hydrateItems();
   S.weekStart = mondayOf();
   document.body.className = '';
   try { if (localStorage.getItem('kk_nav') === '1') document.body.classList.add('navfold'); } catch (e) {}

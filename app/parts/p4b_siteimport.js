@@ -117,9 +117,13 @@ function siteImportModal() {
         /* spring sider over, som allerede er hentet - baade dem der blev til en
          * opskrift og dem der viste sig ikke at have en. Saa kan man bare koere
          * igen og faa de naeste, i stedet for at bruge koeretiden om igen. */
+        /* crawlSeen kommer IKKE med i login-svaret (den vokser med hver crawl og
+         * bruges kun her) - hentes derfor paa stedet. */
+        let sete = [];
+        try { sete = (await api('/api/items?kind=crawlSeen')).items || []; } catch (e) {}
         const kendte = new Set([
           ...K('recipe').map(x => normUrlFront(x.url)),
-          ...K('crawlSeen').map(x => normUrlFront(x.url))
+          ...sete.map(x => normUrlFront(x.url))
         ].filter(Boolean));
         SI.urls = fundne.filter(u => !kendte.has(normUrlFront(u)));
         const alleredeSet = fundne.length - SI.urls.length;
@@ -196,9 +200,11 @@ function startCrawlPolling() {
           if (st.error) toast(st.error, true);
         }
         /* hent de nye opskrifter ind i browseren */
-        const items = await api('/api/items');
+        const items = await api('/api/items?fields=card');
         S.items = items.items || [];
+        S.hydrated = false;
         reindex();
+        hydrateItems();
         render();          // importen er slut - her maa siden gerne tegnes om
         await categorizeImported();
         /* og hent billederne ned lokalt, lidt ad gangen */
@@ -225,7 +231,9 @@ async function localizeRemoteImages(maks) {
   let n = 0;
   for (const r of liste.slice(0, maks || 6)) {
     const d = await fetchImageAsDataUrl(r.image);
-    if (d) { r.image = d; n++; }
+    /* gemmes som selvstaendigt billed-item (saetter imageVer og rydder r.image) */
+    if (d) { await saveRecipeImage(r, d); n++; }
+    else delete r.image;
     delete r.imageRemote;              // ogsaa ved fejl, saa vi ikke proever i det uendelige
     await saveItem(r, true);
   }

@@ -289,6 +289,12 @@ async function importPaprikaFile(file, onProgress) {
       if (existing.has(normName(j.name))) { out.skipped++; continue; }
       const rec = await paprikaToRecipe(j);
       existing.add(normName(rec.title));
+      /* billedet ud i sit eget item, saa opskriften bliver ved med at vaere let */
+      if (rec.image && /^data:/.test(rec.image)) {
+        batch.push({ id: 'img-' + rec.id, kind: 'recipeImage', dataUrl: rec.image });
+        rec.imageVer = String(Date.now());
+      }
+      delete rec.image;
       batch.push(rec);
       out.imported++;
     } catch (e) { out.failed++; }

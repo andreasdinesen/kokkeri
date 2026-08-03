@@ -2,7 +2,16 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 18;
+const APP_VERSION = 19;
+
+/* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
+ * aldrig kunne vaelte appen. */
+function lsGet(key, dflt) {
+  try { const v = localStorage.getItem(key); return v === null ? dflt : v; } catch (e) { return dflt; }
+}
+function lsSet(key, value) {
+  try { localStorage.setItem(key, String(value)); } catch (e) {}
+}
 
 /* ---------------- state ---------------- */
 const S = {
@@ -13,7 +22,7 @@ const S = {
   view: 'dash',
   viewArg: null,        // fx opskrift-id på detaljesiden
   weekStart: null,      // mandag i den viste madplan-uge (YYYY-MM-DD)
-  recFilter: { q: '', category: '', fav: false },
+  recFilter: { q: '', category: '', fav: false, sort: lsGet('kk_recsort', 'nyeste'), minStars: +lsGet('kk_recminstars', 0) || 0 },
   chat: [],             // AI-samtale (kun i hukommelsen)
   chatBusy: false,
   timers: [],           // [{id,label,totalMs,endsAt,remainMs,paused,ringing}]
@@ -232,7 +241,88 @@ function reindex() {
 const K = kind => S.byKind[kind] || [];
 const recipeById = id => K('recipe').find(r => r.id === id) || null;
 
+/* ---------------- billeder ----------------
+ * Fotoet ligger ikke i opskriften, men som sit eget item paa serveren. Kortene
+ * peger paa /api/image/<id>?v=<imageVer>: URL'en skifter, naar billedet goer,
+ * saa browseren kan cache den for evigt - og <img loading="lazy"> virker
+ * foerst nu, hvor kilden er en rigtig URL og ikke en dataURL (en dataURL er
+ * allerede en del af dokumentet og bliver aldrig udskudt). */
+const imageSrc = r => (r && r.imageVer) ? `/api/image/${encodeURIComponent(r.id)}?v=${encodeURIComponent(r.imageVer)}` : '';
+const hasImage = r => !!(r && (r.imageVer || r.image));
+/* r.image kan stadig vaere sat midlertidigt: masse-importen gemmer en ekstern
+ * URL, indtil localizeRemoteImages() henter billedet ned. */
+const imageSrcOrRemote = r => imageSrc(r) || (r && r.image) || '';
+
+async function saveRecipeImage(r, dataUrl) {
+  const ver = String(Date.now());
+  await api('/api/items', { body: { item: { id: 'img-' + r.id, kind: 'recipeImage', dataUrl } } });
+  r.imageVer = ver;
+  delete r.image;
+  delete r.imageRemote;
+  return ver;
+}
+async function deleteRecipeImage(r) {
+  if (!r.imageVer) { delete r.image; return; }
+  await api('/api/items', { body: { item: { id: 'img-' + r.id, kind: 'recipeImage', deleted: true } } });
+  delete r.imageVer;
+  delete r.image;
+}
+
+/* ---------------- delvise opskrifter ----------------
+ * Login henter kun kort-felterne (titel, kategori, tid, stjerner ...). Resten
+ * hentes, naar en opskrift aabnes - eller i baggrunden lige efter login.
+ * `partial: true` markerer, at fremgangsmaade, noter mv. mangler endnu. */
+async function ensureFull(r) {
+  if (!r || r.kind !== 'recipe' || !r.partial) return r;
+  try {
+    const svar = await api('/api/items/' + encodeURIComponent(r.id));
+    if (svar.item) for (const [k, v] of Object.entries(svar.item)) if (!(k in r)) r[k] = v;
+  } catch (e) { toast('Kunne ikke hente opskriften: ' + e.message, true); return r; }
+  delete r.partial;
+  return r;
+}
+
+/* Fylder resten af opskrifterne paa i baggrunden lige efter login. Login venter
+ * ikke paa den: kortene er nok til at tegne oversigten. Naar den er faerdig,
+ * kan soegningen ogsaa kigge i ingredienserne igen. */
+function hydrateItems() {
+  if (S.hydrated) return Promise.resolve();
+  /* koerer den allerede, saa vent paa DEN - ellers kan to kaldere tro, at
+   * opskrifterne er fyldt ud, mens den ene stadig henter */
+  if (S._hydrating) return S._hydrating;
+  S._hydrating = (async () => {
+    try {
+      const svar = await api('/api/items');
+      const kendte = new Map(S.items.map(x => [x.id, x]));
+      for (const fuld of svar.items || []) {
+        const cur = kendte.get(fuld.id);
+        if (cur) {
+          for (const [k, v] of Object.entries(fuld)) if (!(k in cur)) cur[k] = v;
+          delete cur.partial;
+        } else S.items.push(fuld);
+      }
+      reindex();
+      S.hydrated = true;
+      /* tegn kun om, hvis brugeren soeger - saa kan traefferne i ingredienser naa med */
+      if (S.view === 'recipes' && S.recFilter && S.recFilter.q) render();
+    } catch (e) {
+      /* ikke kritisk: ensureFull() henter den enkelte opskrift ved behov */
+    } finally { S._hydrating = null; }
+  })();
+  return S._hydrating;
+}
+
 async function saveItem(it, quiet) {
+  /* En delvis opskrift maa ALDRIG gemmes som den er - saa ville fremgangsmaade
+   * og noter blive skrevet vaek. Hent det manglende foerst; lokale aendringer
+   * vinder, fordi kun felter der IKKE findes lokalt fyldes paa. */
+  if (it && it.kind === 'recipe' && it.partial) {
+    try {
+      const svar = await api('/api/items/' + encodeURIComponent(it.id));
+      if (svar.item) for (const [k, v] of Object.entries(svar.item)) if (!(k in it)) it[k] = v;
+      delete it.partial;
+    } catch (e) { toast('Kunne ikke gemme: ' + e.message, true); return; }
+  }
   it.updatedAt = new Date().toISOString();
   const idx = S.items.findIndex(x => x.id === it.id);
   if (idx >= 0) S.items[idx] = it; else S.items.push(it);
@@ -246,7 +336,18 @@ async function deleteItem(it) {
   toast('Slettet');
 }
 async function saveBulk(items) {
+  /* Samme fælde som i saveItem, men vaerre: categorizeImported() bulk-gemmer
+   * ALLE opskrifter uden kategori ved app-start. Var de delvise, ville
+   * fremgangsmaade og ingredienser blive skrevet vaek paa én gang. Ét
+   * hydrate-kald fylder dem alle; ensureFull tager evt. efternoelere. */
+  if (items.some(x => x && x.kind === 'recipe' && x.partial)) {
+    await hydrateItems();
+    for (const x of items) if (x && x.kind === 'recipe' && x.partial) await ensureFull(x);
+  }
   for (const it of items) {
+    /* billeder holdes ALDRIG i hukommelsen i browseren - de hentes via
+     * /api/image, naar et kort faktisk vises */
+    if (it.kind === 'recipeImage') continue;
     const idx = S.items.findIndex(x => x.id === it.id);
     if (idx >= 0) S.items[idx] = it; else S.items.push(it);
   }

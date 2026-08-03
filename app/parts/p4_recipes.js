@@ -1,21 +1,56 @@
 /* ---------------- Opskrifter ---------------- */
 
+/* Hvor mange kort der tegnes ad gangen (resten hentes med "Vis flere"
+ * eller naar bunden kommer i syne). */
+const REC_SIDE = 60;
+
+const cmpTekst = (a, b) => String(a || '').localeCompare(String(b || ''), 'da');
+const nyestFoerst = (a, b) => cmpTekst(b.createdAt, a.createdAt);
+const SORTERINGER = {
+  nyeste:  { navn: '🕒 Nyeste først', fn: nyestFoerst },
+  stjerner:{ navn: '★ Flest stjerner', fn: (a, b) => (b.rating || 0) - (a.rating || 0) || nyestFoerst(a, b) },
+  faerrest:{ navn: '☆ Færrest stjerner', fn: (a, b) => (a.rating || 0) - (b.rating || 0) || nyestFoerst(a, b) },
+  titel:   { navn: '🔤 Titel A–Å', fn: (a, b) => cmpTekst(a.title, b.title) },
+  tid:     { navn: '⏱ Korteste tid', fn: (a, b) => (recipeTotalMin(a) || 1e9) - (recipeTotalMin(b) || 1e9) || nyestFoerst(a, b) }
+};
+
 function starsHtml(rating) {
   const r = rating || 0;
   return `<span class="stars">${[1, 2, 3, 4, 5].map(i => `<span class="${i <= r ? '' : 'off'}">★</span>`).join('')}</span>`;
 }
 
+/* Klikbare stjerner - bruges baade paa kortet og paa detaljesiden, saa en
+ * opskrift kan vurderes uden at aabne den. `data-ratefor` baerer opskriftens id. */
+function starsPickHtml(r) {
+  return `<span class="stars pick" data-ratefor="${r.id}" title="Giv stjerner">${
+    [1, 2, 3, 4, 5].map(i => `<span data-star="${i}" class="${i <= (r.rating || 0) ? '' : 'off'}">★</span>`).join('')
+  }</span>`;
+}
+async function bindStarPickers() {
+  $$('[data-ratefor] [data-star]').forEach(s => s.onclick = async e => {
+    e.stopPropagation();                     // ellers aabner kortet opskriften
+    const id = s.parentElement.dataset.ratefor;
+    const r = recipeById(id);
+    if (!r) return;
+    const v = +s.dataset.star;
+    r.rating = r.rating === v ? 0 : v;       // klik paa samme stjerne rydder
+    await saveItem(r, true);
+    render();
+  });
+}
+
 function recipeCardHtml(r, medKatVaelger) {
   const time = recipeTotalMin(r);
   const cats = app().categories || [];
+  const src = imageSrcOrRemote(r);
   return `<div class="reccard" data-rec="${r.id}">
-    <div class="recimg">${r.image ? `<img src="${r.image}" alt="" loading="lazy">` : '🍽️'}</div>
+    <div class="recimg">${src ? `<img src="${esc(src)}" alt="" loading="lazy">` : '🍽️'}</div>
     <div class="recbody">
       <div class="rectitle">${r.favorite ? '⭐ ' : ''}${esc(r.title || '(uden titel)')}</div>
       <div class="recmeta">
         ${r.category ? `<span>${esc(r.category)}</span>` : ''}
         ${time ? `<span>⏱ ${fmtMin(time)}</span>` : ''}
-        ${r.rating ? starsHtml(r.rating) : ''}
+        ${starsPickHtml(r)}
       </div>
       ${medKatVaelger ? `<select class="katpick" data-katfor="${r.id}" title="Sæt kategori">
         <option value="">Vælg kategori …</option>
@@ -43,8 +78,12 @@ RENDER.recipes = () => {
       normName((r.tags || []).join(' ')).includes(q) ||
       normName((r.ingredients || []).join(' ')).includes(q));
   }
-  list.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  if (f.minStars) list = list.filter(r => (r.rating || 0) >= f.minStars);
+  SORTERINGER[f.sort] ? list.sort(SORTERINGER[f.sort].fn) : list.sort(SORTERINGER.nyeste.fn);
   const udenKat = K('recipe').filter(r => !r.category).length;
+  /* Vis kun et vindue ad gangen: 5000 kort paa én gang er 5000 DOM-noder,
+   * og gridet bygges forfra ved hvert tastetryk i soegefeltet. */
+  const vist = list.slice(0, S.recLimit || REC_SIDE);
 
   return pageHead('Opskrifter', `${K('recipe').length} opskrifter i biblioteket`,
       `<button class="btn" id="recNew">➕ Ny opskrift</button>
@@ -52,6 +91,13 @@ RENDER.recipes = () => {
        <button class="btn primary" id="recImport">🌐 Importér fra URL</button>`) + `
   <div class="rowflex">
     <input id="recSearch" placeholder="🔍 Søg i titel, ingredienser og tags…" value="${esc(f.q)}" style="min-width:240px;flex:1;max-width:380px">
+    <select id="recSort" title="Sortering">
+      ${Object.entries(SORTERINGER).map(([k, s]) => `<option value="${k}"${f.sort === k ? ' selected' : ''}>${s.navn}</option>`).join('')}
+    </select>
+    <select id="recMinStars" title="Vis kun opskrifter med mindst så mange stjerner">
+      <option value="0">★ Alle vurderinger</option>
+      ${[1, 2, 3, 4, 5].map(i => `<option value="${i}"${f.minStars === i ? ' selected' : ''}>${'★'.repeat(i)} og op</option>`).join('')}
+    </select>
     <span class="chip chipbtn${f.fav ? ' sel' : ''}" id="recFav">⭐ Favoritter</span>
     ${cats.map(c => `<span class="chip chipbtn${!f.noCat && f.category === c ? ' sel' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}
     ${udenKat ? `<span class="chip chipbtn${f.noCat ? ' sel' : ''}" id="recNoCat"
@@ -60,7 +106,9 @@ RENDER.recipes = () => {
   ${f.noCat ? `<p class="small muted" style="margin:10px 0 0">
     Vælg en kategori direkte på kortet – den gemmes med det samme.</p>` : ''}
   <div id="crawlBanner">${crawlBannerHtml()}</div>
-  ${list.length ? `<div class="recgrid">${list.map(r => recipeCardHtml(r, f.noCat)).join('')}</div>`
+  ${list.length ? `<div class="recgrid">${vist.map(r => recipeCardHtml(r, f.noCat)).join('')}</div>
+    ${vist.length < list.length ? `<div class="loadmore">
+      <button class="btn" id="recMore">Vis flere (${vist.length} af ${list.length})</button></div>` : ''}`
     : '<p class="muted" style="margin-top:26px">Ingen opskrifter matcher.</p>'}`;
 };
 RENDER.recipes_bind = () => {
@@ -68,24 +116,40 @@ RENDER.recipes_bind = () => {
   $('#recImport').onclick = importUrlModal;
   $('#recSiteImport').onclick = siteImportModal;
   bindCrawlBanner();
+  /* et nyt filter betyder en ny liste - start vinduet forfra */
+  const omTegn = () => { S.recLimit = REC_SIDE; render(); };
   const search = $('#recSearch');
   search.oninput = () => {
     S.recFilter.q = search.value;
     clearTimeout(search._h);
-    search._h = setTimeout(() => { const v = search.value; render(); const el = $('#recSearch'); el.focus(); el.setSelectionRange(v.length, v.length); }, 250);
+    search._h = setTimeout(() => { const v = search.value; omTegn(); const el = $('#recSearch'); el.focus(); el.setSelectionRange(v.length, v.length); }, 250);
   };
-  $('#recFav').onclick = () => { S.recFilter.fav = !S.recFilter.fav; render(); };
+  $('#recSort').onchange = e => { S.recFilter.sort = e.target.value; lsSet('kk_recsort', e.target.value); omTegn(); };
+  $('#recMinStars').onchange = e => { S.recFilter.minStars = +e.target.value || 0; lsSet('kk_recminstars', S.recFilter.minStars); omTegn(); };
+  $('#recFav').onclick = () => { S.recFilter.fav = !S.recFilter.fav; omTegn(); };
   $$('[data-cat]').forEach(c => c.onclick = () => {
     S.recFilter.noCat = false;
     S.recFilter.category = S.recFilter.category === c.dataset.cat ? '' : c.dataset.cat;
-    render();
+    omTegn();
   });
   const noCat = $('#recNoCat');
   if (noCat) noCat.onclick = () => {
     S.recFilter.noCat = !S.recFilter.noCat;
     S.recFilter.category = '';
-    render();
+    omTegn();
   };
+  /* "Vis flere" - baade som knap og automatisk naar den kommer i syne */
+  const more = $('#recMore');
+  if (more) {
+    const hentFlere = () => { S.recLimit = (S.recLimit || REC_SIDE) + REC_SIDE; render(); };
+    more.onclick = hentFlere;
+    if (window.IntersectionObserver) {
+      const io = new IntersectionObserver(e => { if (e[0].isIntersecting) { io.disconnect(); hentFlere(); } },
+        { rootMargin: '400px' });
+      io.observe(more);
+    }
+  }
+  bindStarPickers();
   /* saet kategori direkte fra kortet - ét klik pr. opskrift i stedet for
    * at aabne og gemme hver enkelt */
   $$('[data-katfor]').forEach(sel => {
@@ -157,6 +221,8 @@ function instructionsHtml(r) {
 RENDER.recipeDetail = () => {
   const r = recipeById(S.viewArg);
   if (!r) { S.view = 'recipes'; return RENDER.recipes(); }
+  /* Listen har kun kort-felterne - hent resten, foer opskriften kan vises. */
+  if (r.partial) { ensureFull(r).then(() => { if (S.view === 'recipeDetail') render(); }); return '<p class="muted">Henter opskriften …</p>'; }
   const base = r.servings || app().defaultServings;
   if (S.detailFor !== r.id) { S.detailFor = r.id; S.detailServings = base; }
   if (!S.detailServings) S.detailServings = base;
@@ -181,7 +247,7 @@ RENDER.recipeDetail = () => {
     ${r.cookMin ? `<span class="timechip">🍳 Tilberedning: ${fmtMin(r.cookMin)}</span>` : ''}
     ${recipeTotalMin(r) ? `<span class="timechip">⏱ I alt: ${fmtMin(recipeTotalMin(r))}</span>` : ''}
     ${r.nutrition ? `<span class="timechip" title="Pr. portion${r.nutrition.estimated ? ' (AI-estimat)' : ''}">🔥 ${r.nutrition.kcal} kcal · ${r.nutrition.protein} g protein · ${r.nutrition.carbs} g kulhydrat · ${r.nutrition.fat} g fedt</span>` : ''}
-    <span class="stars pick" id="ratePick">${[1, 2, 3, 4, 5].map(i => `<span data-star="${i}" class="${i <= (r.rating || 0) ? '' : 'off'}">★</span>`).join('')}</span>
+    ${starsPickHtml(r)}
   </div>
   <div class="rowflex" style="margin:0 0 14px">
     <button class="btn small" id="shareBtn">${r.shareToken ? '🔗 Deles – vis link' : '🔗 Del med et link'}</button>
@@ -191,7 +257,7 @@ RENDER.recipeDetail = () => {
 
   <div class="recdetail">
     <div>
-      ${r.image ? `<div class="recphoto"><img src="${r.image}" alt=""></div>` : ''}
+      ${imageSrcOrRemote(r) ? `<div class="recphoto"><img src="${esc(imageSrcOrRemote(r))}" alt=""></div>` : ''}
       ${r.description ? `<p class="muted" style="margin-top:12px">${esc(r.description)}</p>` : ''}
       <h2>Ingredienser</h2>
       <div class="rowflex" style="margin-bottom:4px">
@@ -215,7 +281,7 @@ RENDER.recipeDetail = () => {
 };
 RENDER.recipeDetail_bind = () => {
   const r = recipeById(S.viewArg);
-  if (!r) return;
+  if (!r || r.partial) return;             // venter stadig paa resten af opskriften
   $('#backToList').onclick = e => { e.preventDefault(); S.detailServings = null; goto('recipes'); };
   $('#editBtn').onclick = () => recipeModal(r);
   $('#cookBtn').onclick = () => openCookMode(r);
@@ -225,12 +291,7 @@ RENDER.recipeDetail_bind = () => {
   $('#planBtn').onclick = () => planEntryModal(null, { recipeId: r.id });
   $('#servMinus').onclick = () => { S.detailServings = Math.max(1, S.detailServings - 1); render(); };
   $('#servPlus').onclick = () => { S.detailServings = S.detailServings + 1; render(); };
-  $$('#ratePick [data-star]').forEach(s => s.onclick = async () => {
-    const v = +s.dataset.star;
-    r.rating = r.rating === v ? 0 : v;
-    await saveItem(r, true);
-    render();
-  });
+  bindStarPickers();
   $('#shareBtn').onclick = () => shareRecipeModal(r);
   const nutri = $('#nutriBtn');
   if (nutri) nutri.onclick = () => aiEstimateNutrition(r, nutri);
@@ -368,8 +429,8 @@ function recipeModal(r, prefill) {
       <label class="fld"><span>Kilde-URL</span><input id="rmUrl" value="${esc(d.url || '')}"></label>
       <label class="fld"><span>Billede</span>
         <span class="rowflex">
-          <button class="btn small" id="rmImgPick">${d.image ? 'Skift…' : 'Vælg…'}</button>
-          ${d.image ? '<button class="btn small danger" id="rmImgDel">Fjern</button>' : ''}
+          <button class="btn small" id="rmImgPick">${hasImage(d) ? 'Skift…' : 'Vælg…'}</button>
+          ${hasImage(d) ? '<button class="btn small danger" id="rmImgDel">Fjern</button>' : ''}
           <input id="rmImgFile" type="file" accept="image/*" hidden>
         </span></label>
     </div>
@@ -378,16 +439,19 @@ function recipeModal(r, prefill) {
       <button class="btn" id="rmCancel">Annullér</button>
       <button class="btn primary" id="rmSave">Gem</button>
     </div>`, m => {
-    let image = d.image || '';
+    /* nytBillede: null = uroert · '' = fjern · dataURL = erstat.
+     * En importeret opskrift kommer med billedet som dataURL i kladden - det
+     * skal gemmes som et selvstaendigt billed-item, ikke inde i opskriften. */
+    let nytBillede = (typeof d.image === 'string' && d.image.startsWith('data:')) ? d.image : null;
     m.querySelector('#rmImgPick').onclick = () => m.querySelector('#rmImgFile').click();
     m.querySelector('#rmImgFile').onchange = async e => {
       const f = e.target.files[0];
       if (!f) return;
-      image = await blobToScaledDataUrl(f);
+      nytBillede = await blobToScaledDataUrl(f);
       m.querySelector('#rmImgPick').textContent = 'Valgt ✓';
     };
     const del = m.querySelector('#rmImgDel');
-    if (del) del.onclick = () => { image = ''; del.disabled = true; m.querySelector('#rmImgPick').textContent = 'Vælg…'; };
+    if (del) del.onclick = () => { nytBillede = ''; del.disabled = true; m.querySelector('#rmImgPick').textContent = 'Vælg…'; };
     m.querySelector('#rmCancel').onclick = closeModal;
     if (!isNew) m.querySelector('#rmDelete').onclick = async () => {
       if (!await confirmBox(`Slet opskriften "${d.title}"?`)) return;
@@ -409,8 +473,11 @@ function recipeModal(r, prefill) {
       d.instructions = m.querySelector('#rmSteps').value.split('\n').map(l => l.trim()).filter(Boolean);
       d.notes = m.querySelector('#rmNotes').value.trim();
       d.url = m.querySelector('#rmUrl').value.trim();
-      d.image = image;
       closeModal();
+      /* billedet gemmes som sit eget item - saa opskriften selv bliver ved med
+       * at vaere et par kilobyte og kan sendes med i listen */
+      if (nytBillede) await saveRecipeImage(d, nytBillede);
+      else if (nytBillede === '') await deleteRecipeImage(d);
       await saveItem(d);
       goto('recipeDetail', d.id);
     };

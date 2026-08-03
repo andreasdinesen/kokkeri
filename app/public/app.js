@@ -2,7 +2,16 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 18;
+const APP_VERSION = 19;
+
+/* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
+ * aldrig kunne vaelte appen. */
+function lsGet(key, dflt) {
+  try { const v = localStorage.getItem(key); return v === null ? dflt : v; } catch (e) { return dflt; }
+}
+function lsSet(key, value) {
+  try { localStorage.setItem(key, String(value)); } catch (e) {}
+}
 
 /* ---------------- state ---------------- */
 const S = {
@@ -13,7 +22,7 @@ const S = {
   view: 'dash',
   viewArg: null,        // fx opskrift-id på detaljesiden
   weekStart: null,      // mandag i den viste madplan-uge (YYYY-MM-DD)
-  recFilter: { q: '', category: '', fav: false },
+  recFilter: { q: '', category: '', fav: false, sort: lsGet('kk_recsort', 'nyeste'), minStars: +lsGet('kk_recminstars', 0) || 0 },
   chat: [],             // AI-samtale (kun i hukommelsen)
   chatBusy: false,
   timers: [],           // [{id,label,totalMs,endsAt,remainMs,paused,ringing}]
@@ -232,7 +241,88 @@ function reindex() {
 const K = kind => S.byKind[kind] || [];
 const recipeById = id => K('recipe').find(r => r.id === id) || null;
 
+/* ---------------- billeder ----------------
+ * Fotoet ligger ikke i opskriften, men som sit eget item paa serveren. Kortene
+ * peger paa /api/image/<id>?v=<imageVer>: URL'en skifter, naar billedet goer,
+ * saa browseren kan cache den for evigt - og <img loading="lazy"> virker
+ * foerst nu, hvor kilden er en rigtig URL og ikke en dataURL (en dataURL er
+ * allerede en del af dokumentet og bliver aldrig udskudt). */
+const imageSrc = r => (r && r.imageVer) ? `/api/image/${encodeURIComponent(r.id)}?v=${encodeURIComponent(r.imageVer)}` : '';
+const hasImage = r => !!(r && (r.imageVer || r.image));
+/* r.image kan stadig vaere sat midlertidigt: masse-importen gemmer en ekstern
+ * URL, indtil localizeRemoteImages() henter billedet ned. */
+const imageSrcOrRemote = r => imageSrc(r) || (r && r.image) || '';
+
+async function saveRecipeImage(r, dataUrl) {
+  const ver = String(Date.now());
+  await api('/api/items', { body: { item: { id: 'img-' + r.id, kind: 'recipeImage', dataUrl } } });
+  r.imageVer = ver;
+  delete r.image;
+  delete r.imageRemote;
+  return ver;
+}
+async function deleteRecipeImage(r) {
+  if (!r.imageVer) { delete r.image; return; }
+  await api('/api/items', { body: { item: { id: 'img-' + r.id, kind: 'recipeImage', deleted: true } } });
+  delete r.imageVer;
+  delete r.image;
+}
+
+/* ---------------- delvise opskrifter ----------------
+ * Login henter kun kort-felterne (titel, kategori, tid, stjerner ...). Resten
+ * hentes, naar en opskrift aabnes - eller i baggrunden lige efter login.
+ * `partial: true` markerer, at fremgangsmaade, noter mv. mangler endnu. */
+async function ensureFull(r) {
+  if (!r || r.kind !== 'recipe' || !r.partial) return r;
+  try {
+    const svar = await api('/api/items/' + encodeURIComponent(r.id));
+    if (svar.item) for (const [k, v] of Object.entries(svar.item)) if (!(k in r)) r[k] = v;
+  } catch (e) { toast('Kunne ikke hente opskriften: ' + e.message, true); return r; }
+  delete r.partial;
+  return r;
+}
+
+/* Fylder resten af opskrifterne paa i baggrunden lige efter login. Login venter
+ * ikke paa den: kortene er nok til at tegne oversigten. Naar den er faerdig,
+ * kan soegningen ogsaa kigge i ingredienserne igen. */
+function hydrateItems() {
+  if (S.hydrated) return Promise.resolve();
+  /* koerer den allerede, saa vent paa DEN - ellers kan to kaldere tro, at
+   * opskrifterne er fyldt ud, mens den ene stadig henter */
+  if (S._hydrating) return S._hydrating;
+  S._hydrating = (async () => {
+    try {
+      const svar = await api('/api/items');
+      const kendte = new Map(S.items.map(x => [x.id, x]));
+      for (const fuld of svar.items || []) {
+        const cur = kendte.get(fuld.id);
+        if (cur) {
+          for (const [k, v] of Object.entries(fuld)) if (!(k in cur)) cur[k] = v;
+          delete cur.partial;
+        } else S.items.push(fuld);
+      }
+      reindex();
+      S.hydrated = true;
+      /* tegn kun om, hvis brugeren soeger - saa kan traefferne i ingredienser naa med */
+      if (S.view === 'recipes' && S.recFilter && S.recFilter.q) render();
+    } catch (e) {
+      /* ikke kritisk: ensureFull() henter den enkelte opskrift ved behov */
+    } finally { S._hydrating = null; }
+  })();
+  return S._hydrating;
+}
+
 async function saveItem(it, quiet) {
+  /* En delvis opskrift maa ALDRIG gemmes som den er - saa ville fremgangsmaade
+   * og noter blive skrevet vaek. Hent det manglende foerst; lokale aendringer
+   * vinder, fordi kun felter der IKKE findes lokalt fyldes paa. */
+  if (it && it.kind === 'recipe' && it.partial) {
+    try {
+      const svar = await api('/api/items/' + encodeURIComponent(it.id));
+      if (svar.item) for (const [k, v] of Object.entries(svar.item)) if (!(k in it)) it[k] = v;
+      delete it.partial;
+    } catch (e) { toast('Kunne ikke gemme: ' + e.message, true); return; }
+  }
   it.updatedAt = new Date().toISOString();
   const idx = S.items.findIndex(x => x.id === it.id);
   if (idx >= 0) S.items[idx] = it; else S.items.push(it);
@@ -246,7 +336,18 @@ async function deleteItem(it) {
   toast('Slettet');
 }
 async function saveBulk(items) {
+  /* Samme fælde som i saveItem, men vaerre: categorizeImported() bulk-gemmer
+   * ALLE opskrifter uden kategori ved app-start. Var de delvise, ville
+   * fremgangsmaade og ingredienser blive skrevet vaek paa én gang. Ét
+   * hydrate-kald fylder dem alle; ensureFull tager evt. efternoelere. */
+  if (items.some(x => x && x.kind === 'recipe' && x.partial)) {
+    await hydrateItems();
+    for (const x of items) if (x && x.kind === 'recipe' && x.partial) await ensureFull(x);
+  }
   for (const it of items) {
+    /* billeder holdes ALDRIG i hukommelsen i browseren - de hentes via
+     * /api/image, naar et kort faktisk vises */
+    if (it.kind === 'recipeImage') continue;
     const idx = S.items.findIndex(x => x.id === it.id);
     if (idx >= 0) S.items[idx] = it; else S.items.push(it);
   }
@@ -643,6 +744,12 @@ async function importPaprikaFile(file, onProgress) {
       if (existing.has(normName(j.name))) { out.skipped++; continue; }
       const rec = await paprikaToRecipe(j);
       existing.add(normName(rec.title));
+      /* billedet ud i sit eget item, saa opskriften bliver ved med at vaere let */
+      if (rec.image && /^data:/.test(rec.image)) {
+        batch.push({ id: 'img-' + rec.id, kind: 'recipeImage', dataUrl: rec.image });
+        rec.imageVer = String(Date.now());
+      }
+      delete rec.image;
       batch.push(rec);
       out.imported++;
     } catch (e) { out.failed++; }
@@ -881,10 +988,14 @@ function showLogin() {
 }
 
 async function enterApp() {
-  const [settings, items] = await Promise.all([api('/api/settings'), api('/api/items')]);
+  /* Kun kort-felterne ved login - resten hentes i baggrunden af hydrateItems().
+   * Med billederne inde i opskrifterne var dette kald 248 MB ved 2534 opskrifter. */
+  const [settings, items] = await Promise.all([api('/api/settings'), api('/api/items?fields=card')]);
   S.settings = Object.assign({ app: {}, logo: '' }, settings);
   S.items = items.items || [];
+  S.hydrated = false;
   reindex();
+  hydrateItems();
   S.weekStart = mondayOf();
   document.body.className = '';
   try { if (localStorage.getItem('kk_nav') === '1') document.body.classList.add('navfold'); } catch (e) {}
@@ -1038,22 +1149,57 @@ RENDER.dash_bind = () => {
 
 /* ---------------- Opskrifter ---------------- */
 
+/* Hvor mange kort der tegnes ad gangen (resten hentes med "Vis flere"
+ * eller naar bunden kommer i syne). */
+const REC_SIDE = 60;
+
+const cmpTekst = (a, b) => String(a || '').localeCompare(String(b || ''), 'da');
+const nyestFoerst = (a, b) => cmpTekst(b.createdAt, a.createdAt);
+const SORTERINGER = {
+  nyeste:  { navn: '🕒 Nyeste først', fn: nyestFoerst },
+  stjerner:{ navn: '★ Flest stjerner', fn: (a, b) => (b.rating || 0) - (a.rating || 0) || nyestFoerst(a, b) },
+  faerrest:{ navn: '☆ Færrest stjerner', fn: (a, b) => (a.rating || 0) - (b.rating || 0) || nyestFoerst(a, b) },
+  titel:   { navn: '🔤 Titel A–Å', fn: (a, b) => cmpTekst(a.title, b.title) },
+  tid:     { navn: '⏱ Korteste tid', fn: (a, b) => (recipeTotalMin(a) || 1e9) - (recipeTotalMin(b) || 1e9) || nyestFoerst(a, b) }
+};
+
 function starsHtml(rating) {
   const r = rating || 0;
   return `<span class="stars">${[1, 2, 3, 4, 5].map(i => `<span class="${i <= r ? '' : 'off'}">★</span>`).join('')}</span>`;
 }
 
+/* Klikbare stjerner - bruges baade paa kortet og paa detaljesiden, saa en
+ * opskrift kan vurderes uden at aabne den. `data-ratefor` baerer opskriftens id. */
+function starsPickHtml(r) {
+  return `<span class="stars pick" data-ratefor="${r.id}" title="Giv stjerner">${
+    [1, 2, 3, 4, 5].map(i => `<span data-star="${i}" class="${i <= (r.rating || 0) ? '' : 'off'}">★</span>`).join('')
+  }</span>`;
+}
+async function bindStarPickers() {
+  $$('[data-ratefor] [data-star]').forEach(s => s.onclick = async e => {
+    e.stopPropagation();                     // ellers aabner kortet opskriften
+    const id = s.parentElement.dataset.ratefor;
+    const r = recipeById(id);
+    if (!r) return;
+    const v = +s.dataset.star;
+    r.rating = r.rating === v ? 0 : v;       // klik paa samme stjerne rydder
+    await saveItem(r, true);
+    render();
+  });
+}
+
 function recipeCardHtml(r, medKatVaelger) {
   const time = recipeTotalMin(r);
   const cats = app().categories || [];
+  const src = imageSrcOrRemote(r);
   return `<div class="reccard" data-rec="${r.id}">
-    <div class="recimg">${r.image ? `<img src="${r.image}" alt="" loading="lazy">` : '🍽️'}</div>
+    <div class="recimg">${src ? `<img src="${esc(src)}" alt="" loading="lazy">` : '🍽️'}</div>
     <div class="recbody">
       <div class="rectitle">${r.favorite ? '⭐ ' : ''}${esc(r.title || '(uden titel)')}</div>
       <div class="recmeta">
         ${r.category ? `<span>${esc(r.category)}</span>` : ''}
         ${time ? `<span>⏱ ${fmtMin(time)}</span>` : ''}
-        ${r.rating ? starsHtml(r.rating) : ''}
+        ${starsPickHtml(r)}
       </div>
       ${medKatVaelger ? `<select class="katpick" data-katfor="${r.id}" title="Sæt kategori">
         <option value="">Vælg kategori …</option>
@@ -1081,8 +1227,12 @@ RENDER.recipes = () => {
       normName((r.tags || []).join(' ')).includes(q) ||
       normName((r.ingredients || []).join(' ')).includes(q));
   }
-  list.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  if (f.minStars) list = list.filter(r => (r.rating || 0) >= f.minStars);
+  SORTERINGER[f.sort] ? list.sort(SORTERINGER[f.sort].fn) : list.sort(SORTERINGER.nyeste.fn);
   const udenKat = K('recipe').filter(r => !r.category).length;
+  /* Vis kun et vindue ad gangen: 5000 kort paa én gang er 5000 DOM-noder,
+   * og gridet bygges forfra ved hvert tastetryk i soegefeltet. */
+  const vist = list.slice(0, S.recLimit || REC_SIDE);
 
   return pageHead('Opskrifter', `${K('recipe').length} opskrifter i biblioteket`,
       `<button class="btn" id="recNew">➕ Ny opskrift</button>
@@ -1090,6 +1240,13 @@ RENDER.recipes = () => {
        <button class="btn primary" id="recImport">🌐 Importér fra URL</button>`) + `
   <div class="rowflex">
     <input id="recSearch" placeholder="🔍 Søg i titel, ingredienser og tags…" value="${esc(f.q)}" style="min-width:240px;flex:1;max-width:380px">
+    <select id="recSort" title="Sortering">
+      ${Object.entries(SORTERINGER).map(([k, s]) => `<option value="${k}"${f.sort === k ? ' selected' : ''}>${s.navn}</option>`).join('')}
+    </select>
+    <select id="recMinStars" title="Vis kun opskrifter med mindst så mange stjerner">
+      <option value="0">★ Alle vurderinger</option>
+      ${[1, 2, 3, 4, 5].map(i => `<option value="${i}"${f.minStars === i ? ' selected' : ''}>${'★'.repeat(i)} og op</option>`).join('')}
+    </select>
     <span class="chip chipbtn${f.fav ? ' sel' : ''}" id="recFav">⭐ Favoritter</span>
     ${cats.map(c => `<span class="chip chipbtn${!f.noCat && f.category === c ? ' sel' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}
     ${udenKat ? `<span class="chip chipbtn${f.noCat ? ' sel' : ''}" id="recNoCat"
@@ -1098,7 +1255,9 @@ RENDER.recipes = () => {
   ${f.noCat ? `<p class="small muted" style="margin:10px 0 0">
     Vælg en kategori direkte på kortet – den gemmes med det samme.</p>` : ''}
   <div id="crawlBanner">${crawlBannerHtml()}</div>
-  ${list.length ? `<div class="recgrid">${list.map(r => recipeCardHtml(r, f.noCat)).join('')}</div>`
+  ${list.length ? `<div class="recgrid">${vist.map(r => recipeCardHtml(r, f.noCat)).join('')}</div>
+    ${vist.length < list.length ? `<div class="loadmore">
+      <button class="btn" id="recMore">Vis flere (${vist.length} af ${list.length})</button></div>` : ''}`
     : '<p class="muted" style="margin-top:26px">Ingen opskrifter matcher.</p>'}`;
 };
 RENDER.recipes_bind = () => {
@@ -1106,24 +1265,40 @@ RENDER.recipes_bind = () => {
   $('#recImport').onclick = importUrlModal;
   $('#recSiteImport').onclick = siteImportModal;
   bindCrawlBanner();
+  /* et nyt filter betyder en ny liste - start vinduet forfra */
+  const omTegn = () => { S.recLimit = REC_SIDE; render(); };
   const search = $('#recSearch');
   search.oninput = () => {
     S.recFilter.q = search.value;
     clearTimeout(search._h);
-    search._h = setTimeout(() => { const v = search.value; render(); const el = $('#recSearch'); el.focus(); el.setSelectionRange(v.length, v.length); }, 250);
+    search._h = setTimeout(() => { const v = search.value; omTegn(); const el = $('#recSearch'); el.focus(); el.setSelectionRange(v.length, v.length); }, 250);
   };
-  $('#recFav').onclick = () => { S.recFilter.fav = !S.recFilter.fav; render(); };
+  $('#recSort').onchange = e => { S.recFilter.sort = e.target.value; lsSet('kk_recsort', e.target.value); omTegn(); };
+  $('#recMinStars').onchange = e => { S.recFilter.minStars = +e.target.value || 0; lsSet('kk_recminstars', S.recFilter.minStars); omTegn(); };
+  $('#recFav').onclick = () => { S.recFilter.fav = !S.recFilter.fav; omTegn(); };
   $$('[data-cat]').forEach(c => c.onclick = () => {
     S.recFilter.noCat = false;
     S.recFilter.category = S.recFilter.category === c.dataset.cat ? '' : c.dataset.cat;
-    render();
+    omTegn();
   });
   const noCat = $('#recNoCat');
   if (noCat) noCat.onclick = () => {
     S.recFilter.noCat = !S.recFilter.noCat;
     S.recFilter.category = '';
-    render();
+    omTegn();
   };
+  /* "Vis flere" - baade som knap og automatisk naar den kommer i syne */
+  const more = $('#recMore');
+  if (more) {
+    const hentFlere = () => { S.recLimit = (S.recLimit || REC_SIDE) + REC_SIDE; render(); };
+    more.onclick = hentFlere;
+    if (window.IntersectionObserver) {
+      const io = new IntersectionObserver(e => { if (e[0].isIntersecting) { io.disconnect(); hentFlere(); } },
+        { rootMargin: '400px' });
+      io.observe(more);
+    }
+  }
+  bindStarPickers();
   /* saet kategori direkte fra kortet - ét klik pr. opskrift i stedet for
    * at aabne og gemme hver enkelt */
   $$('[data-katfor]').forEach(sel => {
@@ -1195,6 +1370,8 @@ function instructionsHtml(r) {
 RENDER.recipeDetail = () => {
   const r = recipeById(S.viewArg);
   if (!r) { S.view = 'recipes'; return RENDER.recipes(); }
+  /* Listen har kun kort-felterne - hent resten, foer opskriften kan vises. */
+  if (r.partial) { ensureFull(r).then(() => { if (S.view === 'recipeDetail') render(); }); return '<p class="muted">Henter opskriften …</p>'; }
   const base = r.servings || app().defaultServings;
   if (S.detailFor !== r.id) { S.detailFor = r.id; S.detailServings = base; }
   if (!S.detailServings) S.detailServings = base;
@@ -1219,7 +1396,7 @@ RENDER.recipeDetail = () => {
     ${r.cookMin ? `<span class="timechip">🍳 Tilberedning: ${fmtMin(r.cookMin)}</span>` : ''}
     ${recipeTotalMin(r) ? `<span class="timechip">⏱ I alt: ${fmtMin(recipeTotalMin(r))}</span>` : ''}
     ${r.nutrition ? `<span class="timechip" title="Pr. portion${r.nutrition.estimated ? ' (AI-estimat)' : ''}">🔥 ${r.nutrition.kcal} kcal · ${r.nutrition.protein} g protein · ${r.nutrition.carbs} g kulhydrat · ${r.nutrition.fat} g fedt</span>` : ''}
-    <span class="stars pick" id="ratePick">${[1, 2, 3, 4, 5].map(i => `<span data-star="${i}" class="${i <= (r.rating || 0) ? '' : 'off'}">★</span>`).join('')}</span>
+    ${starsPickHtml(r)}
   </div>
   <div class="rowflex" style="margin:0 0 14px">
     <button class="btn small" id="shareBtn">${r.shareToken ? '🔗 Deles – vis link' : '🔗 Del med et link'}</button>
@@ -1229,7 +1406,7 @@ RENDER.recipeDetail = () => {
 
   <div class="recdetail">
     <div>
-      ${r.image ? `<div class="recphoto"><img src="${r.image}" alt=""></div>` : ''}
+      ${imageSrcOrRemote(r) ? `<div class="recphoto"><img src="${esc(imageSrcOrRemote(r))}" alt=""></div>` : ''}
       ${r.description ? `<p class="muted" style="margin-top:12px">${esc(r.description)}</p>` : ''}
       <h2>Ingredienser</h2>
       <div class="rowflex" style="margin-bottom:4px">
@@ -1253,7 +1430,7 @@ RENDER.recipeDetail = () => {
 };
 RENDER.recipeDetail_bind = () => {
   const r = recipeById(S.viewArg);
-  if (!r) return;
+  if (!r || r.partial) return;             // venter stadig paa resten af opskriften
   $('#backToList').onclick = e => { e.preventDefault(); S.detailServings = null; goto('recipes'); };
   $('#editBtn').onclick = () => recipeModal(r);
   $('#cookBtn').onclick = () => openCookMode(r);
@@ -1263,12 +1440,7 @@ RENDER.recipeDetail_bind = () => {
   $('#planBtn').onclick = () => planEntryModal(null, { recipeId: r.id });
   $('#servMinus').onclick = () => { S.detailServings = Math.max(1, S.detailServings - 1); render(); };
   $('#servPlus').onclick = () => { S.detailServings = S.detailServings + 1; render(); };
-  $$('#ratePick [data-star]').forEach(s => s.onclick = async () => {
-    const v = +s.dataset.star;
-    r.rating = r.rating === v ? 0 : v;
-    await saveItem(r, true);
-    render();
-  });
+  bindStarPickers();
   $('#shareBtn').onclick = () => shareRecipeModal(r);
   const nutri = $('#nutriBtn');
   if (nutri) nutri.onclick = () => aiEstimateNutrition(r, nutri);
@@ -1406,8 +1578,8 @@ function recipeModal(r, prefill) {
       <label class="fld"><span>Kilde-URL</span><input id="rmUrl" value="${esc(d.url || '')}"></label>
       <label class="fld"><span>Billede</span>
         <span class="rowflex">
-          <button class="btn small" id="rmImgPick">${d.image ? 'Skift…' : 'Vælg…'}</button>
-          ${d.image ? '<button class="btn small danger" id="rmImgDel">Fjern</button>' : ''}
+          <button class="btn small" id="rmImgPick">${hasImage(d) ? 'Skift…' : 'Vælg…'}</button>
+          ${hasImage(d) ? '<button class="btn small danger" id="rmImgDel">Fjern</button>' : ''}
           <input id="rmImgFile" type="file" accept="image/*" hidden>
         </span></label>
     </div>
@@ -1416,16 +1588,19 @@ function recipeModal(r, prefill) {
       <button class="btn" id="rmCancel">Annullér</button>
       <button class="btn primary" id="rmSave">Gem</button>
     </div>`, m => {
-    let image = d.image || '';
+    /* nytBillede: null = uroert · '' = fjern · dataURL = erstat.
+     * En importeret opskrift kommer med billedet som dataURL i kladden - det
+     * skal gemmes som et selvstaendigt billed-item, ikke inde i opskriften. */
+    let nytBillede = (typeof d.image === 'string' && d.image.startsWith('data:')) ? d.image : null;
     m.querySelector('#rmImgPick').onclick = () => m.querySelector('#rmImgFile').click();
     m.querySelector('#rmImgFile').onchange = async e => {
       const f = e.target.files[0];
       if (!f) return;
-      image = await blobToScaledDataUrl(f);
+      nytBillede = await blobToScaledDataUrl(f);
       m.querySelector('#rmImgPick').textContent = 'Valgt ✓';
     };
     const del = m.querySelector('#rmImgDel');
-    if (del) del.onclick = () => { image = ''; del.disabled = true; m.querySelector('#rmImgPick').textContent = 'Vælg…'; };
+    if (del) del.onclick = () => { nytBillede = ''; del.disabled = true; m.querySelector('#rmImgPick').textContent = 'Vælg…'; };
     m.querySelector('#rmCancel').onclick = closeModal;
     if (!isNew) m.querySelector('#rmDelete').onclick = async () => {
       if (!await confirmBox(`Slet opskriften "${d.title}"?`)) return;
@@ -1447,8 +1622,11 @@ function recipeModal(r, prefill) {
       d.instructions = m.querySelector('#rmSteps').value.split('\n').map(l => l.trim()).filter(Boolean);
       d.notes = m.querySelector('#rmNotes').value.trim();
       d.url = m.querySelector('#rmUrl').value.trim();
-      d.image = image;
       closeModal();
+      /* billedet gemmes som sit eget item - saa opskriften selv bliver ved med
+       * at vaere et par kilobyte og kan sendes med i listen */
+      if (nytBillede) await saveRecipeImage(d, nytBillede);
+      else if (nytBillede === '') await deleteRecipeImage(d);
       await saveItem(d);
       goto('recipeDetail', d.id);
     };
@@ -1904,9 +2082,13 @@ function siteImportModal() {
         /* spring sider over, som allerede er hentet - baade dem der blev til en
          * opskrift og dem der viste sig ikke at have en. Saa kan man bare koere
          * igen og faa de naeste, i stedet for at bruge koeretiden om igen. */
+        /* crawlSeen kommer IKKE med i login-svaret (den vokser med hver crawl og
+         * bruges kun her) - hentes derfor paa stedet. */
+        let sete = [];
+        try { sete = (await api('/api/items?kind=crawlSeen')).items || []; } catch (e) {}
         const kendte = new Set([
           ...K('recipe').map(x => normUrlFront(x.url)),
-          ...K('crawlSeen').map(x => normUrlFront(x.url))
+          ...sete.map(x => normUrlFront(x.url))
         ].filter(Boolean));
         SI.urls = fundne.filter(u => !kendte.has(normUrlFront(u)));
         const alleredeSet = fundne.length - SI.urls.length;
@@ -1983,9 +2165,11 @@ function startCrawlPolling() {
           if (st.error) toast(st.error, true);
         }
         /* hent de nye opskrifter ind i browseren */
-        const items = await api('/api/items');
+        const items = await api('/api/items?fields=card');
         S.items = items.items || [];
+        S.hydrated = false;
         reindex();
+        hydrateItems();
         render();          // importen er slut - her maa siden gerne tegnes om
         await categorizeImported();
         /* og hent billederne ned lokalt, lidt ad gangen */
@@ -2012,7 +2196,9 @@ async function localizeRemoteImages(maks) {
   let n = 0;
   for (const r of liste.slice(0, maks || 6)) {
     const d = await fetchImageAsDataUrl(r.image);
-    if (d) { r.image = d; n++; }
+    /* gemmes som selvstaendigt billed-item (saetter imageVer og rydder r.image) */
+    if (d) { await saveRecipeImage(r, d); n++; }
+    else delete r.image;
     delete r.imageRemote;              // ogsaa ved fejl, saa vi ikke proever i det uendelige
     await saveItem(r, true);
   }
@@ -2103,7 +2289,7 @@ RENDER.plan = () => {
           const si = slotInfo(slotOf(e));
           const slotTag = slotOf(e) !== 'dinner' ? `<span class="muted">${si.ico} ${si.label} · </span>` : '';
           return `<div class="planentry" data-entry="${e.id}" draggable="true">
-            ${visBilleder && r && r.image ? `<img class="planimg" src="${r.image}" alt="" loading="lazy">` : ''}
+            ${visBilleder && r && imageSrcOrRemote(r) ? `<img class="planimg" src="${esc(imageSrcOrRemote(r))}" alt="" loading="lazy">` : ''}
             ${slotTag}${r ? esc(r.title) : esc(e.text || '')}
             ${r && recipeTotalMin(r) ? `<div class="pmeta">⏱ ${fmtMin(recipeTotalMin(r))}${e.servings ? ' · ' + e.servings + ' pers.' : ''}</div>` : (e.servings ? `<div class="pmeta">${e.servings} pers.</div>` : '')}
           </div>`;
@@ -2316,6 +2502,11 @@ function fillCats() {
   const hoved = cats.find(c => normName(c) === 'hovedret');
   return hoved ? [hoved] : cats.slice();
 }
+/* Mindste antal stjerner en ret skal have for at komme i betragtning.
+ * 0 = ingen krav. Uvurderede retter (rating 0) falder altsaa fra, saa snart
+ * kravet er 1 eller mere - det er meningen: man vil have de gode igen. */
+const fillMinStars = () => +lsGet('kk_fillminstars', 0) || 0;
+const opfylderStjerner = (r, min) => !min || (r.rating || 0) >= min;
 function autoFillWeek() {
   const monday = S.weekStart || mondayOf();
   const dates = weekDatesOf(monday);
@@ -2342,6 +2533,11 @@ function autoFillWeek() {
       <button class="btn small" id="fcAll">Markér alt</button>
       <button class="btn small" id="fcMain">Kun hovedretter</button>
     </div>
+    <label class="fld" style="margin-top:14px"><span>Mindste vurdering</span>
+      <select id="fcStars">
+        <option value="0">★ Alle – også uvurderede</option>
+        ${[1, 2, 3, 4, 5].map(i => `<option value="${i}"${fillMinStars() === i ? ' selected' : ''}>${'★'.repeat(i)} og op</option>`).join('')}
+      </select></label>
     <p class="small muted" id="fcInfo" style="margin:12px 0 0"></p>
     <div class="actions">
       <button class="btn" id="fcCancel">Annullér</button>
@@ -2349,15 +2545,22 @@ function autoFillWeek() {
     </div>`, m => {
     const bokse = () => [...m.querySelectorAll('[data-fc]')];
     const valgte = () => bokse().filter(b => b.checked).map(b => b.dataset.fc);
-    const puljen = () => K('recipe').filter(r => valgte().includes(r.category || ''));
+    const minStjerner = () => +m.querySelector('#fcStars').value || 0;
+    const puljen = () => K('recipe').filter(r =>
+      valgte().includes(r.category || '') && opfylderStjerner(r, minStjerner()));
     const opdater = () => {
       const n = puljen().length;
+      const stj = minStjerner();
       m.querySelector('#fcInfo').textContent = n
-        ? `${n} opskrifter at vælge imellem til ${free.length} dage` + (n < free.length ? ' – nogle vil gå igen' : '')
-        : 'Ingen opskrifter i de valgte kategorier';
+        ? `${n} ${n === 1 ? 'opskrift' : 'opskrifter'} at vælge imellem til ${free.length} dage` +
+          (stj ? ` (med mindst ${stj} ${stj === 1 ? 'stjerne' : 'stjerner'})` : '') +
+          (n < free.length ? ' – nogle vil gå igen' : '')
+        : (stj ? `Ingen opskrifter med mindst ${stj} ${stj === 1 ? 'stjerne' : 'stjerner'} i de valgte kategorier`
+               : 'Ingen opskrifter i de valgte kategorier');
       m.querySelector('#fcGo').disabled = !n;
     };
     bokse().forEach(b => b.onchange = opdater);
+    m.querySelector('#fcStars').onchange = opdater;
     m.querySelector('#fcAll').onclick = () => { bokse().forEach(b => b.checked = true); opdater(); };
     m.querySelector('#fcMain').onclick = () => {
       bokse().forEach(b => b.checked = normName(b.dataset.fc) === 'hovedret');
@@ -2366,9 +2569,11 @@ function autoFillWeek() {
     m.querySelector('#fcCancel').onclick = closeModal;
     m.querySelector('#fcGo').onclick = async () => {
       const v = valgte();
+      const pulje = puljen();
       try { localStorage.setItem('kk_fillcats', JSON.stringify(v)); } catch (e) {}
+      lsSet('kk_fillminstars', minStjerner());
       closeModal();
-      await doAutoFill(free, dates, puljen());
+      await doAutoFill(free, dates, pulje);
     };
     opdater();
   });
@@ -2401,9 +2606,10 @@ async function doAutoFill(free, dates, recipes) {
 /* Hurtigt kig paa retten fra madplanen - man planlaegger tit ud fra tid og
  * ingredienser, ikke titlen alene. Fritekst-linjer har intet at vise, saa de
  * gaar direkte til redigering. */
-function planQuickView(entry) {
+async function planQuickView(entry) {
   const r = entry.recipeId ? recipeById(entry.recipeId) : null;
   if (!r) return planEntryModal(entry);
+  await ensureFull(r);                // ingredienserne kommer foerst med her
   const base = r.servings || app().defaultServings;
   const pers = entry.servings || base;
   const factor = base ? pers / base : 1;
@@ -2414,7 +2620,7 @@ function planQuickView(entry) {
     : `<li>${esc(scaleIngredient(l, factor))}</li>`).join('');
 
   openModal(`<div class="rowflex" style="align-items:flex-start;gap:16px;flex-wrap:nowrap">
-      ${r.image ? `<img src="${r.image}" alt="" style="width:140px;height:105px;object-fit:cover;border-radius:10px;flex:none">` : ''}
+      ${imageSrcOrRemote(r) ? `<img src="${esc(imageSrcOrRemote(r))}" alt="" style="width:140px;height:105px;object-fit:cover;border-radius:10px;flex:none">` : ''}
       <div style="flex:1;min-width:0">
         <h2 style="margin:0 0 2px">${esc(r.title)}</h2>
         <p class="small muted" style="margin:0 0 8px">
@@ -2500,6 +2706,7 @@ async function weekToShopping() {
   for (const e of entries) {
     const r = recipeById(e.recipeId);
     if (!r) continue;
+    await ensureFull(r);              // listen har kun kort-felterne - vi skal bruge ingredienserne
     const factor = e.servings && r.servings ? e.servings / r.servings : 1;
     for (const l of (r.ingredients || []).filter(l => !/^##/.test(l))) {
       const text = scaleIngredient(l, factor);
@@ -2545,8 +2752,11 @@ async function aiSuggestWeek() {
   /* samme kategori-filter som "Udfyld fra biblioteket", saa de to knapper
    * opfoerer sig ens - ellers kan AI'en foreslaa saucer og drikkevarer */
   const valgte = fillCats();
-  let recipes = K('recipe').filter(r => valgte.includes(r.category || ''));
-  if (recipes.length < 2) recipes = K('recipe');   // for smalt valg: brug hele biblioteket
+  const minStj = fillMinStars();
+  let recipes = K('recipe').filter(r => valgte.includes(r.category || '') && opfylderStjerner(r, minStj));
+  /* for smalt valg: slaek foerst paa kategorierne, saa paa stjernerne */
+  if (recipes.length < 2) recipes = K('recipe').filter(r => opfylderStjerner(r, minStj));
+  if (recipes.length < 2) recipes = K('recipe');
   if (recipes.length < 2) return toast('Tilføj nogle opskrifter først, så AI\'en har noget at vælge imellem', true);
 
   toast('AI\'en sammensætter en madplan …');
@@ -3397,11 +3607,25 @@ RENDER.settings_bind = () => {
       try { data = JSON.parse(await f.text()); } catch (err) { return toast('Filen er ikke gyldig JSON', true); }
       if (!Array.isArray(data.items)) return toast('Ligner ikke en Kokkeri-backup', true);
       const replace = await confirmBox(`Gendan ${data.items.length} elementer fra backup? Vælg "Erstat alt" for at overskrive alt eksisterende.`, 'Erstat alt');
-      const r = await api('/api/restore', { body: { items: data.items, settings: data.settings || null, replace } });
-      toast('Gendannede ' + r.restored + ' elementer');
-      const items = await api('/api/items');
+      /* I portioner: en backup med billeder fylder hundredvis af megabyte, og
+       * ét POST ville baade ramme serverens graense og fylde hukommelsen.
+       * Foerste kald rydder (hvis "erstat alt") og saetter indstillingerne. */
+      let gendannet = 0;
+      try {
+        await api('/api/restore', { body: { begin: true, settings: data.settings || null, replace } });
+        for (let i = 0; i < data.items.length; i += 50) {
+          const del = data.items.slice(i, i + 50);
+          const r = await api('/api/restore', { body: { items: del } });
+          gendannet += r.restored || 0;
+          toast(`Gendanner … ${Math.min(i + 50, data.items.length)} af ${data.items.length}`);
+        }
+      } catch (err) { return toast('Gendannelsen stoppede: ' + err.message, true); }
+      toast('Gendannede ' + gendannet + ' elementer');
+      const items = await api('/api/items?fields=card');
       S.items = items.items || [];
+      S.hydrated = false;
       reindex();
+      hydrateItems();
       render();
     };
   }

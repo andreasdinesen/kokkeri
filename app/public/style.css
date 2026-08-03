@@ -211,6 +211,11 @@ label.chk { display: flex; align-items: center; gap: 8px; font-size: 14px; color
 .stars { color: var(--amber); letter-spacing: 1px; font-size: 12.5px; }
 .stars .off { color: var(--border); }
 .stars.pick { cursor: pointer; font-size: 22px; }
+/* paa kortet skal stjernerne kunne klikkes, men ikke fylde som paa detaljesiden */
+.reccard .stars.pick { font-size: 14px; }
+.reccard .stars.pick span:hover { color: var(--amber); filter: brightness(1.35); }
+/* "Vis flere" under gridet - gridet tegner kun et vindue ad gangen */
+.loadmore { display: flex; justify-content: center; margin: 18px 0 4px; }
 
 /* opskrift-detalje */
 .recdetail { display: grid; grid-template-columns: minmax(260px, 340px) 1fr; gap: 22px; align-items: start; }

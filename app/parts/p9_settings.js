@@ -284,11 +284,25 @@ RENDER.settings_bind = () => {
       try { data = JSON.parse(await f.text()); } catch (err) { return toast('Filen er ikke gyldig JSON', true); }
       if (!Array.isArray(data.items)) return toast('Ligner ikke en Kokkeri-backup', true);
       const replace = await confirmBox(`Gendan ${data.items.length} elementer fra backup? Vælg "Erstat alt" for at overskrive alt eksisterende.`, 'Erstat alt');
-      const r = await api('/api/restore', { body: { items: data.items, settings: data.settings || null, replace } });
-      toast('Gendannede ' + r.restored + ' elementer');
-      const items = await api('/api/items');
+      /* I portioner: en backup med billeder fylder hundredvis af megabyte, og
+       * ét POST ville baade ramme serverens graense og fylde hukommelsen.
+       * Foerste kald rydder (hvis "erstat alt") og saetter indstillingerne. */
+      let gendannet = 0;
+      try {
+        await api('/api/restore', { body: { begin: true, settings: data.settings || null, replace } });
+        for (let i = 0; i < data.items.length; i += 50) {
+          const del = data.items.slice(i, i + 50);
+          const r = await api('/api/restore', { body: { items: del } });
+          gendannet += r.restored || 0;
+          toast(`Gendanner … ${Math.min(i + 50, data.items.length)} af ${data.items.length}`);
+        }
+      } catch (err) { return toast('Gendannelsen stoppede: ' + err.message, true); }
+      toast('Gendannede ' + gendannet + ' elementer');
+      const items = await api('/api/items?fields=card');
       S.items = items.items || [];
+      S.hydrated = false;
       reindex();
+      hydrateItems();
       render();
     };
   }

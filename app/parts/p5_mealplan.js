@@ -49,7 +49,7 @@ RENDER.plan = () => {
           const si = slotInfo(slotOf(e));
           const slotTag = slotOf(e) !== 'dinner' ? `<span class="muted">${si.ico} ${si.label} · </span>` : '';
           return `<div class="planentry" data-entry="${e.id}" draggable="true">
-            ${visBilleder && r && r.image ? `<img class="planimg" src="${r.image}" alt="" loading="lazy">` : ''}
+            ${visBilleder && r && imageSrcOrRemote(r) ? `<img class="planimg" src="${esc(imageSrcOrRemote(r))}" alt="" loading="lazy">` : ''}
             ${slotTag}${r ? esc(r.title) : esc(e.text || '')}
             ${r && recipeTotalMin(r) ? `<div class="pmeta">⏱ ${fmtMin(recipeTotalMin(r))}${e.servings ? ' · ' + e.servings + ' pers.' : ''}</div>` : (e.servings ? `<div class="pmeta">${e.servings} pers.</div>` : '')}
           </div>`;
@@ -262,6 +262,11 @@ function fillCats() {
   const hoved = cats.find(c => normName(c) === 'hovedret');
   return hoved ? [hoved] : cats.slice();
 }
+/* Mindste antal stjerner en ret skal have for at komme i betragtning.
+ * 0 = ingen krav. Uvurderede retter (rating 0) falder altsaa fra, saa snart
+ * kravet er 1 eller mere - det er meningen: man vil have de gode igen. */
+const fillMinStars = () => +lsGet('kk_fillminstars', 0) || 0;
+const opfylderStjerner = (r, min) => !min || (r.rating || 0) >= min;
 function autoFillWeek() {
   const monday = S.weekStart || mondayOf();
   const dates = weekDatesOf(monday);
@@ -288,6 +293,11 @@ function autoFillWeek() {
       <button class="btn small" id="fcAll">Markér alt</button>
       <button class="btn small" id="fcMain">Kun hovedretter</button>
     </div>
+    <label class="fld" style="margin-top:14px"><span>Mindste vurdering</span>
+      <select id="fcStars">
+        <option value="0">★ Alle – også uvurderede</option>
+        ${[1, 2, 3, 4, 5].map(i => `<option value="${i}"${fillMinStars() === i ? ' selected' : ''}>${'★'.repeat(i)} og op</option>`).join('')}
+      </select></label>
     <p class="small muted" id="fcInfo" style="margin:12px 0 0"></p>
     <div class="actions">
       <button class="btn" id="fcCancel">Annullér</button>
@@ -295,15 +305,22 @@ function autoFillWeek() {
     </div>`, m => {
     const bokse = () => [...m.querySelectorAll('[data-fc]')];
     const valgte = () => bokse().filter(b => b.checked).map(b => b.dataset.fc);
-    const puljen = () => K('recipe').filter(r => valgte().includes(r.category || ''));
+    const minStjerner = () => +m.querySelector('#fcStars').value || 0;
+    const puljen = () => K('recipe').filter(r =>
+      valgte().includes(r.category || '') && opfylderStjerner(r, minStjerner()));
     const opdater = () => {
       const n = puljen().length;
+      const stj = minStjerner();
       m.querySelector('#fcInfo').textContent = n
-        ? `${n} opskrifter at vælge imellem til ${free.length} dage` + (n < free.length ? ' – nogle vil gå igen' : '')
-        : 'Ingen opskrifter i de valgte kategorier';
+        ? `${n} ${n === 1 ? 'opskrift' : 'opskrifter'} at vælge imellem til ${free.length} dage` +
+          (stj ? ` (med mindst ${stj} ${stj === 1 ? 'stjerne' : 'stjerner'})` : '') +
+          (n < free.length ? ' – nogle vil gå igen' : '')
+        : (stj ? `Ingen opskrifter med mindst ${stj} ${stj === 1 ? 'stjerne' : 'stjerner'} i de valgte kategorier`
+               : 'Ingen opskrifter i de valgte kategorier');
       m.querySelector('#fcGo').disabled = !n;
     };
     bokse().forEach(b => b.onchange = opdater);
+    m.querySelector('#fcStars').onchange = opdater;
     m.querySelector('#fcAll').onclick = () => { bokse().forEach(b => b.checked = true); opdater(); };
     m.querySelector('#fcMain').onclick = () => {
       bokse().forEach(b => b.checked = normName(b.dataset.fc) === 'hovedret');
@@ -312,9 +329,11 @@ function autoFillWeek() {
     m.querySelector('#fcCancel').onclick = closeModal;
     m.querySelector('#fcGo').onclick = async () => {
       const v = valgte();
+      const pulje = puljen();
       try { localStorage.setItem('kk_fillcats', JSON.stringify(v)); } catch (e) {}
+      lsSet('kk_fillminstars', minStjerner());
       closeModal();
-      await doAutoFill(free, dates, puljen());
+      await doAutoFill(free, dates, pulje);
     };
     opdater();
   });
@@ -347,9 +366,10 @@ async function doAutoFill(free, dates, recipes) {
 /* Hurtigt kig paa retten fra madplanen - man planlaegger tit ud fra tid og
  * ingredienser, ikke titlen alene. Fritekst-linjer har intet at vise, saa de
  * gaar direkte til redigering. */
-function planQuickView(entry) {
+async function planQuickView(entry) {
   const r = entry.recipeId ? recipeById(entry.recipeId) : null;
   if (!r) return planEntryModal(entry);
+  await ensureFull(r);                // ingredienserne kommer foerst med her
   const base = r.servings || app().defaultServings;
   const pers = entry.servings || base;
   const factor = base ? pers / base : 1;
@@ -360,7 +380,7 @@ function planQuickView(entry) {
     : `<li>${esc(scaleIngredient(l, factor))}</li>`).join('');
 
   openModal(`<div class="rowflex" style="align-items:flex-start;gap:16px;flex-wrap:nowrap">
-      ${r.image ? `<img src="${r.image}" alt="" style="width:140px;height:105px;object-fit:cover;border-radius:10px;flex:none">` : ''}
+      ${imageSrcOrRemote(r) ? `<img src="${esc(imageSrcOrRemote(r))}" alt="" style="width:140px;height:105px;object-fit:cover;border-radius:10px;flex:none">` : ''}
       <div style="flex:1;min-width:0">
         <h2 style="margin:0 0 2px">${esc(r.title)}</h2>
         <p class="small muted" style="margin:0 0 8px">
@@ -446,6 +466,7 @@ async function weekToShopping() {
   for (const e of entries) {
     const r = recipeById(e.recipeId);
     if (!r) continue;
+    await ensureFull(r);              // listen har kun kort-felterne - vi skal bruge ingredienserne
     const factor = e.servings && r.servings ? e.servings / r.servings : 1;
     for (const l of (r.ingredients || []).filter(l => !/^##/.test(l))) {
       const text = scaleIngredient(l, factor);
@@ -491,8 +512,11 @@ async function aiSuggestWeek() {
   /* samme kategori-filter som "Udfyld fra biblioteket", saa de to knapper
    * opfoerer sig ens - ellers kan AI'en foreslaa saucer og drikkevarer */
   const valgte = fillCats();
-  let recipes = K('recipe').filter(r => valgte.includes(r.category || ''));
-  if (recipes.length < 2) recipes = K('recipe');   // for smalt valg: brug hele biblioteket
+  const minStj = fillMinStars();
+  let recipes = K('recipe').filter(r => valgte.includes(r.category || '') && opfylderStjerner(r, minStj));
+  /* for smalt valg: slaek foerst paa kategorierne, saa paa stjernerne */
+  if (recipes.length < 2) recipes = K('recipe').filter(r => opfylderStjerner(r, minStj));
+  if (recipes.length < 2) recipes = K('recipe');
   if (recipes.length < 2) return toast('Tilføj nogle opskrifter først, så AI\'en har noget at vælge imellem', true);
 
   toast('AI\'en sammensætter en madplan …');

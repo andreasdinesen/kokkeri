@@ -24,7 +24,9 @@ const DB_PATH = path.join(DATA_DIR, 'kokkeri.db');
 /* Datatyper frontenden må gemme. Holdes som whitelist så API'et ikke kan
  * bruges som vilkårligt lager. */
 const KINDS = new Set([
-  'recipe',     // opskrift (titel, ingredienser, fremgangsmåde, kilde-URL, billede ...)
+  'recipe',     // opskrift (titel, ingredienser, fremgangsmåde, kilde-URL ...)
+  'recipeImage',// opskriftens foto (dataURL), id = opskriftens id. Ligger for sig selv,
+                // saa listen kan hentes uden 100 KB billede pr. opskrift - se /api/image
   'planEntry',  // madplan-linje (dato + slot + opskrift eller fritekst)
   'shopItem',   // indkøbsliste-linje (tekst, evt. opskrift-reference, afdeling, afkrydset)
   'menu',       // gemt madplan-skabelon (ugedag+slot+opskrift pr. linje)
@@ -67,6 +69,10 @@ CREATE TABLE IF NOT EXISTS items (
   deleted INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_items_kind ON items(kind);
+/* Delings-siden slog shareToken op ved at parse ALLE opskrifter og .find()e.
+ * Med et udtryks-indeks er det ét opslag - og /del/<token> kraever ikke login. */
+CREATE INDEX IF NOT EXISTS idx_items_share ON items(json_extract(data, '$.shareToken'))
+  WHERE json_extract(data, '$.shareToken') IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `);
@@ -97,6 +103,15 @@ const q = {
   itemsAll: db.prepare('SELECT kind, data FROM items WHERE deleted = 0'),
   itemsByKind: db.prepare('SELECT data FROM items WHERE kind = ? AND deleted = 0'),
   itemById: db.prepare('SELECT * FROM items WHERE id = ?'),
+  /* Listerne sender de RAA JSON-strenge videre. data-kolonnen ER allerede JSON,
+   * saa JSON.parse -> JSON.stringify var ren spildtid og en hukommelsesspids. */
+  rawExcept: db.prepare(`SELECT data FROM items WHERE deleted = 0 AND kind NOT IN ('recipeImage', 'crawlSeen')`),
+  rawByKind: db.prepare('SELECT data FROM items WHERE kind = ? AND deleted = 0'),
+  rawAll: db.prepare('SELECT data FROM items WHERE deleted = 0'),
+  imageById: db.prepare(`SELECT data, updated_at FROM items WHERE id = ? AND kind = 'recipeImage' AND deleted = 0`),
+  recipeByShare: db.prepare(`SELECT data FROM items WHERE kind = 'recipe' AND deleted = 0
+    AND json_extract(data, '$.shareToken') = ?`),
+  recipeById: db.prepare(`SELECT data FROM items WHERE id = ? AND kind = 'recipe' AND deleted = 0`),
   upsertItem: db.prepare(`INSERT INTO items (id, kind, data, updated_at, deleted) VALUES (?,?,?,?,?)
     ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, data = excluded.data,
       updated_at = excluded.updated_at, deleted = excluded.deleted`),
@@ -114,6 +129,51 @@ const setting = (key, dflt) => { const r = q.getSetting.get(key); return r ? r.v
 /* kalender-token til iCal-abonnement (kalender-apps kan ikke sende cookies) */
 if (!setting('ical_token', '')) {
   q.setSetting.run('ical_token', crypto.randomBytes(16).toString('hex'));
+}
+
+/* ---------------- billeder ligger for sig selv ----------------
+ * Et foto fylder ~100 KB som dataURL. Laa det i opskriften, sendte /api/items
+ * hele biblioteket med billeder og alt (248 MB ved 2534 opskrifter) ved hvert
+ * login. Nu bor billedet i sit eget item med id "img-<opskriftens id>", og
+ * opskriften har kun `imageVer` - et stempel der goer /api/image/<id>?v=<ver>
+ * cachebar for evigt, samtidig med at et nyt foto giver en ny URL. */
+const imgId = rid => 'img-' + rid;
+
+function migrateImagesOut() {
+  if (setting('images_split', '') === '1') return;
+  const rows = db.prepare(`SELECT id, data FROM items WHERE kind = 'recipe' AND deleted = 0`).all();
+  const stamp = nowIso();
+  let n = 0;
+  db.exec('BEGIN');
+  try {
+    for (const row of rows) {
+      let r;
+      try { r = JSON.parse(row.data); } catch (e) { continue; }
+      if (typeof r.image !== 'string' || !r.image.startsWith('data:')) continue;
+      const ver = String(Date.parse(r.updatedAt || '') || Date.now());
+      q.upsertItem.run(imgId(row.id), 'recipeImage',
+        JSON.stringify({ id: imgId(row.id), kind: 'recipeImage', dataUrl: r.image }), stamp, 0);
+      delete r.image;
+      delete r.imageRemote;
+      r.imageVer = ver;
+      q.upsertItem.run(row.id, 'recipe', JSON.stringify(r), r.updatedAt || stamp, 0);
+      n++;
+    }
+    q.setSetting.run('images_split', '1');
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  if (n) console.log(`Kokkeri: flyttede ${n} billeder ud af opskrifterne (engangs-migrering)`);
+}
+migrateImagesOut();
+
+/* dataURL -> {type, buf}. Ugyldigt input giver null frem for at kaste. */
+function decodeDataUrl(s) {
+  const m = /^data:([^;,]+)(;base64)?,/.exec(String(s || ''));
+  if (!m) return null;
+  const rest = s.slice(m[0].length);
+  try {
+    return { type: m[1], buf: m[2] ? Buffer.from(rest, 'base64') : Buffer.from(decodeURIComponent(rest), 'utf8') };
+  } catch (e) { return null; }
 }
 
 /* ---------------- helpers ---------------- */
@@ -280,6 +340,44 @@ function send(res, code, obj) {
   res.end(body);
 }
 const err = (res, code, message) => send(res, code, { error: message });
+
+/* Felterne oversigten, madplanen og soegningen har brug for. Resten af
+ * opskriften (fremgangsmaade, noter, ernaering ...) hentes foerst naar man
+ * aabner den - se GET /api/items/<id>. */
+const KORT_FELTER = ['id', 'kind', 'title', 'category', 'sourceCategory', 'catChecked',
+  'tags', 'rating', 'favorite', 'servings', 'yieldText', 'prepMin', 'cookMin', 'totalMin',
+  'timesCooked', 'lastCooked', 'createdAt', 'updatedAt', 'imageVer', 'url'];
+
+/* Skriver {"items":[...]} ud i bidder. Raekkerne ER allerede JSON-tekst i
+ * data-kolonnen, saa de konkateneres direkte: ingen JSON.parse -> JSON.stringify
+ * og ingen kaempe streng i heapen (det var 1,3 GB pr. kald ved 2534 opskrifter). */
+function streamItems(res, rows, kunKort) {
+  res.writeHead(200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff'
+  });
+  res.write('{"items":[');
+  let bid = '', foerste = true;
+  for (const row of rows) {
+    let tekst = row.data;
+    if (kunKort) {
+      let o;
+      try { o = JSON.parse(tekst); } catch (e) { continue; }
+      if (o.kind === 'recipe') {
+        const kort = {};
+        for (const k of KORT_FELTER) if (o[k] !== undefined) kort[k] = o[k];
+        kort.partial = true;          // frontenden ved, at resten mangler
+        tekst = JSON.stringify(kort);
+      }
+    }
+    bid += (foerste ? '' : ',') + tekst;
+    foerste = false;
+    if (bid.length > 262144) { res.write(bid); bid = ''; }
+  }
+  res.write(bid + ']}');
+  res.end();
+}
 
 function readBody(req, maxBytes) {
   return new Promise((resolve, reject) => {
@@ -849,8 +947,16 @@ const server = http.createServer(async (req, res) => {
     if (p.startsWith('/del/') && req.method === 'GET') {
       const token = decodeURIComponent(p.slice(5)).replace(/[^0-9a-f]/g, '');
       if (token.length < 16) return err(res, 404, 'Ikke fundet');
-      const rec = q.itemsByKind.all('recipe').map(r => JSON.parse(r.data)).find(r => r.shareToken === token);
+      /* ét indeks-opslag (idx_items_share) - ikke en scanning af hele biblioteket */
+      const rad = q.recipeByShare.get(token);
+      let rec = null;
+      try { rec = rad ? JSON.parse(rad.data) : null; } catch (e) {}
       if (!rec) return err(res, 404, 'Opskriften findes ikke – delingen kan være slået fra');
+      /* billedet bor for sig selv nu - hent det kun til den ene side */
+      if (rec.imageVer && !rec.image) {
+        const irad = q.imageById.get(imgId(rec.id));
+        try { if (irad) rec.image = JSON.parse(irad.data).dataUrl; } catch (e) {}
+      }
       const H = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
         ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
       const ings = (rec.ingredients || []).map(l => /^##\s*/.test(l)
@@ -901,7 +1007,19 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
       const want = setting('ical_token', '');
       if (!want || token !== want) return err(res, 403, 'Ugyldigt kalender-token');
       const entries = q.itemsByKind.all('planEntry').map(r => JSON.parse(r.data));
-      const recipes = new Map(q.itemsByKind.all('recipe').map(r => { const x = JSON.parse(r.data); return [x.id, x]; }));
+      /* Slaa KUN de opskrifter op, madplanen faktisk henviser til. Feedet blev
+       * pollet af kalender-apps hvert kvarter og parsede foer hele biblioteket. */
+      const cache = new Map();
+      const hentRec = id => {
+        if (!id) return null;
+        if (!cache.has(id)) {
+          const row = q.recipeById.get(id);
+          let x = null;
+          try { x = row ? JSON.parse(row.data) : null; } catch (e) {}
+          cache.set(id, x);
+        }
+        return cache.get(id);
+      };
       const icsEsc = s => String(s || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
       const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15) + 'Z';
       const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Kokkeri//DA', 'CALSCALE:GREGORIAN',
@@ -909,7 +1027,7 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
       const SLOT_DA = { breakfast: 'Morgenmad', lunch: 'Frokost', other: 'Andet' };
       for (const e of entries) {
         if (!e.date || !/^\d{4}-\d{2}-\d{2}$/.test(e.date)) continue;
-        const rec = e.recipeId ? recipes.get(e.recipeId) : null;
+        const rec = e.recipeId ? hentRec(e.recipeId) : null;
         const slotPre = SLOT_DA[e.slot] ? SLOT_DA[e.slot] + ': ' : '';
         const title = slotPre + (rec ? rec.title : (e.text || 'Madplan'));
         lines.push('BEGIN:VEVENT', `UID:${e.id}@kokkeri`, 'DTSTAMP:' + stamp,
@@ -1053,9 +1171,36 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
     if (p === '/api/items' && req.method === 'GET') {
       const kind = u.searchParams.get('kind');
       if (kind && !KINDS.has(kind)) return err(res, 400, 'Ukendt datatype');
-      const rows = kind ? q.itemsByKind.all(kind).map(r => JSON.parse(r.data))
-        : q.itemsAll.all().map(r => JSON.parse(r.data));
-      return send(res, 200, { items: rows });
+      /* Uden ?kind udelades recipeImage (hentes via /api/image) og crawlSeen
+       * (bruges kun af masse-importen) - de har intet at goere i login-svaret. */
+      const rows = kind ? q.rawByKind.all(kind) : q.rawExcept.all();
+      const kort = u.searchParams.get('fields') === 'card';
+      return streamItems(res, rows, kort);
+    }
+    /* Opskriftens fulde indhold - naar man aabner én fra listen. */
+    if (p.startsWith('/api/items/') && req.method === 'GET' && !p.endsWith('/bulk')) {
+      const row = q.recipeById.get(decodeURIComponent(p.slice('/api/items/'.length)));
+      if (!row) return err(res, 404, 'Findes ikke');
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end('{"item":' + row.data + '}');
+    }
+    if (p.startsWith('/api/image/') && req.method === 'GET') {
+      const row = q.imageById.get(imgId(decodeURIComponent(p.slice('/api/image/'.length))));
+      if (!row) return err(res, 404, 'Intet billede');
+      let bild = null;
+      try { bild = decodeDataUrl(JSON.parse(row.data).dataUrl); } catch (e) {}
+      if (!bild) return err(res, 404, 'Billedet kan ikke laeses');
+      const etag = '"' + crypto.createHash('sha1').update(row.updated_at + bild.buf.length).digest('hex').slice(0, 16) + '"';
+      if (req.headers['if-none-match'] === etag) { res.writeHead(304, { ETag: etag }); return res.end(); }
+      res.writeHead(200, {
+        'Content-Type': bild.type,
+        'Content-Length': bild.buf.length,
+        ETag: etag,
+        /* URL'en er versioneret med ?v=imageVer, saa indholdet kan aldrig skifte
+         * bag om cachen - derfor immutable. */
+        'Cache-Control': 'private, max-age=31536000, immutable'
+      });
+      return res.end(bild.buf);
     }
     if (p === '/api/items' && req.method === 'POST') {
       const it = sanitizeItem(body.item);
@@ -1412,23 +1557,38 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
 
     /* ---- backup / restore ---- */
     if (p === '/api/backup' && req.method === 'GET') {
-      const items = q.itemsAll.all().map(r => JSON.parse(r.data));
-      return send(res, 200, {
-        app: 'kokkeri', exported: nowIso(),
-        settings: appSettingsJson(), items
+      /* Backuppen indeholder ALT - ogsaa billederne. Den skrives i bidder;
+       * bygget som én streng ville den vaere en halv gigabyte i heapen. */
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'Content-Disposition': `attachment; filename="kokkeri-${new Date().toISOString().slice(0, 10)}.json"`
       });
+      res.write('{"app":"kokkeri","exported":' + JSON.stringify(nowIso()) +
+        ',"settings":' + JSON.stringify(appSettingsJson()) + ',"items":[');
+      let bid = '', foerste = true;
+      for (const row of q.rawAll.all()) {
+        bid += (foerste ? '' : ',') + row.data;
+        foerste = false;
+        if (bid.length > 262144) { res.write(bid); bid = ''; }
+      }
+      res.write(bid + ']}');
+      return res.end();
     }
     if (p === '/api/backup.db' && req.method === 'GET') {
       if (!user.is_admin) return err(res, 403, 'Kræver administrator-rettigheder');
       try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch (e) {}
-      return fs.readFile(DB_PATH, (e, data) => {
-        if (e) return err(res, 500, 'Kunne ikke læse databasen');
-        res.writeHead(200, {
-          'Content-Type': 'application/octet-stream',
-          'Content-Disposition': `attachment; filename="kokkeri-${new Date().toISOString().slice(0, 10)}.db"`
-        });
-        res.end(data);
+      /* streames fra disk - fs.readFile ville laese hele databasen ind i RAM */
+      let stat = null;
+      try { stat = fs.statSync(DB_PATH); } catch (e) { return err(res, 500, 'Kunne ikke læse databasen'); }
+      res.writeHead(200, {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': stat.size,
+        'Content-Disposition': `attachment; filename="kokkeri-${new Date().toISOString().slice(0, 10)}.db"`
       });
+      const stream = fs.createReadStream(DB_PATH);
+      stream.on('error', () => res.destroy());
+      return stream.pipe(res);
     }
     /* ---- toem data (admin) ----
      * Bekraeftelsesordet tjekkes OGSAA her - ikke kun i browseren - saa et
@@ -1444,7 +1604,10 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
       let n = 0;
       db.exec('BEGIN');
       try {
-        for (const k of kinds) n += q.deleteByKind.run(k).changes || 0;
+        /* billederne bor i deres egen kind - de skal med, naar opskrifterne ryddes */
+        for (const k of kinds.includes('recipe') ? kinds.concat('recipeImage') : kinds) {
+          n += q.deleteByKind.run(k).changes || 0;
+        }
         db.exec('COMMIT');
       } catch (e) { db.exec('ROLLBACK'); throw e; }
       console.log(`[wipe] ${user.username} slettede ${n} elementer (${kinds.join(', ')})`);
@@ -1453,7 +1616,10 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
 
     if (p === '/api/restore' && req.method === 'POST') {
       if (!user.is_admin) return err(res, 403, 'Kræver administrator-rettigheder');
-      const arr = Array.isArray(body.items) ? body.items : null;
+      /* Gendannelse sker i portioner: en fuld backup er hundredvis af megabyte
+       * (billederne), og ét POST ville baade sprænge grænsen i readBody og
+       * ligge i heapen. Foerste kald kan saette replace/settings uden items. */
+      const arr = Array.isArray(body.items) ? body.items : (body.begin ? [] : null);
       if (!arr) return err(res, 400, 'Forventede { items: [...] } fra en Kokkeri-backup');
       const stamp = nowIso();
       let n = 0;

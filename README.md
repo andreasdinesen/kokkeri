@@ -66,6 +66,31 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v19** (august 2026): **Biblioteket kan nu bære tusindvis af opskrifter – og
+  du kan give stjerner direkte fra oversigten.**
+  - **Login gik fra 248 MB til 1,3 MB.** Kokkeri hentede hele biblioteket med
+    billeder og alt, hver gang du loggede ind. Nu ligger fotoet for sig selv og
+    hentes kun til de opskriftskort, du faktisk ser – og browseren kan gemme det
+    i sin cache. Serveren gik fra 3,7 GB hukommelse til under 150 MB.
+    Ved første opstart flyttes de eksisterende billeder automatisk (tager et
+    sekund eller to); du skal ikke gøre noget.
+  - **Oversigten tegner 60 kort ad gangen** med en »Vis flere«-knap, der også
+    henter automatisk, når du ruller ned. Søgningen var før nødt til at bygge
+    hele biblioteket forfra ved hvert tastetryk.
+  - **Stjerner på kortene**: klik direkte i oversigten uden at åbne opskriften
+    (klik på samme stjerne igen fjerner vurderingen). Ny **sortering** – flest
+    eller færrest stjerner, titel, korteste tid – og et filter, der kun viser
+    opskrifter med mindst så og så mange stjerner. Valgene huskes.
+  - **Madplanen kan kræve stjerner**: både »Udfyld fra biblioteket« og
+    AI-forslaget kan nu bede om fx mindst 4 stjerner, så hverdagene fyldes med
+    retter, du allerede ved er gode. Vælgeren viser løbende, hvor mange
+    opskrifter der er tilbage at vælge imellem.
+  - **Gendannelse af en stor backup virker igen.** En backup med billeder er
+    flere hundrede megabyte og blev afvist af serveren; den sendes nu i
+    portioner. Backup og database-download bygges ikke længere i hukommelsen.
+  - Kalender-feedet og delings-links slår nu kun de opskrifter op, de skal
+    bruge, i stedet for at læse hele biblioteket ved hvert opslag.
+
 - **v18** (august 2026): **Installationen fylder en fjerdedel mindre.** Hele appen
   ligger inde i runens install-script, og Linux sætter en hård grænse for, hvor
   langt det må være – den var ved at være nået. App-filerne trimmes nu for
