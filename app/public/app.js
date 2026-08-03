@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 8;
+const APP_VERSION = 9;
 
 /* ---------------- state ---------------- */
 const S = {
@@ -996,13 +996,26 @@ RENDER.recipes_bind = () => {
 };
 
 /* ---------------- detalje ---------------- */
-/* goer "20 min"/"1 time" i fremgangsmaaden klikbare -> starter en timer */
+/* goer tidsangivelser i fremgangsmaaden klikbare -> starter en timer.
+ * Forstaar: "45 min" · "1,5 time" (dansk decimalkomma) · "1½ time" ·
+ * "1 time og 30 minutter" · "20-30 minutter" (tager den NEDRE graense, saa
+ * maden ikke brænder på - man kan altid trykke +1 min).
+ * Fælden var et regex paa `(\d+)`: i "1,5 time" fangede det kun "5" og
+ * lavede en timer paa 5 TIMER. */
+const TIMER_FRAC = { '½': 0.5, '¼': 0.25, '¾': 0.75, '⅓': 1 / 3, '⅔': 2 / 3 };
+function timeTextToMin(tal, enhed, ekstraMin) {
+  const s = String(tal).replace(/\s+/g, '');
+  const f = s.match(/^(\d*)([½¼¾⅓⅔])$/);
+  const v = f ? (f[1] ? +f[1] : 0) + TIMER_FRAC[f[2]] : num(s);
+  const erTime = /^tim/i.test(enhed);
+  return Math.round(erTime ? v * 60 + (+ekstraMin || 0) : v);
+}
 function linkifyTimers(escapedText) {
-  return escapedText.replace(/(\d+)(?:\s*[-–]\s*(\d+))?\s*(minutter|minutters|minut|min\.?|timers|timer|time)\b/gi, (m, a, b, unit) => {
-    const isHour = /^tim/i.test(unit);
-    const mins = (parseInt(b || a, 10)) * (isHour ? 60 : 1);
+  const re = /(\d+(?:[.,]\d+)?\s*[½¼¾⅓⅔]?|[½¼¾⅓⅔])\s*(?:[-–]\s*\d+(?:[.,]\d+)?\s*)?(timers|timer|timen|time|minutters|minutter|minut|min)\.?(?![a-zæøåA-ZÆØÅ])(?:\s*(?:og\s+)?(\d+)\s*(?:minutter|minut|min)\.?(?![a-zæøåA-ZÆØÅ]))?/gi;
+  return escapedText.replace(re, (m, tal, enhed, ekstraMin) => {
+    const mins = timeTextToMin(tal, enhed, ekstraMin);
     if (!mins || mins > 24 * 60) return m;
-    return `<span class="inline-timer" data-min="${mins}" title="Klik for at starte en timer på ${mins} min">⏱ ${m}</span>`;
+    return `<span class="inline-timer" data-min="${mins}" title="Start en timer på ${fmtMin(mins)}">⏱ ${m}</span>`;
   });
 }
 function bindInlineTimers(label) {

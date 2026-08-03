@@ -66,6 +66,12 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v9** (august 2026): Rettet de klikbare tider i fremgangsmåden. »1,5 time«
+  blev læst som **5 timer**, fordi kun heltal blev genkendt. Nu forstås
+  decimaler (1,5), brøker (1½), sammensatte tider (»1 time og 30 minutter«) og
+  intervaller (»20-30 minutter« → den nedre, sikreste grænse), mens »5 tsk« og
+  lignende ikke længere kan forveksles med en tid.
+
 - **v8** (august 2026): **Masse-import fra et helt site.** Kokkeri finder
   opskrifterne via sitets sitemap (eller links på en oversigtsside) og henter
   dem som et **baggrundsjob på serveren** – browseren kan lukkes undervejs, og
