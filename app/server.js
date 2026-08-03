@@ -28,7 +28,8 @@ const KINDS = new Set([
   'planEntry',  // madplan-linje (dato + slot + opskrift eller fritekst)
   'shopItem',   // indkøbsliste-linje (tekst, evt. opskrift-reference, afdeling, afkrydset)
   'menu',       // gemt madplan-skabelon (ugedag+slot+opskrift pr. linje)
-  'pantryItem'  // forråd (vare man har hjemme, evt. udløbsdato)
+  'pantryItem', // forråd (vare man har hjemme, evt. udløbsdato)
+  'crawlSeen'   // side der ER hentet, men ikke havde en opskrift (springes over næste gang)
 ]);
 
 /* ---------------- database ---------------- */
@@ -609,6 +610,21 @@ function crawlStatus() {
   };
 }
 
+/* URL uden protokol/trailing slash - saa http/https og "/side" vs "/side/"
+ * regnes som samme side, baade her og i frontendens filtrering */
+function normUrl(u) {
+  return String(u || '').replace(/^https?:\/\//i, '').replace(/\/+$/, '').toLowerCase();
+}
+function markSeen(url) {
+  try {
+    /* id udledes af URL'en, saa samme side aldrig giver to raekker */
+    const id = 'seen-' + crypto.createHash('sha1').update(normUrl(url)).digest('hex').slice(0, 24);
+    const stamp = nowIso();
+    q.upsertItem.run(id, 'crawlSeen',
+      JSON.stringify({ id, kind: 'crawlSeen', url, seenAt: stamp }), stamp, 0);
+  } catch (e) {}
+}
+
 async function runCrawlJob() {
   const headers = crawlHeaders({ cookie: crawlJob.cookie, userAgent: crawlJob.userAgent });
   /* eksisterende titler = dublet-filter */
@@ -652,7 +668,12 @@ Findes der ingen opskrift, svar {"error":"ingen"}. Oversæt intet.`,
           } catch (e) {}
         }
         const titel = rec && String(rec.title || '').toLowerCase().replace(/\s+/g, ' ').trim();
-        if (!rec || !titel) crawlJob.failed++;
+        if (!rec || !titel) {
+          crawlJob.failed++;
+          /* husk siden, saa den ikke hentes igen naeste gang - et sitemap er
+           * fuldt af blogindlaeg, og uden dette bruges hele koeretiden paa dem */
+          markSeen(url);
+        }
         else if (kendte.has(titel)) crawlJob.skipped++;
         else {
           kendte.add(titel);
@@ -1163,7 +1184,9 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
         urls = [...new Set(urls)]
           .filter(u => !/\.(jpg|jpeg|png|gif|webp|svg|pdf|css|js|xml|zip|mp4)(\?|$)/i.test(u))
           .filter(u => !pattern || u.toLowerCase().includes(pattern));
-        return send(res, 200, { urls: urls.slice(0, 1000), total: urls.length, robotsAdvarsel });
+        /* 5000 = samme loft som crawl/start, saa store sites (madbanditten har
+         * 3169 sider) kan tages i én omgang i stedet for kun de foerste 1000 */
+        return send(res, 200, { urls: urls.slice(0, 5000), total: urls.length, robotsAdvarsel });
       } catch (e) {
         return err(res, 502, 'Kunne ikke hente: ' + e.message);
       }

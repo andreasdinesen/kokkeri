@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 15;
+const APP_VERSION = 16;
 
 /* ---------------- state ---------------- */
 const S = {
@@ -1715,6 +1715,11 @@ document.addEventListener('keydown', e => {
 
 const SI = { urls: [], cookie: '', userAgent: '', origin: '', poll: null };
 
+/* samme normalisering som serverens normUrl(): uden protokol og trailing slash */
+function normUrlFront(u) {
+  return String(u || '').replace(/^https?:\/\//i, '').replace(/\/+$/, '').toLowerCase();
+}
+
 /* traek cookie/user-agent/url ud af en indsat "Copy as cURL"-kommando */
 function parseCurl(text) {
   const out = { url: '', cookie: '', userAgent: '' };
@@ -1813,15 +1818,28 @@ function siteImportModal() {
             cookie: SI.cookie, userAgent: SI.userAgent
           }
         });
-        SI.urls = r.urls || [];
+        const fundne = r.urls || [];
         SI.origin = new URL(url).origin;
+        /* spring sider over, som allerede er hentet - baade dem der blev til en
+         * opskrift og dem der viste sig ikke at have en. Saa kan man bare koere
+         * igen og faa de naeste, i stedet for at bruge koeretiden om igen. */
+        const kendte = new Set([
+          ...K('recipe').map(x => normUrlFront(x.url)),
+          ...K('crawlSeen').map(x => normUrlFront(x.url))
+        ].filter(Boolean));
+        SI.urls = fundne.filter(u => !kendte.has(normUrlFront(u)));
+        const alleredeSet = fundne.length - SI.urls.length;
         if (!SI.urls.length) {
-          status.textContent = 'Fandt ingen sider. Prøv den anden metode, eller ryd mønsteret.';
+          status.innerHTML = fundne.length
+            ? `Fandt <b>${fundne.length}</b> sider – dem har du <b>alle</b> hentet før. ` +
+              `<span class="muted">Vil du hente dem igen, kan du rydde »Hentede sider« under Indstillinger → Ryd data.</span>`
+            : 'Fandt ingen sider. Prøv den anden metode, eller ryd mønsteret.';
           btn.disabled = false;
           return;
         }
-        status.innerHTML = `Fandt <b>${r.total}</b> sider${r.total > SI.urls.length ? ` (bruger de første ${SI.urls.length})` : ''}. ` +
-          `<span class="muted">Sider uden opskrift springes automatisk over.</span>` +
+        status.innerHTML = `Fandt <b>${r.total}</b> sider` +
+          (alleredeSet ? ` · <b>${SI.urls.length}</b> nye (${alleredeSet} hentet før, springes over)` : '') +
+          `. <span class="muted">Sider uden opskrift springes automatisk over – og huskes.</span>` +
           (r.robotsAdvarsel ? ` <span class="warn">${esc(r.robotsAdvarsel)}</span>` : '');
         drawFundne(result);
         btn.disabled = false;
@@ -3324,7 +3342,8 @@ const WIPE_KINDS = [
   { kind: 'planEntry', navn: 'Madplan', ico: '📅' },
   { kind: 'menu', navn: 'Madplan-skabeloner', ico: '📋' },
   { kind: 'shopItem', navn: 'Indkøbsliste', ico: '🛒' },
-  { kind: 'pantryItem', navn: 'Forråd', ico: '🏺' }
+  { kind: 'pantryItem', navn: 'Forråd', ico: '🏺' },
+  { kind: 'crawlSeen', navn: 'Hentede sider (huskes ved masse-import)', ico: '📚' }
 ];
 function wipeModal() {
   const antal = k => K(k).length;

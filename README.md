@@ -66,6 +66,14 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v16** (august 2026): **Store sites kan hentes helt.** Søgningen sendte kun de
+  første 1000 fundne sider videre, så resten var uden for rækkevidde (madbanditten
+  har 3169). Loftet er hævet til 5000. Samtidig **husker Kokkeri nu hver side, den
+  har hentet** – også dem uden opskrift, som fylder mest i et sitemap. Søger man
+  igen på samme site, står der fx »3169 sider · 3166 nye (3 hentet før, springes
+  over)«, og importen fortsætter, hvor den slap, i stedet for at bruge køretiden
+  om igen. Hukommelsen kan ryddes under Indstillinger → Ryd data → »Hentede sider«.
+
 - **v15** (august 2026):
   - **Todoist virker igen.** Kun *hentning* af projekter fungerede; afsendelse
     fejlede med »tokenet virker ikke«. Årsagen var et fladt `Object.assign`,

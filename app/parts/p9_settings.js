@@ -368,7 +368,8 @@ const WIPE_KINDS = [
   { kind: 'planEntry', navn: 'Madplan', ico: '📅' },
   { kind: 'menu', navn: 'Madplan-skabeloner', ico: '📋' },
   { kind: 'shopItem', navn: 'Indkøbsliste', ico: '🛒' },
-  { kind: 'pantryItem', navn: 'Forråd', ico: '🏺' }
+  { kind: 'pantryItem', navn: 'Forråd', ico: '🏺' },
+  { kind: 'crawlSeen', navn: 'Hentede sider (huskes ved masse-import)', ico: '📚' }
 ];
 function wipeModal() {
   const antal = k => K(k).length;
