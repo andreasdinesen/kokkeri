@@ -66,6 +66,20 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v21** (august 2026): **Masse-import virker nu på sites som arla.dk.**
+  Nogle sites deler deres sitemap op i flere dele og giver delene adresser som
+  `sitemap.xml?type=…`. Kokkeri afgjorde på filnavnet, om der var tale om et
+  under-sitemap, og en adresse med `?` bagefter faldt igennem – så en søgning på
+  arla.dk gav **nul** sider, selvom sitet har over 3.000 opskrifter liggende.
+  Nu afgøres det på indholdet, som sitemap-standarden foreskriver.
+  Samtidig blev det interne loft for fundne adresser hævet fra 3.000 til 20.000
+  (arlas opskrifter ligger sidst og var tæt på at blive sprunget over i stilhed),
+  og filtreringen af filer ser nu kun på selve stien, så en opskrift med fx
+  `?ref=billede.jpg` i adressen ikke bliver sorteret fra.
+  **Bemærk:** på arla.dk ligger der ca. 1.400 inspirations- og oversigtssider
+  under samme `/opskrifter/`-adresse. De tælles som "fejlet" undervejs – det er
+  meningen; de indeholder ingen opskrift.
+
 - **v20** (august 2026): **Bedre på telefon og tablet.**
   - **iPad i portræt fik hele bredden.** Grænsen for, hvornår sidebaren bliver
     til en skjult menu, er hævet fra 760 til 900 px – før åd sidebaren 216 px

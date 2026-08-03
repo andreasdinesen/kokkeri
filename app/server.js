@@ -1318,19 +1318,31 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
 
         if (mode === 'sitemap') {
           const seen = new Set();
+          /* Loftet skal mindst svare til de 5000, svaret kan indeholde. Var det
+           * lavere, kunne et site med mange andre sider (arla.dk har ~2300 i
+           * seks andre sitemaps) bruge budgettet op, FOER opskrifterne blev
+           * naaet - og man ville faa nul opskrifter uden nogen fejlbesked. */
           const grab = async (u, dybde) => {
-            if (dybde > 3 || seen.has(u) || seen.size > 60 || urls.length > 3000) return;
+            if (dybde > 3 || seen.has(u) || seen.size > 60 || urls.length > 20000) return;
             seen.add(u);
             const r = await fetch(u, { headers, signal: AbortSignal.timeout(20000), redirect: 'follow' });
             if (!r.ok) return;
             const txt = (await r.text()).slice(0, 8e6);
+            /* Er dokumentet et <sitemapindex>, peger hver <loc> paa et UNDER-sitemap;
+             * i et <urlset> peger de paa sider. Det kan ikke afgoeres paa filnavnet:
+             * arla.dk's index peger paa "sitemap.xml?type=…Recipe…", der hverken
+             * ender paa .xml (blev ikke fulgt) eller slap gennem fil-filteret
+             * nedenfor (.xml? blev opfattet som en fil) - resultatet var nul sider. */
+            const erIndeks = /<sitemapindex[\s>]/i.test(txt);
             for (const m of txt.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)) {
               const l = m[1].replace(/&amp;/g, '&');
-              if (/\.xml(\.gz)?$/i.test(l)) await grab(l, dybde + 1);
+              let sti = '';
+              try { sti = new URL(l).pathname; } catch (e) {}
+              if (erIndeks || /\.xml(\.gz)?$/i.test(sti)) await grab(l, dybde + 1);
               else urls.push(l);
             }
           };
-          for (const s of ['/sitemap.xml', '/sitemap_index.xml', '/wp-sitemap.xml']) {
+          for (const s of ['/sitemap.xml', '/sitemap_index.xml', '/sitemap.index.xml', '/wp-sitemap.xml']) {
             try { await grab(target.origin + s, 0); } catch (e) {}
             if (urls.length) break;
           }
@@ -1355,8 +1367,15 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
             } catch (e) {}
           }
         }
+        /* Fil-filteret skal kun se paa STIEN. Testes hele URL'en, ryger sider
+         * med fx "?ref=noget.jpg" ogsaa ud. */
+        const erFil = u => {
+          let sti = u;
+          try { sti = new URL(u).pathname; } catch (e) {}
+          return /\.(jpg|jpeg|png|gif|webp|svg|pdf|css|js|xml|zip|mp4)$/i.test(sti);
+        };
         urls = [...new Set(urls)]
-          .filter(u => !/\.(jpg|jpeg|png|gif|webp|svg|pdf|css|js|xml|zip|mp4)(\?|$)/i.test(u))
+          .filter(u => !erFil(u))
           .filter(u => !pattern || u.toLowerCase().includes(pattern));
         /* 5000 = samme loft som crawl/start, saa store sites (madbanditten har
          * 3169 sider) kan tages i én omgang i stedet for kun de foerste 1000 */
