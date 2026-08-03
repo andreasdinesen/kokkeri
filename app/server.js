@@ -1295,10 +1295,13 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
       const tdToken = setting('todoist_token', '');
       if (!tdToken) return err(res, 400, 'Todoist er ikke sat op – indsæt dit API-token under Indstillinger');
       const td = async (path2, opts) => {
-        const r = await fetch('https://api.todoist.com/api/v1' + path2, Object.assign({
-          headers: Object.assign({ 'Authorization': 'Bearer ' + tdToken }, (opts && opts.headers) || {}),
-          signal: AbortSignal.timeout(15000)
-        }, opts || {}));
+        /* NB: headers saettes EFTER merge. Object.assign er "shallow", saa et
+         * opts.headers (fx Content-Type paa POST) ville ellers erstatte hele
+         * headers-objektet og fjerne Authorization - GET virkede, POST gav 401. */
+        const o = Object.assign({ signal: AbortSignal.timeout(15000) }, opts || {});
+        o.headers = Object.assign({ 'Authorization': 'Bearer ' + tdToken },
+          (opts && opts.headers) || {});
+        const r = await fetch('https://api.todoist.com/api/v1' + path2, o);
         if (r.status === 401 || r.status === 403) { const e = new Error('Todoist afviste tokenet – tjek at det er kopieret rigtigt'); e.status = 401; throw e; }
         if (r.status === 429) { const e = new Error('Todoist beder om at vente lidt (for mange kald)'); e.status = 429; throw e; }
         if (!r.ok) { const e = new Error('Todoist svarede ' + r.status); e.status = 502; throw e; }

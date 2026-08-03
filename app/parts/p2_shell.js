@@ -29,10 +29,8 @@ function renderNav() {
     `<button class="navbtn${S.view === v.id ? ' active' : ''}" data-view="${v.id}">
        <span class="ico">${v.ico}</span><span>${v.label}</span>${navBadge(v.id)}</button>`).join('');
   $$('#navItems .navbtn[data-view]').forEach(b => b.onclick = () => {
-    S.view = b.dataset.view;
-    S.viewArg = null;
     if (matchMedia('(max-width: 760px)').matches) document.body.classList.remove('navopen');
-    render();
+    goto(b.dataset.view);
   });
   $('#navSearch').onclick = openPalette;
   renderNavTimers();
@@ -58,6 +56,9 @@ function renderNavTimers() {
   });
 }
 
+/* render() gentegner KUN - den maa ikke scrolle. Baggrundsting (site-import,
+ * billed-hentning, timere) kalder render() loebende, og et scrollTo her ville
+ * kaste brugeren til toppen midt i en side. Sideskift scroller i goto(). */
 function render() {
   renderNav();
   const fn = RENDER[S.view] || RENDER.dash;
@@ -65,12 +66,12 @@ function render() {
   const binder = RENDER[S.view + '_bind'];
   if (binder) binder();
   updateWakeBtn();
-  window.scrollTo(0, 0);
 }
 function goto(view, arg) {
   S.view = view;
   S.viewArg = arg == null ? null : arg;
   render();
+  window.scrollTo(0, 0);
 }
 
 function pageHead(title, sub, extraHtml) {

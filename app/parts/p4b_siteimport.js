@@ -181,13 +181,16 @@ function startCrawlPolling() {
         const items = await api('/api/items');
         S.items = items.items || [];
         reindex();
-        render();
+        render();          // importen er slut - her maa siden gerne tegnes om
         await categorizeImported();
         /* og hent billederne ned lokalt, lidt ad gangen */
         let rest = 1;
         while (rest > 0) rest = await localizeRemoteImages(6);
+        return;
       }
-      render();
+      /* mens importen koerer: roer kun banneret og nav'ens taellere */
+      if (!refreshCrawlBanner() && S.view === 'recipes') render();
+      renderNav();
     } catch (e) {
       clearInterval(SI.poll);
       SI.poll = null;
@@ -210,6 +213,16 @@ async function localizeRemoteImages(maks) {
   }
   if (n) render();
   return liste.length - (maks || 6);
+}
+
+/* Opdaterer KUN banneret - ikke hele siden. En fuld render() hvert 3. sekund
+ * ville koste fokus i soegefeltet og (foer v13) kaste brugeren til toppen. */
+function refreshCrawlBanner() {
+  const host = $('#crawlBanner');
+  if (!host) return false;
+  host.innerHTML = crawlBannerHtml();
+  bindCrawlBanner();
+  return true;
 }
 
 /* banner oeverst paa Opskrifter-siden, mens en import koerer */

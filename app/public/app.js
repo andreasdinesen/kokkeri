@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 12;
+const APP_VERSION = 15;
 
 /* ---------------- state ---------------- */
 const S = {
@@ -632,10 +632,8 @@ function renderNav() {
     `<button class="navbtn${S.view === v.id ? ' active' : ''}" data-view="${v.id}">
        <span class="ico">${v.ico}</span><span>${v.label}</span>${navBadge(v.id)}</button>`).join('');
   $$('#navItems .navbtn[data-view]').forEach(b => b.onclick = () => {
-    S.view = b.dataset.view;
-    S.viewArg = null;
     if (matchMedia('(max-width: 760px)').matches) document.body.classList.remove('navopen');
-    render();
+    goto(b.dataset.view);
   });
   $('#navSearch').onclick = openPalette;
   renderNavTimers();
@@ -661,6 +659,9 @@ function renderNavTimers() {
   });
 }
 
+/* render() gentegner KUN - den maa ikke scrolle. Baggrundsting (site-import,
+ * billed-hentning, timere) kalder render() loebende, og et scrollTo her ville
+ * kaste brugeren til toppen midt i en side. Sideskift scroller i goto(). */
 function render() {
   renderNav();
   const fn = RENDER[S.view] || RENDER.dash;
@@ -668,12 +669,12 @@ function render() {
   const binder = RENDER[S.view + '_bind'];
   if (binder) binder();
   updateWakeBtn();
-  window.scrollTo(0, 0);
 }
 function goto(view, arg) {
   S.view = view;
   S.viewArg = arg == null ? null : arg;
   render();
+  window.scrollTo(0, 0);
 }
 
 function pageHead(title, sub, extraHtml) {
@@ -1033,7 +1034,7 @@ RENDER.recipes = () => {
     <span class="chip chipbtn${f.fav ? ' sel' : ''}" id="recFav">⭐ Favoritter</span>
     ${cats.map(c => `<span class="chip chipbtn${f.category === c ? ' sel' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}
   </div>
-  ${crawlBannerHtml()}
+  <div id="crawlBanner">${crawlBannerHtml()}</div>
   ${list.length ? `<div class="recgrid">${list.map(recipeCardHtml).join('')}</div>`
     : '<p class="muted" style="margin-top:26px">Ingen opskrifter matcher.</p>'}`;
 };
@@ -1886,13 +1887,16 @@ function startCrawlPolling() {
         const items = await api('/api/items');
         S.items = items.items || [];
         reindex();
-        render();
+        render();          // importen er slut - her maa siden gerne tegnes om
         await categorizeImported();
         /* og hent billederne ned lokalt, lidt ad gangen */
         let rest = 1;
         while (rest > 0) rest = await localizeRemoteImages(6);
+        return;
       }
-      render();
+      /* mens importen koerer: roer kun banneret og nav'ens taellere */
+      if (!refreshCrawlBanner() && S.view === 'recipes') render();
+      renderNav();
     } catch (e) {
       clearInterval(SI.poll);
       SI.poll = null;
@@ -1915,6 +1919,16 @@ async function localizeRemoteImages(maks) {
   }
   if (n) render();
   return liste.length - (maks || 6);
+}
+
+/* Opdaterer KUN banneret - ikke hele siden. En fuld render() hvert 3. sekund
+ * ville koste fokus i soegefeltet og (foer v13) kaste brugeren til toppen. */
+function refreshCrawlBanner() {
+  const host = $('#crawlBanner');
+  if (!host) return false;
+  host.innerHTML = crawlBannerHtml();
+  bindCrawlBanner();
+  return true;
 }
 
 /* banner oeverst paa Opskrifter-siden, mens en import koerer */
@@ -2007,7 +2021,7 @@ RENDER.plan_bind = () => {
   $$('.planentry[data-entry]').forEach(el => {
     el.onclick = () => {
       const e = K('planEntry').find(x => x.id === el.dataset.entry);
-      if (e) planEntryModal(e);
+      if (e) planQuickView(e);
     };
     el.ondragstart = ev => {
       ev.dataTransfer.setData('text/plain', el.dataset.entry);
@@ -2223,6 +2237,54 @@ async function doAutoFill(free, dates, recipes) {
   await saveBulk(items);
   toast(`${items.length} dage udfyldt – træk retterne rundt, som du vil`);
   render();
+}
+
+/* Hurtigt kig paa retten fra madplanen - man planlaegger tit ud fra tid og
+ * ingredienser, ikke titlen alene. Fritekst-linjer har intet at vise, saa de
+ * gaar direkte til redigering. */
+function planQuickView(entry) {
+  const r = entry.recipeId ? recipeById(entry.recipeId) : null;
+  if (!r) return planEntryModal(entry);
+  const base = r.servings || app().defaultServings;
+  const pers = entry.servings || base;
+  const factor = base ? pers / base : 1;
+  const tid = recipeTotalMin(r);
+  const si = slotInfo(slotOf(entry));
+  const ings = (r.ingredients || []).map(l => /^##\s*/.test(l)
+    ? `<li style="border:0;font-weight:700;color:var(--amber);padding-top:10px">${esc(l.replace(/^##\s*/, ''))}</li>`
+    : `<li>${esc(scaleIngredient(l, factor))}</li>`).join('');
+
+  openModal(`<div class="rowflex" style="align-items:flex-start;gap:16px;flex-wrap:nowrap">
+      ${r.image ? `<img src="${r.image}" alt="" style="width:140px;height:105px;object-fit:cover;border-radius:10px;flex:none">` : ''}
+      <div style="flex:1;min-width:0">
+        <h2 style="margin:0 0 2px">${esc(r.title)}</h2>
+        <p class="small muted" style="margin:0 0 8px">
+          ${si.ico} ${si.label} · ${WEEKDAYS_DA[(new Date(entry.date + 'T00:00:00').getDay() + 6) % 7]} ${fmtDate(entry.date)}</p>
+        <div class="rowflex">
+          ${r.category ? `<span class="chip">${esc(r.category)}</span>` : ''}
+          ${tid ? `<span class="timechip">⏱ ${fmtMin(tid)}</span>` : ''}
+          <span class="timechip">🍽 ${pers} pers.</span>
+          ${r.rating ? starsHtml(r.rating) : ''}
+        </div>
+      </div>
+    </div>
+    ${r.description ? `<p class="small muted" style="margin:12px 0 0">${esc(r.description.slice(0, 220))}${r.description.length > 220 ? '…' : ''}</p>` : ''}
+    <h3 style="margin-bottom:2px">Ingredienser${factor !== 1 ? ' <span class="chip on small">skaleret</span>' : ''}</h3>
+    <ul class="ings" style="max-height:230px;overflow:auto;margin-top:4px">${ings || '<li class="muted">Ingen ingredienser</li>'}</ul>
+    <div class="actions" style="flex-wrap:wrap">
+      <button class="btn" id="qvEdit" style="margin-right:auto">✏️ Redigér</button>
+      <button class="btn" id="qvShop">🛒 Til indkøbsliste</button>
+      <button class="btn" id="qvOpen">📖 Åbn opskrift</button>
+      <button class="btn primary" id="qvClose">Luk</button>
+    </div>`, m => {
+    m.querySelector('#qvClose').onclick = closeModal;
+    m.querySelector('#qvEdit').onclick = () => planEntryModal(entry);
+    m.querySelector('#qvOpen').onclick = () => { closeModal(); goto('recipeDetail', r.id); };
+    m.querySelector('#qvShop').onclick = async () => {
+      closeModal();
+      await addRecipeToShopping(r, factor);
+    };
+  }, true);
 }
 
 function planEntryModal(entry, prefill) {

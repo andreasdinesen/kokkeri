@@ -66,6 +66,23 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v15** (august 2026):
+  - **Todoist virker igen.** Kun *hentning* af projekter fungerede; afsendelse
+    fejlede med »tokenet virker ikke«. Årsagen var et fladt `Object.assign`,
+    hvor POST-kaldets egne headers erstattede hele header-objektet og dermed
+    fjernede `Authorization`. Tokenet var aldrig problemet.
+  - **Quick view på madplanen.** Klik på en ret viser nu billede, kategori,
+    tid, portioner og hele ingredienslisten – skaleret efter dagens antal
+    personer – med knapper til Redigér, Til indkøbsliste og Åbn opskrift.
+    Fritekst-linjer går som før direkte til redigering.
+  - **Siden hopper ikke længere til toppen.** Gentegning scrollede altid op,
+    og under en site-import sker det hvert 3. sekund – så man blev kastet op,
+    uanset hvilken side man var på. Nu scroller kun reelle sideskift, og
+    import-banneret opdateres alene i stedet for hele siden (så mister man
+    heller ikke det, man skriver i søgefeltet).
+  - Build-grænsen for install-scriptet hævet fra 110 K til 120 K tegn
+    (systemgrænsen er ~131 K).
+
 - **v12** (august 2026): **Indkøbslisten på mobil.** Opskriftsnavnet lå på samme
   linje som varen uden ombrydning og pressede varenavnet ned i en smal kolonne.
   Nu står opskriften under varen i lille skrift på små skærme, checkbokse og

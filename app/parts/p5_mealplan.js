@@ -66,7 +66,7 @@ RENDER.plan_bind = () => {
   $$('.planentry[data-entry]').forEach(el => {
     el.onclick = () => {
       const e = K('planEntry').find(x => x.id === el.dataset.entry);
-      if (e) planEntryModal(e);
+      if (e) planQuickView(e);
     };
     el.ondragstart = ev => {
       ev.dataTransfer.setData('text/plain', el.dataset.entry);
@@ -282,6 +282,54 @@ async function doAutoFill(free, dates, recipes) {
   await saveBulk(items);
   toast(`${items.length} dage udfyldt – træk retterne rundt, som du vil`);
   render();
+}
+
+/* Hurtigt kig paa retten fra madplanen - man planlaegger tit ud fra tid og
+ * ingredienser, ikke titlen alene. Fritekst-linjer har intet at vise, saa de
+ * gaar direkte til redigering. */
+function planQuickView(entry) {
+  const r = entry.recipeId ? recipeById(entry.recipeId) : null;
+  if (!r) return planEntryModal(entry);
+  const base = r.servings || app().defaultServings;
+  const pers = entry.servings || base;
+  const factor = base ? pers / base : 1;
+  const tid = recipeTotalMin(r);
+  const si = slotInfo(slotOf(entry));
+  const ings = (r.ingredients || []).map(l => /^##\s*/.test(l)
+    ? `<li style="border:0;font-weight:700;color:var(--amber);padding-top:10px">${esc(l.replace(/^##\s*/, ''))}</li>`
+    : `<li>${esc(scaleIngredient(l, factor))}</li>`).join('');
+
+  openModal(`<div class="rowflex" style="align-items:flex-start;gap:16px;flex-wrap:nowrap">
+      ${r.image ? `<img src="${r.image}" alt="" style="width:140px;height:105px;object-fit:cover;border-radius:10px;flex:none">` : ''}
+      <div style="flex:1;min-width:0">
+        <h2 style="margin:0 0 2px">${esc(r.title)}</h2>
+        <p class="small muted" style="margin:0 0 8px">
+          ${si.ico} ${si.label} · ${WEEKDAYS_DA[(new Date(entry.date + 'T00:00:00').getDay() + 6) % 7]} ${fmtDate(entry.date)}</p>
+        <div class="rowflex">
+          ${r.category ? `<span class="chip">${esc(r.category)}</span>` : ''}
+          ${tid ? `<span class="timechip">⏱ ${fmtMin(tid)}</span>` : ''}
+          <span class="timechip">🍽 ${pers} pers.</span>
+          ${r.rating ? starsHtml(r.rating) : ''}
+        </div>
+      </div>
+    </div>
+    ${r.description ? `<p class="small muted" style="margin:12px 0 0">${esc(r.description.slice(0, 220))}${r.description.length > 220 ? '…' : ''}</p>` : ''}
+    <h3 style="margin-bottom:2px">Ingredienser${factor !== 1 ? ' <span class="chip on small">skaleret</span>' : ''}</h3>
+    <ul class="ings" style="max-height:230px;overflow:auto;margin-top:4px">${ings || '<li class="muted">Ingen ingredienser</li>'}</ul>
+    <div class="actions" style="flex-wrap:wrap">
+      <button class="btn" id="qvEdit" style="margin-right:auto">✏️ Redigér</button>
+      <button class="btn" id="qvShop">🛒 Til indkøbsliste</button>
+      <button class="btn" id="qvOpen">📖 Åbn opskrift</button>
+      <button class="btn primary" id="qvClose">Luk</button>
+    </div>`, m => {
+    m.querySelector('#qvClose').onclick = closeModal;
+    m.querySelector('#qvEdit').onclick = () => planEntryModal(entry);
+    m.querySelector('#qvOpen').onclick = () => { closeModal(); goto('recipeDetail', r.id); };
+    m.querySelector('#qvShop').onclick = async () => {
+      closeModal();
+      await addRecipeToShopping(r, factor);
+    };
+  }, true);
 }
 
 function planEntryModal(entry, prefill) {

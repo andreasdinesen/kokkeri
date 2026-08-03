@@ -47,7 +47,7 @@ RENDER.recipes = () => {
     <span class="chip chipbtn${f.fav ? ' sel' : ''}" id="recFav">⭐ Favoritter</span>
     ${cats.map(c => `<span class="chip chipbtn${f.category === c ? ' sel' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}
   </div>
-  ${crawlBannerHtml()}
+  <div id="crawlBanner">${crawlBannerHtml()}</div>
   ${list.length ? `<div class="recgrid">${list.map(recipeCardHtml).join('')}</div>`
     : '<p class="muted" style="margin-top:26px">Ingen opskrifter matcher.</p>'}`;
 };

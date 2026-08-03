@@ -82,8 +82,11 @@ echo "Node: $(node --version)"
 echo "Kokkeri v{app_version} er installeret."
 """
 
-assert len(install_script) < 110_000, (
-    f'FEJL: install-scriptet er {len(install_script)} tegn - taet paa/over sh -c-graensen (~128 KiB).')
+# Loftet er Linux' MAX_ARG_STRLEN (131072 b) for ETT sh -c-argument. 120 K giver
+# ~11 K margin. Ikonerne fylder kun ~4 K gzippet - det er app.js der vokser, saa
+# naar dette rammes, skal frontenden trimmes (eller payloaden splittes i to dele).
+assert len(install_script) < 120_000, (
+    f'FEJL: install-scriptet er {len(install_script)} tegn - taet paa MAX_ARG_STRLEN (131072).')
 
 def indent(text, spaces):
     pad = ' ' * spaces
