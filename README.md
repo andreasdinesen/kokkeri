@@ -66,6 +66,12 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v11** (august 2026): **Kategori-vælger til madplanens autofyld.** »Udfyld fra
+  biblioteket« trak fra hele biblioteket, så saucer, smoothies og salater endte
+  som aftensmad. Nu vælger man kategorier (med antal pr. kategori og genvejene
+  »Markér alt« / »Kun hovedretter«); Hovedret er forvalgt, og valget huskes.
+  AI-forslaget bruger samme filter, så de to knapper opfører sig ens.
+
 - **v10** (august 2026): **Kategorier på importerede opskrifter.** Masse-importen
   satte dem aldrig (serveren kender ikke kategorilisten), og gætningen krævede,
   at sidens kategoritekst indeholdt ens eget kategorinavn – men sider bruger

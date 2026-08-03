@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 10;
+const APP_VERSION = 11;
 
 /* ---------------- state ---------------- */
 const S = {
@@ -2132,14 +2132,76 @@ async function applyMenu(menuId) {
 /* fyld ugens tomme dage med opskrifter fra biblioteket - uden AI.
  * Vaegtet lodtraekning: favoritter og hoejt vurderede traekkes oftere, og
  * samme ret kommer ikke paa to dage i samme uge (medmindre biblioteket er lille). */
-async function autoFillWeek() {
+/* Hvilke kategorier maa autofyldet traekke fra? Uden filter ender saucer,
+ * smoothies og salater som aftensmad. Valget huskes i localStorage. */
+function fillCats() {
+  const cats = app().categories || [];
+  try {
+    const gemt = JSON.parse(localStorage.getItem('kk_fillcats') || 'null');
+    if (Array.isArray(gemt)) return gemt;
+  } catch (e) {}
+  const hoved = cats.find(c => normName(c) === 'hovedret');
+  return hoved ? [hoved] : cats.slice();
+}
+function autoFillWeek() {
   const monday = S.weekStart || mondayOf();
   const dates = weekDatesOf(monday);
   const free = dates.filter(d => !K('planEntry').some(e => e.date === d && slotOf(e) === 'dinner'));
   if (!free.length) return toast('Alle ugens dage har allerede noget på madplanen', true);
-  const recipes = K('recipe');
-  if (!recipes.length) return toast('Biblioteket er tomt – tilføj nogle opskrifter først', true);
+  if (!K('recipe').length) return toast('Biblioteket er tomt – tilføj nogle opskrifter først', true);
 
+  const cats = app().categories || [];
+  const valgt = new Set(fillCats());
+  const antal = c => K('recipe').filter(r => (r.category || '') === c).length;
+
+  openModal(`<h2>📖 Udfyld fra biblioteket</h2>
+    <p class="small muted">Vælg hvilke kategorier retterne må komme fra – ellers ender fx saucer
+      og drikkevarer som aftensmad. Valget huskes til næste gang.</p>
+    <div style="margin:12px 0;columns:2;column-gap:24px">
+      ${cats.map(c => `<label class="chk" style="padding:4px 0;break-inside:avoid">
+        <input type="checkbox" data-fc="${esc(c)}" ${valgt.has(c) ? 'checked' : ''}>
+        <span>${esc(c)} <span class="muted small">(${antal(c)})</span></span></label>`).join('')}
+      <label class="chk" style="padding:4px 0;break-inside:avoid">
+        <input type="checkbox" data-fc="" ${valgt.has('') ? 'checked' : ''}>
+        <span class="muted">Uden kategori <span class="small">(${antal('')})</span></span></label>
+    </div>
+    <div class="rowflex">
+      <button class="btn small" id="fcAll">Markér alt</button>
+      <button class="btn small" id="fcMain">Kun hovedretter</button>
+    </div>
+    <p class="small muted" id="fcInfo" style="margin:12px 0 0"></p>
+    <div class="actions">
+      <button class="btn" id="fcCancel">Annullér</button>
+      <button class="btn primary" id="fcGo">Udfyld ${free.length} dage</button>
+    </div>`, m => {
+    const bokse = () => [...m.querySelectorAll('[data-fc]')];
+    const valgte = () => bokse().filter(b => b.checked).map(b => b.dataset.fc);
+    const puljen = () => K('recipe').filter(r => valgte().includes(r.category || ''));
+    const opdater = () => {
+      const n = puljen().length;
+      m.querySelector('#fcInfo').textContent = n
+        ? `${n} opskrifter at vælge imellem til ${free.length} dage` + (n < free.length ? ' – nogle vil gå igen' : '')
+        : 'Ingen opskrifter i de valgte kategorier';
+      m.querySelector('#fcGo').disabled = !n;
+    };
+    bokse().forEach(b => b.onchange = opdater);
+    m.querySelector('#fcAll').onclick = () => { bokse().forEach(b => b.checked = true); opdater(); };
+    m.querySelector('#fcMain').onclick = () => {
+      bokse().forEach(b => b.checked = normName(b.dataset.fc) === 'hovedret');
+      opdater();
+    };
+    m.querySelector('#fcCancel').onclick = closeModal;
+    m.querySelector('#fcGo').onclick = async () => {
+      const v = valgte();
+      try { localStorage.setItem('kk_fillcats', JSON.stringify(v)); } catch (e) {}
+      closeModal();
+      await doAutoFill(free, dates, puljen());
+    };
+    opdater();
+  });
+}
+
+async function doAutoFill(free, dates, recipes) {
   const usedIds = new Set(K('planEntry').filter(e => dates.includes(e.date) && e.recipeId).map(e => e.recipeId));
   const weight = r => 1 + (r.rating || 0) + (r.favorite ? 3 : 0);
   let pool = recipes.filter(r => !usedIds.has(r.id));
@@ -2259,7 +2321,11 @@ async function aiSuggestWeek() {
   const dates = weekDatesOf(monday);
   const free = dates.filter(d => !K('planEntry').some(e => e.date === d && slotOf(e) === 'dinner'));
   if (!free.length) return toast('Alle ugens dage har allerede noget på madplanen', true);
-  const recipes = K('recipe');
+  /* samme kategori-filter som "Udfyld fra biblioteket", saa de to knapper
+   * opfoerer sig ens - ellers kan AI'en foreslaa saucer og drikkevarer */
+  const valgte = fillCats();
+  let recipes = K('recipe').filter(r => valgte.includes(r.category || ''));
+  if (recipes.length < 2) recipes = K('recipe');   // for smalt valg: brug hele biblioteket
   if (recipes.length < 2) return toast('Tilføj nogle opskrifter først, så AI\'en har noget at vælge imellem', true);
 
   toast('AI\'en sammensætter en madplan …');
