@@ -379,6 +379,26 @@ const FETCH_HEADERS = {
   'Accept-Language': 'da,en;q=0.8'
 };
 
+/* Headers til crawl: brugerens egen cookie/user-agent er VALGFRI - offentlige
+ * sider (fx valdemarsro.dk) kraever ingenting, abonnements-sider kraever cookien.
+ * Cookien gemmes aldrig; den foelger med i hvert kald fra frontenden. */
+function crawlHeaders(body) {
+  const h = Object.assign({}, FETCH_HEADERS);
+  const cookie = String((body && body.cookie) || '').replace(/[\r\n]/g, '').trim();
+  if (cookie) h['Cookie'] = cookie.slice(0, 8000);
+  const ua = String((body && body.userAgent) || '').replace(/[\r\n]/g, '').trim();
+  if (ua) h['User-Agent'] = ua.slice(0, 400);
+  const ref = String((body && body.referer) || '').replace(/[\r\n]/g, '').trim();
+  if (ref) h['Referer'] = ref.slice(0, 500);
+  return h;
+}
+/* groft tjek: fik vi en login-side i stedet for indholdet? */
+function looksLikeLogin(html) {
+  const head = String(html || '').slice(0, 4000).toLowerCase();
+  return /<form[^>]*(login|signin|log-ind)/.test(head) ||
+    (/type=["']password["']/.test(head) && !/recipe/i.test(head));
+}
+
 function decodeEntities(s) {
   const named = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', deg: '°',
     aring: 'å', Aring: 'Å', aelig: 'æ', AElig: 'Æ', oslash: 'ø', Oslash: 'Ø',
@@ -564,6 +584,103 @@ async function fetchPage(url) {
   const buf = Buffer.from(await r.arrayBuffer());
   if (buf.length > 8e6) throw new Error('Siden er for stor');
   return buf.toString('utf8');
+}
+
+/* ---------------- crawl-job (baggrund) ----------------
+ * Et helt site kan vaere tusindvis af sider - derfor koerer importen som et job
+ * PAA SERVEREN, saa brugeren kan lukke browseren imens. Kun ét job ad gangen.
+ * Cookien lever kun i dette objekt (aldrig paa disk) og slettes naar jobbet er
+ * faerdigt. Billeder gemmes som ekstern URL - frontenden kan hente dem lokalt
+ * bagefter (canvas-skalering findes ikke i Node uden pakker). */
+const crawlJob = {
+  running: false, stop: false, startedAt: '', site: '',
+  total: 0, done: 0, imported: 0, skipped: 0, failed: 0,
+  current: '', error: '', cookie: '', userAgent: '', useAi: false, urls: []
+};
+
+function crawlStatus() {
+  return {
+    running: crawlJob.running, site: crawlJob.site, startedAt: crawlJob.startedAt,
+    total: crawlJob.total, done: crawlJob.done, imported: crawlJob.imported,
+    skipped: crawlJob.skipped, failed: crawlJob.failed,
+    current: crawlJob.current, error: crawlJob.error
+  };
+}
+
+async function runCrawlJob() {
+  const headers = crawlHeaders({ cookie: crawlJob.cookie, userAgent: crawlJob.userAgent });
+  /* eksisterende titler = dublet-filter */
+  const kendte = new Set(q.itemsByKind.all('recipe')
+    .map(r => { try { return String(JSON.parse(r.data).title || '').toLowerCase().replace(/\s+/g, ' ').trim(); } catch (e) { return ''; } })
+    .filter(Boolean));
+
+  for (const url of crawlJob.urls) {
+    if (crawlJob.stop) break;
+    crawlJob.current = url;
+    try {
+      const r = await fetch(url, { headers, signal: AbortSignal.timeout(25000), redirect: 'follow' });
+      if (r.status === 401 || r.status === 403) {
+        crawlJob.error = 'Adgang nægtet (' + r.status + ') – cookien virker ikke længere. Stoppet.';
+        break;
+      }
+      if (!r.ok) { crawlJob.failed++; }
+      else {
+        const html = (await r.text()).slice(0, 8e6);
+        if (looksLikeLogin(html)) {
+          crawlJob.error = 'Fik en login-side retur – cookien er udløbet. Stoppet.';
+          break;
+        }
+        let rec = extractRecipe(html, url);
+        if (!rec && crawlJob.useAi) {
+          try {
+            const out = await aiMessage({
+              system: `Du udtrækker madopskrifter af rå tekst. Svar KUN med ét JSON-objekt:
+{"title": str, "description": str, "servings": tal|null, "prepMin": tal|null, "cookMin": tal|null,
+"ingredients": [str], "instructions": [str], "category": str}
+Findes der ingen opskrift, svar {"error":"ingen"}. Oversæt intet.`,
+              messages: [{ role: 'user', content: stripHtml(html).slice(0, 20000) }],
+              maxTokens: 3000
+            });
+            const j = JSON.parse(String(out.text).replace(/^[\s\S]*?\{/, '{').replace(/\}[^}]*$/, '}'));
+            if (j && j.title && Array.isArray(j.ingredients) && j.ingredients.length) {
+              rec = { title: j.title, description: j.description || '', image: '', ingredients: j.ingredients.map(String),
+                instructions: (j.instructions || []).map(String), prepMin: j.prepMin || null, cookMin: j.cookMin || null,
+                totalMin: null, servings: j.servings || null, yieldText: '', category: j.category || '', keywords: '', url };
+            }
+          } catch (e) {}
+        }
+        const titel = rec && String(rec.title || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        if (!rec || !titel) crawlJob.failed++;
+        else if (kendte.has(titel)) crawlJob.skipped++;
+        else {
+          kendte.add(titel);
+          const id = crypto.randomUUID();
+          const item = {
+            id, kind: 'recipe', title: rec.title, description: rec.description || '',
+            image: rec.image || '', url,
+            ingredients: rec.ingredients || [], instructions: rec.instructions || [],
+            prepMin: rec.prepMin || null, cookMin: rec.cookMin || null, totalMin: rec.totalMin || null,
+            servings: rec.servings || null, yieldText: rec.yieldText || '',
+            category: '', tags: rec.keywords ? String(rec.keywords).split(',').map(t => t.trim()).filter(Boolean).slice(0, 6) : [],
+            rating: 0, favorite: false, notes: '', imageRemote: !!rec.image,
+            createdAt: new Date().toISOString()
+          };
+          q.upsertItem.run(id, 'recipe', JSON.stringify(item), nowIso(), 0);
+          crawlJob.imported++;
+        }
+      }
+    } catch (e) {
+      crawlJob.failed++;
+    }
+    crawlJob.done++;
+    if (!crawlJob.stop) await new Promise(r2 => setTimeout(r2, 1100 + Math.random() * 400));
+  }
+  console.log(`[crawl] ${crawlJob.site}: ${crawlJob.imported} nye, ${crawlJob.skipped} dubletter, ${crawlJob.failed} uden opskrift`);
+  crawlJob.running = false;
+  crawlJob.current = '';
+  crawlJob.cookie = '';       // hemmeligheden lever ikke laengere end jobbet
+  crawlJob.userAgent = '';
+  crawlJob.urls = [];
 }
 
 /* ---------------- AI-proxy ----------------
@@ -970,6 +1087,142 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
         pageImage: ogImg ? ogImg[1] : '',
         pageText: stripHtml(html).slice(0, 30000)
       });
+    }
+
+    /* ---- crawl af et site man selv har adgang til (fx et abonnement) ----
+     * Brugeren leverer sin egen session-cookie (fra DevTools eller en indsat
+     * cURL-kommando); serveren henter siderne med den og bruger den almindelige
+     * opskrift-parser. Cookien gemmes ALDRIG - den sendes med pr. kald. */
+    if (p === '/api/site/discover' && req.method === 'POST') {
+      let target;
+      try { target = new URL(String(body.url || '')); } catch (e) { return err(res, 400, 'Ugyldig URL'); }
+      if (target.protocol !== 'https:' && target.protocol !== 'http:') return err(res, 400, 'Kun http/https');
+      const headers = crawlHeaders(body);
+      const mode = body.mode === 'sitemap' ? 'sitemap' : 'links';
+      const pattern = String(body.pattern || '').toLowerCase();
+      try {
+        let urls = [];
+        let robotsAdvarsel = '';
+        try {
+          const rob = await fetch(target.origin + '/robots.txt', { headers, signal: AbortSignal.timeout(8000) });
+          if (rob.ok) {
+            const txt = (await rob.text()).slice(0, 20000);
+            /* meget simpelt tjek: er stien eksplicit disallowed for alle? */
+            const alle = txt.split(/user-agent:/i).find(s => /^\s*\*/.test(s)) || '';
+            const dis = [...alle.matchAll(/disallow:\s*(\S+)/gi)].map(m => m[1]).filter(x => x !== '/');
+            if (dis.some(d => target.pathname.startsWith(d))) {
+              robotsAdvarsel = 'Sitets robots.txt fraråder automatisk hentning af denne sti.';
+            }
+          }
+        } catch (e) {}
+
+        if (mode === 'sitemap') {
+          const seen = new Set();
+          const grab = async (u, dybde) => {
+            if (dybde > 3 || seen.has(u) || seen.size > 60 || urls.length > 3000) return;
+            seen.add(u);
+            const r = await fetch(u, { headers, signal: AbortSignal.timeout(20000), redirect: 'follow' });
+            if (!r.ok) return;
+            const txt = (await r.text()).slice(0, 8e6);
+            for (const m of txt.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)) {
+              const l = m[1].replace(/&amp;/g, '&');
+              if (/\.xml(\.gz)?$/i.test(l)) await grab(l, dybde + 1);
+              else urls.push(l);
+            }
+          };
+          for (const s of ['/sitemap.xml', '/sitemap_index.xml', '/wp-sitemap.xml']) {
+            try { await grab(target.origin + s, 0); } catch (e) {}
+            if (urls.length) break;
+          }
+          if (!urls.length) {
+            try {
+              const rob = await fetch(target.origin + '/robots.txt', { headers, signal: AbortSignal.timeout(8000) });
+              if (rob.ok) {
+                for (const m of (await rob.text()).matchAll(/Sitemap:\s*(\S+)/gi)) await grab(m[1], 0);
+              }
+            } catch (e) {}
+          }
+          if (!urls.length) return err(res, 404, 'Fandt intet sitemap på ' + target.origin + ' – prøv "links på siden" i stedet');
+        } else {
+          const r = await fetch(target.href, { headers, signal: AbortSignal.timeout(20000), redirect: 'follow' });
+          if (!r.ok) return err(res, 502, 'Siden svarede ' + r.status + (r.status === 401 || r.status === 403 ? ' – virker din cookie?' : ''));
+          const html = (await r.text()).slice(0, 8e6);
+          if (looksLikeLogin(html)) return err(res, 401, 'Fik en login-side retur – cookien er udløbet eller mangler');
+          for (const m of html.matchAll(/<a[^>]+href\s*=\s*["']([^"'#]+)["']/gi)) {
+            try {
+              const u = new URL(m[1], target.href);
+              if (u.origin === target.origin) urls.push(u.href.split('#')[0]);
+            } catch (e) {}
+          }
+        }
+        urls = [...new Set(urls)]
+          .filter(u => !/\.(jpg|jpeg|png|gif|webp|svg|pdf|css|js|xml|zip|mp4)(\?|$)/i.test(u))
+          .filter(u => !pattern || u.toLowerCase().includes(pattern));
+        return send(res, 200, { urls: urls.slice(0, 1000), total: urls.length, robotsAdvarsel });
+      } catch (e) {
+        return err(res, 502, 'Kunne ikke hente: ' + e.message);
+      }
+    }
+
+    /* ---- baggrundsjob: hent mange sider uden at browseren skal vaere aaben ---- */
+    if (p === '/api/site/crawl/status' && req.method === 'GET') {
+      return send(res, 200, crawlStatus());
+    }
+    if (p === '/api/site/crawl/stop' && req.method === 'POST') {
+      crawlJob.stop = true;
+      return send(res, 200, crawlStatus());
+    }
+    if (p === '/api/site/crawl/start' && req.method === 'POST') {
+      if (crawlJob.running) return err(res, 409, 'Der kører allerede en import – vent til den er færdig');
+      const urls = (Array.isArray(body.urls) ? body.urls : [])
+        .map(String).filter(u => /^https?:\/\//i.test(u)).slice(0, 5000);
+      if (!urls.length) return err(res, 400, 'Ingen adresser at hente');
+      Object.assign(crawlJob, {
+        running: true, stop: false, startedAt: nowIso(),
+        site: (() => { try { return new URL(urls[0]).hostname; } catch (e) { return ''; } })(),
+        total: urls.length, done: 0, imported: 0, skipped: 0, failed: 0,
+        current: '', error: '', urls,
+        cookie: String(body.cookie || ''), userAgent: String(body.userAgent || ''),
+        useAi: !!body.useAi && (setting('ai_provider', 'claude') === 'openai'
+          ? !!setting('ai_url', '') : !!setting('ai_key', ''))
+      });
+      console.log(`[crawl] starter ${urls.length} sider fra ${crawlJob.site}`);
+      runCrawlJob().catch(e => {
+        console.error('[fejl] crawl', e.message);
+        crawlJob.error = e.message;
+        crawlJob.running = false;
+        crawlJob.cookie = '';
+      });
+      return send(res, 200, crawlStatus());
+    }
+
+    if (p === '/api/site/fetch' && req.method === 'POST') {
+      let target;
+      try { target = new URL(String(body.url || '')); } catch (e) { return err(res, 400, 'Ugyldig URL'); }
+      if (target.protocol !== 'https:' && target.protocol !== 'http:') return err(res, 400, 'Kun http/https');
+      try {
+        const r = await fetch(target.href, {
+          headers: crawlHeaders(body), signal: AbortSignal.timeout(25000), redirect: 'follow'
+        });
+        if (!r.ok) return err(res, 502, 'Siden svarede ' + r.status);
+        const buf = Buffer.from(await r.arrayBuffer());
+        if (buf.length > 8e6) return err(res, 413, 'Siden er for stor');
+        const html = buf.toString('utf8');
+        if (looksLikeLogin(html)) return err(res, 401, 'Fik en login-side retur – cookien virker ikke længere');
+        const recipe = extractRecipe(html, target.href);
+        if (recipe) return send(res, 200, { recipe });
+        const titleM = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+        const ogImg = html.match(/<meta[^>]+property\s*=\s*["']og:image["'][^>]+content\s*=\s*["']([^"']+)["']/i) ||
+                      html.match(/<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+property\s*=\s*["']og:image["']/i);
+        return send(res, 200, {
+          recipe: null,
+          pageTitle: titleM ? decodeEntities(titleM[1]).trim().slice(0, 300) : '',
+          pageImage: ogImg ? ogImg[1] : '',
+          pageText: stripHtml(html).slice(0, 30000)
+        });
+      } catch (e) {
+        return err(res, 502, 'Kunne ikke hente: ' + e.message);
+      }
     }
 
     /* ---- billed-proxy (til at gemme opskrift-billeder lokalt som dataURL) ---- */

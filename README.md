@@ -66,6 +66,16 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v8** (august 2026): **Masse-import fra et helt site.** Kokkeri finder
+  opskrifterne via sitets sitemap (eller links på en oversigtsside) og henter
+  dem som et **baggrundsjob på serveren** – browseren kan lukkes undervejs, og
+  status vises som et banner på Opskrifter-siden. Sider uden opskrift springes
+  automatisk over, dubletter ligeså. Offentlige sider (valdemarsro.dk,
+  madbanditten.dk …) kræver ingenting; ligger opskrifterne bag et abonnement,
+  indsættes ens egen session-cookie (eller en »Copy as cURL«), som **aldrig
+  gemmes på disk**. Der ventes ~1,2 sek. mellem hver side. Billeder hentes
+  bagefter ned lokalt, så biblioteket også virker offline.
+
 - **v7** (august 2026): Hærdet efter den fælles rune-erfaringsfil:
   **cache-bust** (`?v=N` på app.js/style.css + `no-store` på HTML + versioneret
   service-worker-cache), så opdateringer slår igennem med det samme bag

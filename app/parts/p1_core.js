@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 7;
+const APP_VERSION = 8;
 
 /* ---------------- state ---------------- */
 const S = {

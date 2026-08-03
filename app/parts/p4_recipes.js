@@ -40,18 +40,22 @@ RENDER.recipes = () => {
 
   return pageHead('Opskrifter', `${K('recipe').length} opskrifter i biblioteket`,
       `<button class="btn" id="recNew">➕ Ny opskrift</button>
+       <button class="btn" id="recSiteImport">📚 Masse-import</button>
        <button class="btn primary" id="recImport">🌐 Importér fra URL</button>`) + `
   <div class="rowflex">
     <input id="recSearch" placeholder="🔍 Søg i titel, ingredienser og tags…" value="${esc(f.q)}" style="min-width:240px;flex:1;max-width:380px">
     <span class="chip chipbtn${f.fav ? ' sel' : ''}" id="recFav">⭐ Favoritter</span>
     ${cats.map(c => `<span class="chip chipbtn${f.category === c ? ' sel' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}
   </div>
+  ${crawlBannerHtml()}
   ${list.length ? `<div class="recgrid">${list.map(recipeCardHtml).join('')}</div>`
     : '<p class="muted" style="margin-top:26px">Ingen opskrifter matcher.</p>'}`;
 };
 RENDER.recipes_bind = () => {
   $('#recNew').onclick = () => recipeModal(null);
   $('#recImport').onclick = importUrlModal;
+  $('#recSiteImport').onclick = siteImportModal;
+  bindCrawlBanner();
   const search = $('#recSearch');
   search.oninput = () => {
     S.recFilter.q = search.value;

@@ -92,6 +92,7 @@ function paletteItems() {
     { ico: '📖', label: 'Ny opskrift', hint: 'handling', run: () => { goto('recipes'); recipeModal(null); } },
     { ico: '🌐', label: 'Importér opskrift fra URL', hint: 'handling', run: () => { goto('recipes'); importUrlModal(); } },
     { ico: '📋', label: 'Importér fra indsat HTML/noter', hint: 'handling', run: () => { goto('recipes'); importUrlModal(); setTimeout(() => { const d = $('#impPasteBox'); if (d) { d.open = true; $('#impPaste').focus(); } }, 60); } },
+    { ico: '📚', label: 'Masse-import fra et site (bag login)', hint: 'handling', run: () => { goto('recipes'); siteImportModal(); } },
     { ico: '⏱️', label: 'Ny timer', hint: 'handling', run: () => { goto('timers'); newTimerModal(); } },
     { ico: '🛒', label: 'Tilføj til indkøbsliste', hint: 'handling', run: () => { goto('shopping'); setTimeout(() => { const el = $('#shopNew'); if (el) el.focus(); }, 50); } },
     { ico: '📱', label: S.wakeOn ? 'Slå skærmlås fra' : 'Hold skærmen tændt', hint: 'handling', run: () => setWakeLock(!S.wakeOn) },
@@ -243,6 +244,11 @@ async function enterApp() {
   }
   loadTimers();
   startTimerEngine();
+  /* koerer der en site-import (startet foer browseren blev lukket)? vis den igen */
+  api('/api/site/crawl/status').then(st => {
+    if (st && st.running) { S.crawl = st; startCrawlPolling(); render(); }
+    else localizeRemoteImages(6);   // efterslaeb af billeder fra et tidligere crawl
+  }).catch(() => {});
   try { if (localStorage.getItem('kk_wake') === '1') setWakeLock(true); } catch (e) {}
   render();
 }
