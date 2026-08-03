@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 16;
+const APP_VERSION = 17;
 
 /* ---------------- state ---------------- */
 const S = {
@@ -109,6 +109,57 @@ function fmtMin(min) {
   const h = Math.floor(min / 60), m = Math.round(min % 60);
   if (h && m) return h + ' t ' + m + ' min';
   return h ? h + ' t' : m + ' min';
+}
+
+/* ---------------- AI-svar -> JSON ----------------
+ * Lokale modeller (LM Studio/Ollama) pakker gerne svaret i markdown-hegn,
+ * skriver en forklaring udenom (med kantparenteser i!), returnerer
+ * {"plan": [...]} i stedet for [...] eller efterlader et trailing komma.
+ * Derfor: find den foerste BALANCEREDE struktur der kan parses - proev flere
+ * startpunkter, i stedet for at klippe fra foerste [ til sidste ]. */
+function parseAiJson(text, forventArray) {
+  const s = String(text || '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')          // raesonnerende modeller
+    .replace(/```[a-zA-Z]*\s*/g, '').replace(/```/g, '') // markdown-hegn
+    .trim();
+  const balanceret = (start, aaben, luk) => {
+    let dybde = 0, iStreng = false, esc = false;
+    for (let i = start; i < s.length; i++) {
+      const c = s[i];
+      if (esc) { esc = false; continue; }
+      if (c === '\\') { esc = true; continue; }
+      if (c === '"') { iStreng = !iStreng; continue; }
+      if (iStreng) continue;
+      if (c === aaben) dybde++;
+      else if (c === luk && --dybde === 0) return s.slice(start, i + 1);
+    }
+    return null;
+  };
+  const kandidater = [];
+  for (const [a, l] of (forventArray ? [['[', ']'], ['{', '}']] : [['{', '}'], ['[', ']']])) {
+    for (let p = s.indexOf(a), n = 0; p >= 0 && n < 6; p = s.indexOf(a, p + 1), n++) {
+      const k = balanceret(p, a, l);
+      if (k) kandidater.push(k);
+    }
+  }
+  for (const k of kandidater) {
+    let j;
+    try { j = JSON.parse(k); }
+    catch (e) {
+      try { j = JSON.parse(k.replace(/,\s*([}\]])/g, '$1')); }   // trailing komma
+      catch (e2) { continue; }
+    }
+    if (!forventArray) { if (j && typeof j === 'object' && !Array.isArray(j)) return j; continue; }
+    if (Array.isArray(j)) return j;
+    const arr = j && typeof j === 'object' && Object.values(j).find(v => Array.isArray(v));
+    if (arr) return arr;                                  // {"plan": [...]}
+  }
+  return null;
+}
+/* kort uddrag af svaret til fejlbeskeden - ellers er "kunne ikke laeses" ubrugelig */
+function aiSvarUddrag(text) {
+  const s = String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim().replace(/\s+/g, ' ');
+  return s ? ' AI svarede: "' + s.slice(0, 120) + (s.length > 120 ? '…' : '') + '"' : ' AI svarede ingenting.';
 }
 
 function toast(msg, isErr) {

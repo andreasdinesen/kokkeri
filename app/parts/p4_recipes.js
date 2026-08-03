@@ -5,8 +5,9 @@ function starsHtml(rating) {
   return `<span class="stars">${[1, 2, 3, 4, 5].map(i => `<span class="${i <= r ? '' : 'off'}">★</span>`).join('')}</span>`;
 }
 
-function recipeCardHtml(r) {
+function recipeCardHtml(r, medKatVaelger) {
   const time = recipeTotalMin(r);
+  const cats = app().categories || [];
   return `<div class="reccard" data-rec="${r.id}">
     <div class="recimg">${r.image ? `<img src="${r.image}" alt="" loading="lazy">` : '🍽️'}</div>
     <div class="recbody">
@@ -16,6 +17,10 @@ function recipeCardHtml(r) {
         ${time ? `<span>⏱ ${fmtMin(time)}</span>` : ''}
         ${r.rating ? starsHtml(r.rating) : ''}
       </div>
+      ${medKatVaelger ? `<select class="katpick" data-katfor="${r.id}" title="Sæt kategori">
+        <option value="">Vælg kategori …</option>
+        ${cats.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}
+      </select>` : ''}
     </div>
   </div>`;
 }
@@ -28,7 +33,9 @@ RENDER.recipes = () => {
   const cats = app().categories || [];
   let list = K('recipe').slice();
   if (f.fav) list = list.filter(r => r.favorite);
-  if (f.category) list = list.filter(r => r.category === f.category);
+  /* noCat er sit eget flag - tom streng kan ikke bruges, da den betyder "intet filter" */
+  if (f.noCat) list = list.filter(r => !r.category);
+  else if (f.category) list = list.filter(r => r.category === f.category);
   if (f.q) {
     const q = normName(f.q);
     list = list.filter(r =>
@@ -37,6 +44,7 @@ RENDER.recipes = () => {
       normName((r.ingredients || []).join(' ')).includes(q));
   }
   list.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  const udenKat = K('recipe').filter(r => !r.category).length;
 
   return pageHead('Opskrifter', `${K('recipe').length} opskrifter i biblioteket`,
       `<button class="btn" id="recNew">➕ Ny opskrift</button>
@@ -45,10 +53,14 @@ RENDER.recipes = () => {
   <div class="rowflex">
     <input id="recSearch" placeholder="🔍 Søg i titel, ingredienser og tags…" value="${esc(f.q)}" style="min-width:240px;flex:1;max-width:380px">
     <span class="chip chipbtn${f.fav ? ' sel' : ''}" id="recFav">⭐ Favoritter</span>
-    ${cats.map(c => `<span class="chip chipbtn${f.category === c ? ' sel' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}
+    ${cats.map(c => `<span class="chip chipbtn${!f.noCat && f.category === c ? ' sel' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}
+    ${udenKat ? `<span class="chip chipbtn${f.noCat ? ' sel' : ''}" id="recNoCat"
+      title="Opskrifter der mangler en kategori">🏷️ Uden kategori (${udenKat})</span>` : ''}
   </div>
+  ${f.noCat ? `<p class="small muted" style="margin:10px 0 0">
+    Vælg en kategori direkte på kortet – den gemmes med det samme.</p>` : ''}
   <div id="crawlBanner">${crawlBannerHtml()}</div>
-  ${list.length ? `<div class="recgrid">${list.map(recipeCardHtml).join('')}</div>`
+  ${list.length ? `<div class="recgrid">${list.map(r => recipeCardHtml(r, f.noCat)).join('')}</div>`
     : '<p class="muted" style="margin-top:26px">Ingen opskrifter matcher.</p>'}`;
 };
 RENDER.recipes_bind = () => {
@@ -64,8 +76,29 @@ RENDER.recipes_bind = () => {
   };
   $('#recFav').onclick = () => { S.recFilter.fav = !S.recFilter.fav; render(); };
   $$('[data-cat]').forEach(c => c.onclick = () => {
+    S.recFilter.noCat = false;
     S.recFilter.category = S.recFilter.category === c.dataset.cat ? '' : c.dataset.cat;
     render();
+  });
+  const noCat = $('#recNoCat');
+  if (noCat) noCat.onclick = () => {
+    S.recFilter.noCat = !S.recFilter.noCat;
+    S.recFilter.category = '';
+    render();
+  };
+  /* saet kategori direkte fra kortet - ét klik pr. opskrift i stedet for
+   * at aabne og gemme hver enkelt */
+  $$('[data-katfor]').forEach(sel => {
+    sel.onclick = e => e.stopPropagation();      // ellers aabner kortet opskriften
+    sel.onchange = async () => {
+      const r = recipeById(sel.dataset.katfor);
+      if (!r || !sel.value) return;
+      r.category = sel.value;
+      r.catChecked = true;                        // et bevidst valg - ikke gæt igen
+      await saveItem(r, true);
+      toast(`${r.title} → ${sel.value}`);
+      render();
+    };
   });
   bindRecipeCards();
 };
@@ -270,9 +303,8 @@ async function aiEstimateNutrition(r, btn) {
         maxTokens: 512
       }
     });
-    let j;
-    try { j = JSON.parse(String(res.text).replace(/^[\s\S]*?\{/, '{').replace(/\}[^}]*$/, '}')); }
-    catch (e) { throw new Error('AI-svaret kunne ikke læses'); }
+    const j = parseAiJson(res.text, false);
+    if (!j) throw new Error('AI-svaret kunne ikke læses.' + aiSvarUddrag(res.text));
     if (typeof j.kcal !== 'number') throw new Error('AI gav ikke et brugbart estimat');
     r.nutrition = {
       kcal: Math.round(j.kcal), protein: Math.round(j.protein || 0),
@@ -563,10 +595,8 @@ Findes der ingen opskrift i teksten, svar {"error": "ingen opskrift fundet"}.`;
       maxTokens: 4096
     }
   });
-  let j;
-  try {
-    j = JSON.parse(String(r.text).replace(/^[\s\S]*?\{/, '{').replace(/\}[^}]*$/, '}'));
-  } catch (e) { throw new Error('AI-svaret kunne ikke læses som en opskrift'); }
+  const j = parseAiJson(r.text, false);
+  if (!j) throw new Error('AI-svaret kunne ikke læses som en opskrift.' + aiSvarUddrag(r.text));
   if (j.error) throw new Error(j.error);
   if (!j.title || !Array.isArray(j.ingredients)) throw new Error('AI fandt ingen opskrift på siden');
   return {

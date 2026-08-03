@@ -216,9 +216,8 @@ Format: {"vare-tekst": "afdeling", ...}`;
     const r = await api('/api/ai', {
       body: { system: sys, messages: [{ role: 'user', content: JSON.stringify(unknown.map(i => i.text)) }], maxTokens: 1500 }
     });
-    let map;
-    try { map = JSON.parse(String(r.text).replace(/^[\s\S]*?\{/, '{').replace(/\}[^}]*$/, '}')); }
-    catch (e) { throw new Error('AI-svaret kunne ikke læses'); }
+    const map = parseAiJson(r.text, false);
+    if (!map) throw new Error('AI-svaret kunne ikke læses.' + aiSvarUddrag(r.text));
     const changed = [];
     for (const it of unknown) {
       const sec = map[it.text];

@@ -9,6 +9,10 @@ const SLOTS = [
   { id: 'dinner',    label: 'Aftensmad', ico: '' },
   { id: 'other',     label: 'Andet',     ico: '📌' }
 ];
+/* billeder i uge-oversigten kan slaas fra - de fylder meget paa en lille skaerm */
+function planImages() {
+  try { return localStorage.getItem('kk_planimg') === '1'; } catch (e) { return false; }
+}
 const slotOf = e => e.slot || 'dinner';
 const slotOrder = id => SLOTS.findIndex(s => s.id === id);
 const slotInfo = id => SLOTS.find(s => s.id === id) || SLOTS[2];
@@ -19,6 +23,7 @@ RENDER.plan = () => {
   const today = isoDate();
   const entriesByDate = {};
   for (const e of K('planEntry')) (entriesByDate[e.date] = entriesByDate[e.date] || []).push(e);
+  const visBilleder = planImages();
 
   return pageHead('Madplan', `Uge ${isoWeekNo(monday)} · ${fmtDate(monday)} – ${fmtDate(dates[6])}`,
       `<div class="rowflex">
@@ -30,6 +35,9 @@ RENDER.plan = () => {
         <button class="btn" id="wkFill">📖 Udfyld fra biblioteket</button>
         <button class="btn" id="wkSaveMenu">💾 Gem som skabelon</button>
         <button class="btn" id="wkApplyMenu" ${K('menu').length ? '' : 'disabled'}>📋 Skabeloner…</button>
+        <button class="btn${visBilleder ? ' primary' : ''}" id="wkImg"
+          title="Vis eller skjul billeder i ugeoversigten">🖼️ Billeder</button>
+        <button class="btn danger" id="wkClear">🗑️ Ryd ugen</button>
         ${S.settings.aiKeySet ? '<button class="btn primary" id="wkAi">✨ Foreslå madplan (AI)</button>' : ''}
       </div>`) + `
   <div class="weekgrid">
@@ -41,6 +49,7 @@ RENDER.plan = () => {
           const si = slotInfo(slotOf(e));
           const slotTag = slotOf(e) !== 'dinner' ? `<span class="muted">${si.ico} ${si.label} · </span>` : '';
           return `<div class="planentry" data-entry="${e.id}" draggable="true">
+            ${visBilleder && r && r.image ? `<img class="planimg" src="${r.image}" alt="" loading="lazy">` : ''}
             ${slotTag}${r ? esc(r.title) : esc(e.text || '')}
             ${r && recipeTotalMin(r) ? `<div class="pmeta">⏱ ${fmtMin(recipeTotalMin(r))}${e.servings ? ' · ' + e.servings + ' pers.' : ''}</div>` : (e.servings ? `<div class="pmeta">${e.servings} pers.</div>` : '')}
           </div>`;
@@ -60,6 +69,11 @@ RENDER.plan_bind = () => {
   $('#wkFill').onclick = autoFillWeek;
   $('#wkSaveMenu').onclick = saveWeekAsMenu;
   $('#wkApplyMenu').onclick = menuListModal;
+  $('#wkClear').onclick = clearWeekModal;
+  $('#wkImg').onclick = () => {
+    try { localStorage.setItem('kk_planimg', planImages() ? '0' : '1'); } catch (e) {}
+    render();
+  };
   const ai = $('#wkAi');
   if (ai) ai.onclick = aiSuggestWeek;
   $$('.dayadd').forEach(b => b.onclick = () => planEntryModal(null, { date: b.dataset.date }));
@@ -100,6 +114,52 @@ async function movePlanEntry(entryId, toDate) {
   await saveBulk([e, ...displaced]);
   toast(displaced.length ? 'Byttet om 🔄' : 'Flyttet til ' + fmtDate(toDate));
   render();
+}
+
+/* ---------------- ryd ugen ----------------
+ * Ekstra spaerring: man skal se HVAD der ryger (listen) og trykke paa en
+ * roed knap, der er slaaet fra indtil man har bekraeftet med et flueben.
+ * En uges planlaegning maa ikke kunne forsvinde ved et fejlklik. */
+function clearWeekModal() {
+  const monday = S.weekStart || mondayOf();
+  const dates = weekDatesOf(monday);
+  const entries = K('planEntry').filter(e => dates.includes(e.date));
+  if (!entries.length) return toast('Ugen er allerede tom', true);
+
+  const linjer = dates.map((d, i) => {
+    const paaDagen = entries.filter(e => e.date === d)
+      .sort((a, b) => slotOrder(slotOf(a)) - slotOrder(slotOf(b)));
+    if (!paaDagen.length) return '';
+    return `<tr><td class="small muted nowrap">${WEEKDAYS_DA[i]}</td><td>${paaDagen.map(e => {
+      const r = e.recipeId ? recipeById(e.recipeId) : null;
+      const si = slotInfo(slotOf(e));
+      return (slotOf(e) !== 'dinner' ? `<span class="muted small">${si.label}: </span>` : '') +
+        esc(r ? r.title : e.text || '');
+    }).join('<br>')}</td></tr>`;
+  }).join('');
+
+  openModal(`<h2>🗑️ Ryd uge ${isoWeekNo(monday)}</h2>
+    <p class="small muted">${fmtDate(monday)} – ${fmtDate(dates[6])}.
+      Følgende <b>${entries.length} måltider</b> fjernes fra madplanen. Opskrifterne selv
+      røres ikke – kun planlægningen. Det kan ikke fortrydes.</p>
+    <div class="tablewrap" style="max-height:240px;overflow:auto"><table class="data"><tbody>${linjer}</tbody></table></div>
+    <label class="chk" style="margin:14px 0 4px">
+      <input type="checkbox" id="cwOk"> Ja, jeg vil rydde hele ugen</label>
+    <div class="actions">
+      <button class="btn" id="cwCancel">Annullér</button>
+      <button class="btn danger" id="cwGo" disabled>Ryd ${entries.length} måltider</button>
+    </div>`, m => {
+    const go = m.querySelector('#cwGo');
+    m.querySelector('#cwOk').onchange = e => { go.disabled = !e.target.checked; };
+    m.querySelector('#cwCancel').onclick = closeModal;
+    go.onclick = async () => {
+      go.disabled = true;
+      await saveBulk(entries.map(e => Object.assign(e, { deleted: true })));
+      closeModal();
+      toast(`Uge ${isoWeekNo(monday)} ryddet – ${entries.length} måltider fjernet`);
+      render();
+    };
+  });
 }
 
 /* ---------------- skabeloner (genbrugelige uge-menuer) ---------------- */
@@ -453,9 +513,8 @@ Svar KUN med JSON: [{"date": "YYYY-MM-DD", "recipeId": "..."}] – én pr. dato,
         maxTokens: 2048
       }
     });
-    let plan;
-    try { plan = JSON.parse(String(r.text).replace(/^[\s\S]*?\[/, '[').replace(/\][^\]]*$/, ']')); }
-    catch (e) { throw new Error('AI-svaret kunne ikke læses'); }
+    const plan = parseAiJson(r.text, true);
+    if (!plan) throw new Error('AI-svaret kunne ikke læses.' + aiSvarUddrag(r.text));
     const items = [];
     for (const p of plan) {
       if (!free.includes(p.date) || !recipeById(p.recipeId)) continue;

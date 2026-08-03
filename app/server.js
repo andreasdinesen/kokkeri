@@ -659,7 +659,7 @@ Findes der ingen opskrift, svar {"error":"ingen"}. Oversæt intet.`,
               messages: [{ role: 'user', content: stripHtml(html).slice(0, 20000) }],
               maxTokens: 3000
             });
-            const j = JSON.parse(String(out.text).replace(/^[\s\S]*?\{/, '{').replace(/\}[^}]*$/, '}'));
+            const j = parseAiJsonServer(out.text);
             if (j && j.title && Array.isArray(j.ingredients) && j.ingredients.length) {
               rec = { title: j.title, description: j.description || '', image: '', ingredients: j.ingredients.map(String),
                 instructions: (j.instructions || []).map(String), prepMin: j.prepMin || null, cookMin: j.cookMin || null,
@@ -714,6 +714,35 @@ Findes der ingen opskrift, svar {"error":"ingen"}. Oversæt intet.`,
  * (LM Studio, Ollama, llama.cpp ...). Valget bor i settings `ai_provider`;
  * noegle/URL forlader aldrig serveren. */
 const AI_DEFAULT_MODEL = 'claude-sonnet-5';
+
+/* Samme problem som i frontenden (parseAiJson i p1_core.js): lokale modeller
+ * pakker svaret i markdown-hegn eller skriver en forklaring udenom. Holdes
+ * bevidst i sync med frontend-versionen - ret begge steder. */
+function parseAiJsonServer(text) {
+  const s = String(text || '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/```[a-zA-Z]*\s*/g, '').replace(/```/g, '').trim();
+  for (let p = s.indexOf('{'), n = 0; p >= 0 && n < 6; p = s.indexOf('{', p + 1), n++) {
+    let dybde = 0, iStreng = false, esc = false;
+    for (let i = p; i < s.length; i++) {
+      const c = s[i];
+      if (esc) { esc = false; continue; }
+      if (c === '\\') { esc = true; continue; }
+      if (c === '"') { iStreng = !iStreng; continue; }
+      if (iStreng) continue;
+      if (c === '{') dybde++;
+      else if (c === '}' && --dybde === 0) {
+        const k = s.slice(p, i + 1);
+        try { return JSON.parse(k); }
+        catch (e) {
+          try { return JSON.parse(k.replace(/,\s*([}\]])/g, '$1')); } catch (e2) {}
+        }
+        break;
+      }
+    }
+  }
+  return null;
+}
 
 function aiSanitizeMessages(body) {
   const messages = Array.isArray(body.messages) ? body.messages

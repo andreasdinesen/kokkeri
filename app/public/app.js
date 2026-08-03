@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 16;
+const APP_VERSION = 17;
 
 /* ---------------- state ---------------- */
 const S = {
@@ -109,6 +109,57 @@ function fmtMin(min) {
   const h = Math.floor(min / 60), m = Math.round(min % 60);
   if (h && m) return h + ' t ' + m + ' min';
   return h ? h + ' t' : m + ' min';
+}
+
+/* ---------------- AI-svar -> JSON ----------------
+ * Lokale modeller (LM Studio/Ollama) pakker gerne svaret i markdown-hegn,
+ * skriver en forklaring udenom (med kantparenteser i!), returnerer
+ * {"plan": [...]} i stedet for [...] eller efterlader et trailing komma.
+ * Derfor: find den foerste BALANCEREDE struktur der kan parses - proev flere
+ * startpunkter, i stedet for at klippe fra foerste [ til sidste ]. */
+function parseAiJson(text, forventArray) {
+  const s = String(text || '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')          // raesonnerende modeller
+    .replace(/```[a-zA-Z]*\s*/g, '').replace(/```/g, '') // markdown-hegn
+    .trim();
+  const balanceret = (start, aaben, luk) => {
+    let dybde = 0, iStreng = false, esc = false;
+    for (let i = start; i < s.length; i++) {
+      const c = s[i];
+      if (esc) { esc = false; continue; }
+      if (c === '\\') { esc = true; continue; }
+      if (c === '"') { iStreng = !iStreng; continue; }
+      if (iStreng) continue;
+      if (c === aaben) dybde++;
+      else if (c === luk && --dybde === 0) return s.slice(start, i + 1);
+    }
+    return null;
+  };
+  const kandidater = [];
+  for (const [a, l] of (forventArray ? [['[', ']'], ['{', '}']] : [['{', '}'], ['[', ']']])) {
+    for (let p = s.indexOf(a), n = 0; p >= 0 && n < 6; p = s.indexOf(a, p + 1), n++) {
+      const k = balanceret(p, a, l);
+      if (k) kandidater.push(k);
+    }
+  }
+  for (const k of kandidater) {
+    let j;
+    try { j = JSON.parse(k); }
+    catch (e) {
+      try { j = JSON.parse(k.replace(/,\s*([}\]])/g, '$1')); }   // trailing komma
+      catch (e2) { continue; }
+    }
+    if (!forventArray) { if (j && typeof j === 'object' && !Array.isArray(j)) return j; continue; }
+    if (Array.isArray(j)) return j;
+    const arr = j && typeof j === 'object' && Object.values(j).find(v => Array.isArray(v));
+    if (arr) return arr;                                  // {"plan": [...]}
+  }
+  return null;
+}
+/* kort uddrag af svaret til fejlbeskeden - ellers er "kunne ikke laeses" ubrugelig */
+function aiSvarUddrag(text) {
+  const s = String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim().replace(/\s+/g, ' ');
+  return s ? ' AI svarede: "' + s.slice(0, 120) + (s.length > 120 ? '…' : '') + '"' : ' AI svarede ingenting.';
 }
 
 function toast(msg, isErr) {
@@ -992,8 +1043,9 @@ function starsHtml(rating) {
   return `<span class="stars">${[1, 2, 3, 4, 5].map(i => `<span class="${i <= r ? '' : 'off'}">★</span>`).join('')}</span>`;
 }
 
-function recipeCardHtml(r) {
+function recipeCardHtml(r, medKatVaelger) {
   const time = recipeTotalMin(r);
+  const cats = app().categories || [];
   return `<div class="reccard" data-rec="${r.id}">
     <div class="recimg">${r.image ? `<img src="${r.image}" alt="" loading="lazy">` : '🍽️'}</div>
     <div class="recbody">
@@ -1003,6 +1055,10 @@ function recipeCardHtml(r) {
         ${time ? `<span>⏱ ${fmtMin(time)}</span>` : ''}
         ${r.rating ? starsHtml(r.rating) : ''}
       </div>
+      ${medKatVaelger ? `<select class="katpick" data-katfor="${r.id}" title="Sæt kategori">
+        <option value="">Vælg kategori …</option>
+        ${cats.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}
+      </select>` : ''}
     </div>
   </div>`;
 }
@@ -1015,7 +1071,9 @@ RENDER.recipes = () => {
   const cats = app().categories || [];
   let list = K('recipe').slice();
   if (f.fav) list = list.filter(r => r.favorite);
-  if (f.category) list = list.filter(r => r.category === f.category);
+  /* noCat er sit eget flag - tom streng kan ikke bruges, da den betyder "intet filter" */
+  if (f.noCat) list = list.filter(r => !r.category);
+  else if (f.category) list = list.filter(r => r.category === f.category);
   if (f.q) {
     const q = normName(f.q);
     list = list.filter(r =>
@@ -1024,6 +1082,7 @@ RENDER.recipes = () => {
       normName((r.ingredients || []).join(' ')).includes(q));
   }
   list.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  const udenKat = K('recipe').filter(r => !r.category).length;
 
   return pageHead('Opskrifter', `${K('recipe').length} opskrifter i biblioteket`,
       `<button class="btn" id="recNew">➕ Ny opskrift</button>
@@ -1032,10 +1091,14 @@ RENDER.recipes = () => {
   <div class="rowflex">
     <input id="recSearch" placeholder="🔍 Søg i titel, ingredienser og tags…" value="${esc(f.q)}" style="min-width:240px;flex:1;max-width:380px">
     <span class="chip chipbtn${f.fav ? ' sel' : ''}" id="recFav">⭐ Favoritter</span>
-    ${cats.map(c => `<span class="chip chipbtn${f.category === c ? ' sel' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}
+    ${cats.map(c => `<span class="chip chipbtn${!f.noCat && f.category === c ? ' sel' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}
+    ${udenKat ? `<span class="chip chipbtn${f.noCat ? ' sel' : ''}" id="recNoCat"
+      title="Opskrifter der mangler en kategori">🏷️ Uden kategori (${udenKat})</span>` : ''}
   </div>
+  ${f.noCat ? `<p class="small muted" style="margin:10px 0 0">
+    Vælg en kategori direkte på kortet – den gemmes med det samme.</p>` : ''}
   <div id="crawlBanner">${crawlBannerHtml()}</div>
-  ${list.length ? `<div class="recgrid">${list.map(recipeCardHtml).join('')}</div>`
+  ${list.length ? `<div class="recgrid">${list.map(r => recipeCardHtml(r, f.noCat)).join('')}</div>`
     : '<p class="muted" style="margin-top:26px">Ingen opskrifter matcher.</p>'}`;
 };
 RENDER.recipes_bind = () => {
@@ -1051,8 +1114,29 @@ RENDER.recipes_bind = () => {
   };
   $('#recFav').onclick = () => { S.recFilter.fav = !S.recFilter.fav; render(); };
   $$('[data-cat]').forEach(c => c.onclick = () => {
+    S.recFilter.noCat = false;
     S.recFilter.category = S.recFilter.category === c.dataset.cat ? '' : c.dataset.cat;
     render();
+  });
+  const noCat = $('#recNoCat');
+  if (noCat) noCat.onclick = () => {
+    S.recFilter.noCat = !S.recFilter.noCat;
+    S.recFilter.category = '';
+    render();
+  };
+  /* saet kategori direkte fra kortet - ét klik pr. opskrift i stedet for
+   * at aabne og gemme hver enkelt */
+  $$('[data-katfor]').forEach(sel => {
+    sel.onclick = e => e.stopPropagation();      // ellers aabner kortet opskriften
+    sel.onchange = async () => {
+      const r = recipeById(sel.dataset.katfor);
+      if (!r || !sel.value) return;
+      r.category = sel.value;
+      r.catChecked = true;                        // et bevidst valg - ikke gæt igen
+      await saveItem(r, true);
+      toast(`${r.title} → ${sel.value}`);
+      render();
+    };
   });
   bindRecipeCards();
 };
@@ -1257,9 +1341,8 @@ async function aiEstimateNutrition(r, btn) {
         maxTokens: 512
       }
     });
-    let j;
-    try { j = JSON.parse(String(res.text).replace(/^[\s\S]*?\{/, '{').replace(/\}[^}]*$/, '}')); }
-    catch (e) { throw new Error('AI-svaret kunne ikke læses'); }
+    const j = parseAiJson(res.text, false);
+    if (!j) throw new Error('AI-svaret kunne ikke læses.' + aiSvarUddrag(res.text));
     if (typeof j.kcal !== 'number') throw new Error('AI gav ikke et brugbart estimat');
     r.nutrition = {
       kcal: Math.round(j.kcal), protein: Math.round(j.protein || 0),
@@ -1550,10 +1633,8 @@ Findes der ingen opskrift i teksten, svar {"error": "ingen opskrift fundet"}.`;
       maxTokens: 4096
     }
   });
-  let j;
-  try {
-    j = JSON.parse(String(r.text).replace(/^[\s\S]*?\{/, '{').replace(/\}[^}]*$/, '}'));
-  } catch (e) { throw new Error('AI-svaret kunne ikke læses som en opskrift'); }
+  const j = parseAiJson(r.text, false);
+  if (!j) throw new Error('AI-svaret kunne ikke læses som en opskrift.' + aiSvarUddrag(r.text));
   if (j.error) throw new Error(j.error);
   if (!j.title || !Array.isArray(j.ingredients)) throw new Error('AI fandt ingen opskrift på siden');
   return {
@@ -1982,6 +2063,10 @@ const SLOTS = [
   { id: 'dinner',    label: 'Aftensmad', ico: '' },
   { id: 'other',     label: 'Andet',     ico: '📌' }
 ];
+/* billeder i uge-oversigten kan slaas fra - de fylder meget paa en lille skaerm */
+function planImages() {
+  try { return localStorage.getItem('kk_planimg') === '1'; } catch (e) { return false; }
+}
 const slotOf = e => e.slot || 'dinner';
 const slotOrder = id => SLOTS.findIndex(s => s.id === id);
 const slotInfo = id => SLOTS.find(s => s.id === id) || SLOTS[2];
@@ -1992,6 +2077,7 @@ RENDER.plan = () => {
   const today = isoDate();
   const entriesByDate = {};
   for (const e of K('planEntry')) (entriesByDate[e.date] = entriesByDate[e.date] || []).push(e);
+  const visBilleder = planImages();
 
   return pageHead('Madplan', `Uge ${isoWeekNo(monday)} · ${fmtDate(monday)} – ${fmtDate(dates[6])}`,
       `<div class="rowflex">
@@ -2003,6 +2089,9 @@ RENDER.plan = () => {
         <button class="btn" id="wkFill">📖 Udfyld fra biblioteket</button>
         <button class="btn" id="wkSaveMenu">💾 Gem som skabelon</button>
         <button class="btn" id="wkApplyMenu" ${K('menu').length ? '' : 'disabled'}>📋 Skabeloner…</button>
+        <button class="btn${visBilleder ? ' primary' : ''}" id="wkImg"
+          title="Vis eller skjul billeder i ugeoversigten">🖼️ Billeder</button>
+        <button class="btn danger" id="wkClear">🗑️ Ryd ugen</button>
         ${S.settings.aiKeySet ? '<button class="btn primary" id="wkAi">✨ Foreslå madplan (AI)</button>' : ''}
       </div>`) + `
   <div class="weekgrid">
@@ -2014,6 +2103,7 @@ RENDER.plan = () => {
           const si = slotInfo(slotOf(e));
           const slotTag = slotOf(e) !== 'dinner' ? `<span class="muted">${si.ico} ${si.label} · </span>` : '';
           return `<div class="planentry" data-entry="${e.id}" draggable="true">
+            ${visBilleder && r && r.image ? `<img class="planimg" src="${r.image}" alt="" loading="lazy">` : ''}
             ${slotTag}${r ? esc(r.title) : esc(e.text || '')}
             ${r && recipeTotalMin(r) ? `<div class="pmeta">⏱ ${fmtMin(recipeTotalMin(r))}${e.servings ? ' · ' + e.servings + ' pers.' : ''}</div>` : (e.servings ? `<div class="pmeta">${e.servings} pers.</div>` : '')}
           </div>`;
@@ -2033,6 +2123,11 @@ RENDER.plan_bind = () => {
   $('#wkFill').onclick = autoFillWeek;
   $('#wkSaveMenu').onclick = saveWeekAsMenu;
   $('#wkApplyMenu').onclick = menuListModal;
+  $('#wkClear').onclick = clearWeekModal;
+  $('#wkImg').onclick = () => {
+    try { localStorage.setItem('kk_planimg', planImages() ? '0' : '1'); } catch (e) {}
+    render();
+  };
   const ai = $('#wkAi');
   if (ai) ai.onclick = aiSuggestWeek;
   $$('.dayadd').forEach(b => b.onclick = () => planEntryModal(null, { date: b.dataset.date }));
@@ -2073,6 +2168,52 @@ async function movePlanEntry(entryId, toDate) {
   await saveBulk([e, ...displaced]);
   toast(displaced.length ? 'Byttet om 🔄' : 'Flyttet til ' + fmtDate(toDate));
   render();
+}
+
+/* ---------------- ryd ugen ----------------
+ * Ekstra spaerring: man skal se HVAD der ryger (listen) og trykke paa en
+ * roed knap, der er slaaet fra indtil man har bekraeftet med et flueben.
+ * En uges planlaegning maa ikke kunne forsvinde ved et fejlklik. */
+function clearWeekModal() {
+  const monday = S.weekStart || mondayOf();
+  const dates = weekDatesOf(monday);
+  const entries = K('planEntry').filter(e => dates.includes(e.date));
+  if (!entries.length) return toast('Ugen er allerede tom', true);
+
+  const linjer = dates.map((d, i) => {
+    const paaDagen = entries.filter(e => e.date === d)
+      .sort((a, b) => slotOrder(slotOf(a)) - slotOrder(slotOf(b)));
+    if (!paaDagen.length) return '';
+    return `<tr><td class="small muted nowrap">${WEEKDAYS_DA[i]}</td><td>${paaDagen.map(e => {
+      const r = e.recipeId ? recipeById(e.recipeId) : null;
+      const si = slotInfo(slotOf(e));
+      return (slotOf(e) !== 'dinner' ? `<span class="muted small">${si.label}: </span>` : '') +
+        esc(r ? r.title : e.text || '');
+    }).join('<br>')}</td></tr>`;
+  }).join('');
+
+  openModal(`<h2>🗑️ Ryd uge ${isoWeekNo(monday)}</h2>
+    <p class="small muted">${fmtDate(monday)} – ${fmtDate(dates[6])}.
+      Følgende <b>${entries.length} måltider</b> fjernes fra madplanen. Opskrifterne selv
+      røres ikke – kun planlægningen. Det kan ikke fortrydes.</p>
+    <div class="tablewrap" style="max-height:240px;overflow:auto"><table class="data"><tbody>${linjer}</tbody></table></div>
+    <label class="chk" style="margin:14px 0 4px">
+      <input type="checkbox" id="cwOk"> Ja, jeg vil rydde hele ugen</label>
+    <div class="actions">
+      <button class="btn" id="cwCancel">Annullér</button>
+      <button class="btn danger" id="cwGo" disabled>Ryd ${entries.length} måltider</button>
+    </div>`, m => {
+    const go = m.querySelector('#cwGo');
+    m.querySelector('#cwOk').onchange = e => { go.disabled = !e.target.checked; };
+    m.querySelector('#cwCancel').onclick = closeModal;
+    go.onclick = async () => {
+      go.disabled = true;
+      await saveBulk(entries.map(e => Object.assign(e, { deleted: true })));
+      closeModal();
+      toast(`Uge ${isoWeekNo(monday)} ryddet – ${entries.length} måltider fjernet`);
+      render();
+    };
+  });
 }
 
 /* ---------------- skabeloner (genbrugelige uge-menuer) ---------------- */
@@ -2426,9 +2567,8 @@ Svar KUN med JSON: [{"date": "YYYY-MM-DD", "recipeId": "..."}] – én pr. dato,
         maxTokens: 2048
       }
     });
-    let plan;
-    try { plan = JSON.parse(String(r.text).replace(/^[\s\S]*?\[/, '[').replace(/\][^\]]*$/, ']')); }
-    catch (e) { throw new Error('AI-svaret kunne ikke læses'); }
+    const plan = parseAiJson(r.text, true);
+    if (!plan) throw new Error('AI-svaret kunne ikke læses.' + aiSvarUddrag(r.text));
     const items = [];
     for (const p of plan) {
       if (!free.includes(p.date) || !recipeById(p.recipeId)) continue;
@@ -2662,9 +2802,8 @@ Format: {"vare-tekst": "afdeling", ...}`;
     const r = await api('/api/ai', {
       body: { system: sys, messages: [{ role: 'user', content: JSON.stringify(unknown.map(i => i.text)) }], maxTokens: 1500 }
     });
-    let map;
-    try { map = JSON.parse(String(r.text).replace(/^[\s\S]*?\{/, '{').replace(/\}[^}]*$/, '}')); }
-    catch (e) { throw new Error('AI-svaret kunne ikke læses'); }
+    const map = parseAiJson(r.text, false);
+    if (!map) throw new Error('AI-svaret kunne ikke læses.' + aiSvarUddrag(r.text));
     const changed = [];
     for (const it of unknown) {
       const sec = map[it.text];

@@ -66,6 +66,24 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v17** (august 2026):
+  - **AI-svar fra lokale modeller kunne ikke læses.** Svaret blev klippet ud fra
+    første `[` til sidste `]` – men lokale modeller (LM Studio/Ollama) skriver
+    typisk en forklaring udenom, fx »Her er en madplan [baseret på dine
+    opskrifter]:«, så klipningen ramte den forkerte parentes. Nu findes den
+    første **komplette** JSON-struktur, med flere startpunkter som reserve.
+    Klarer markdown-hegn, `<think>`-blokke, `{"plan": [...]}`-indpakning og et
+    efterladt komma. Fejlbeskeden viser nu også, hvad modellen faktisk svarede.
+    Rettet alle fem steder (madplan, ernæring, opskrift-udtræk, indkøbssortering
+    og AI-import på serveren).
+  - **Opskrifter uden kategori** kan nu findes med en egen chip, der viser
+    antallet. I den visning har hvert kort en kategori-vælger, så det er ét klik
+    pr. opskrift i stedet for at åbne og gemme hver enkelt.
+  - **Ryd ugens madplan**: ny rød knap, der først viser dag for dag hvad der
+    fjernes, og kræver et flueben før knappen låser op. Opskrifterne selv røres
+    ikke – kun planlægningen.
+  - **Billeder i madplanen** kan slås til og fra med en knap; valget huskes.
+
 - **v16** (august 2026): **Store sites kan hentes helt.** Søgningen sendte kun de
   første 1000 fundne sider videre, så resten var uden for rækkevidde (madbanditten
   har 3169). Loftet er hævet til 5000. Samtidig **husker Kokkeri nu hver side, den
