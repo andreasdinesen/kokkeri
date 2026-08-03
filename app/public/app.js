@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 19;
+const APP_VERSION = 20;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -771,6 +771,12 @@ const VIEWS = [
 ];
 const RENDER = {}; // id -> funktion
 
+/* Sidebaren er en overlay-menu paa smalle skaerme - graensen SKAL vaere den
+ * samme som i style.css (@media max-width: 900px), ellers folder knappen
+ * sidebaren sammen paa en iPad, hvor CSS'en tror, den er en overlay. */
+const SMAL_SKAERM = 900;
+const smalSkaerm = () => matchMedia(`(max-width: ${SMAL_SKAERM}px)`).matches;
+
 function navBadge(id) {
   if (id === 'timers') {
     const n = S.timers.length;
@@ -790,7 +796,7 @@ function renderNav() {
     `<button class="navbtn${S.view === v.id ? ' active' : ''}" data-view="${v.id}">
        <span class="ico">${v.ico}</span><span>${v.label}</span>${navBadge(v.id)}</button>`).join('');
   $$('#navItems .navbtn[data-view]').forEach(b => b.onclick = () => {
-    if (matchMedia('(max-width: 760px)').matches) document.body.classList.remove('navopen');
+    if (smalSkaerm()) document.body.classList.remove('navopen');
     goto(b.dataset.view);
   });
   $('#navSearch').onclick = openPalette;
@@ -812,7 +818,7 @@ function renderNavTimers() {
       <span class="ttime">${t.ringing ? '0:00' : fmtTimer(timerRemainMs(t))}</span>
     </button>`).join('');
   host.querySelectorAll('.navtimer').forEach(b => b.onclick = () => {
-    if (matchMedia('(max-width: 760px)').matches) document.body.classList.remove('navopen');
+    if (smalSkaerm()) document.body.classList.remove('navopen');
     goto('timers');
   });
 }
@@ -924,8 +930,15 @@ async function boot() {
       openPalette();
     }
   });
+  /* Klik paa den moerke baggrund lukker menuen. Baggrunden er body::after, og
+   * klik paa et pseudo-element rammer selve body - derfor tjekket paa target. */
+  document.body.addEventListener('click', e => {
+    if (e.target === document.body && document.body.classList.contains('navopen')) {
+      document.body.classList.remove('navopen');
+    }
+  });
   $('#navToggle').onclick = () => {
-    if (matchMedia('(max-width: 760px)').matches) document.body.classList.toggle('navopen');
+    if (smalSkaerm()) document.body.classList.toggle('navopen');
     else {
       document.body.classList.toggle('navfold');
       try { localStorage.setItem('kk_nav', document.body.classList.contains('navfold') ? '1' : ''); } catch (e) {}
@@ -1114,14 +1127,14 @@ RENDER.dash = () => {
   <h2>De næste dage</h2>
   <div class="panelbox">
     ${upcoming.map(u => `
-      <div class="rowflex" style="padding:6px 0;border-bottom:1px solid var(--border)">
-        <strong style="width:90px">${dayName(u.date)}</strong>
-        <span class="muted small" style="width:78px">${fmtDate(u.date)}</span>
-        ${u.entries.length ? u.entries.map(e => {
+      <div class="dashday">
+        <strong class="dagnavn">${dayName(u.date)}</strong>
+        <span class="muted small dagdato">${fmtDate(u.date)}</span>
+        <span class="dagretter">${u.entries.length ? u.entries.map(e => {
           const r = e.recipeId ? recipeById(e.recipeId) : null;
           return r ? `<a href="#" data-rec="${r.id}" class="planlink">🍽️ ${esc(r.title)}</a>`
                    : `<span>🍽️ ${esc(e.text || '')}</span>`;
-        }).join(' · ') : '<span class="muted">intet planlagt</span>'}
+        }).join('') : '<span class="muted">intet planlagt</span>'}</span>
       </div>`).join('')}
     <div style="margin-top:10px"><button class="btn small" id="dashToPlan">📅 Åbn madplanen</button></div>
   </div>

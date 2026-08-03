@@ -38,14 +38,14 @@ RENDER.dash = () => {
   <h2>De næste dage</h2>
   <div class="panelbox">
     ${upcoming.map(u => `
-      <div class="rowflex" style="padding:6px 0;border-bottom:1px solid var(--border)">
-        <strong style="width:90px">${dayName(u.date)}</strong>
-        <span class="muted small" style="width:78px">${fmtDate(u.date)}</span>
-        ${u.entries.length ? u.entries.map(e => {
+      <div class="dashday">
+        <strong class="dagnavn">${dayName(u.date)}</strong>
+        <span class="muted small dagdato">${fmtDate(u.date)}</span>
+        <span class="dagretter">${u.entries.length ? u.entries.map(e => {
           const r = e.recipeId ? recipeById(e.recipeId) : null;
           return r ? `<a href="#" data-rec="${r.id}" class="planlink">🍽️ ${esc(r.title)}</a>`
                    : `<span>🍽️ ${esc(e.text || '')}</span>`;
-        }).join(' · ') : '<span class="muted">intet planlagt</span>'}
+        }).join('') : '<span class="muted">intet planlagt</span>'}</span>
       </div>`).join('')}
     <div style="margin-top:10px"><button class="btn small" id="dashToPlan">📅 Åbn madplanen</button></div>
   </div>

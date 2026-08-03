@@ -10,6 +10,12 @@ const VIEWS = [
 ];
 const RENDER = {}; // id -> funktion
 
+/* Sidebaren er en overlay-menu paa smalle skaerme - graensen SKAL vaere den
+ * samme som i style.css (@media max-width: 900px), ellers folder knappen
+ * sidebaren sammen paa en iPad, hvor CSS'en tror, den er en overlay. */
+const SMAL_SKAERM = 900;
+const smalSkaerm = () => matchMedia(`(max-width: ${SMAL_SKAERM}px)`).matches;
+
 function navBadge(id) {
   if (id === 'timers') {
     const n = S.timers.length;
@@ -29,7 +35,7 @@ function renderNav() {
     `<button class="navbtn${S.view === v.id ? ' active' : ''}" data-view="${v.id}">
        <span class="ico">${v.ico}</span><span>${v.label}</span>${navBadge(v.id)}</button>`).join('');
   $$('#navItems .navbtn[data-view]').forEach(b => b.onclick = () => {
-    if (matchMedia('(max-width: 760px)').matches) document.body.classList.remove('navopen');
+    if (smalSkaerm()) document.body.classList.remove('navopen');
     goto(b.dataset.view);
   });
   $('#navSearch').onclick = openPalette;
@@ -51,7 +57,7 @@ function renderNavTimers() {
       <span class="ttime">${t.ringing ? '0:00' : fmtTimer(timerRemainMs(t))}</span>
     </button>`).join('');
   host.querySelectorAll('.navtimer').forEach(b => b.onclick = () => {
-    if (matchMedia('(max-width: 760px)').matches) document.body.classList.remove('navopen');
+    if (smalSkaerm()) document.body.classList.remove('navopen');
     goto('timers');
   });
 }
@@ -163,8 +169,15 @@ async function boot() {
       openPalette();
     }
   });
+  /* Klik paa den moerke baggrund lukker menuen. Baggrunden er body::after, og
+   * klik paa et pseudo-element rammer selve body - derfor tjekket paa target. */
+  document.body.addEventListener('click', e => {
+    if (e.target === document.body && document.body.classList.contains('navopen')) {
+      document.body.classList.remove('navopen');
+    }
+  });
   $('#navToggle').onclick = () => {
-    if (matchMedia('(max-width: 760px)').matches) document.body.classList.toggle('navopen');
+    if (smalSkaerm()) document.body.classList.toggle('navopen');
     else {
       document.body.classList.toggle('navfold');
       try { localStorage.setItem('kk_nav', document.body.classList.contains('navfold') ? '1' : ''); } catch (e) {}

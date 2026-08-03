@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 19;
+const APP_VERSION = 20;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */

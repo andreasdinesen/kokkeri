@@ -66,6 +66,24 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v20** (august 2026): **Bedre på telefon og tablet.**
+  - **iPad i portræt fik hele bredden.** Grænsen for, hvornår sidebaren bliver
+    til en skjult menu, er hævet fra 760 til 900 px – før åd sidebaren 216 px
+    af en i forvejen smal skærm på en iPad i højformat.
+  - **Menuknappen lå oven i sidens overskrift** på telefon. Toppen har nu plads
+    til den.
+  - **Overblik**: nøgletallene står to og to i stedet for én kolonne pr. tal,
+    mindre overskrifter, og under »De næste dage« får retten sin egen linje i
+    stedet for at blive klemt sammen ved siden af dag og dato.
+  - **Opskrifter**: kortene står to og to på en telefon i stedet for ét pr.
+    skærm, søgefeltet fylder bredden, og sortering + stjernefilter deler en
+    række.
+  - **Menuen lukkes nu ved at trykke ved siden af den** – før skulle man ramme
+    den lille knap igen.
+  - Lange ubrudte ord (importerede titler, kilde-URL'er) brækker nu i stedet
+    for at skubbe siden bredere, og på skærme under 900 px kan siden ikke
+    længere scrolles sidelæns.
+
 - **v19** (august 2026): **Biblioteket kan nu bære tusindvis af opskrifter – og
   du kan give stjerner direkte fra oversigten.**
   - **Login gik fra 248 MB til 1,3 MB.** Kokkeri hentede hele biblioteket med
