@@ -66,6 +66,14 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v12** (august 2026): **Indkøbslisten på mobil.** Opskriftsnavnet lå på samme
+  linje som varen uden ombrydning og pressede varenavnet ned i en smal kolonne.
+  Nu står opskriften under varen i lille skrift på små skærme, checkbokse og
+  rækker er blevet større at ramme, og knapperne i toppen fylder mindre.
+  Ny chip **»🏷️ Vis opskrift«** slår kolonnen helt fra (huskes) – rart, når man
+  står i butikken. Vises kun under »Pr. afdeling«, hvor opskriften ikke i forvejen
+  er overskrift.
+
 - **v11** (august 2026): **Kategori-vælger til madplanens autofyld.** »Udfyld fra
   biblioteket« trak fra hele biblioteket, så saucer, smoothies og salater endte
   som aftensmad. Nu vælger man kategorier (med antal pr. kategori og genvejene

@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 11;
+const APP_VERSION = 12;
 
 /* ---------------- state ---------------- */
 const S = {
@@ -2372,6 +2372,11 @@ function shopSectionOf(i) { return i.section || guessSection(i.text) || 'Andet';
 function shopGroupBy() {
   try { return localStorage.getItem('kk_shopgroup') || 'section'; } catch (e) { return 'section'; }
 }
+/* vis hvilken opskrift varen kom fra? Paa mobil fylder det meget, saa det
+ * kan slaas fra. (I "Pr. opskrift" er navnet allerede overskriften.) */
+function shopShowGroup() {
+  try { return localStorage.getItem('kk_shopgrp') !== '0'; } catch (e) { return true; }
+}
 
 RENDER.shopping = () => {
   const bySection = shopGroupBy() === 'section';
@@ -2385,6 +2390,7 @@ RENDER.shopping = () => {
   const open = items.filter(i => !i.done), done = items.filter(i => i.done);
   const unsorted = open.filter(i => !i.section && !guessSection(i.text)).length;
 
+  const visGruppe = shopShowGroup();
   const listHtml = arr => {
     let out = '', lastGroup = null;
     for (const i of arr) {
@@ -2392,8 +2398,10 @@ RENDER.shopping = () => {
       if (g !== lastGroup) { out += `<li class="shopgroup">${esc(g)}</li>`; lastGroup = g; }
       out += `<li class="${i.done ? 'done' : ''}" data-shop="${i.id}">
         <input type="checkbox" ${i.done ? 'checked' : ''}>
-        <span class="txt">${esc(i.text)}</span>
-        ${bySection && i.group ? `<span class="muted small nowrap">${esc(i.group)}</span>` : ''}
+        <span class="shopmain">
+          <span class="txt">${esc(i.text)}</span>
+          ${bySection && i.group && visGruppe ? `<span class="grp">${esc(i.group)}</span>` : ''}
+        </span>
         <button class="iconbtn" data-del="${i.id}" title="Fjern">✕</button>
       </li>`;
     }
@@ -2406,7 +2414,7 @@ RENDER.shopping = () => {
   const soon = addDays(isoDate(), 7);
 
   return pageHead('Indkøbsliste', `${open.length} varer mangler`,
-      `<div class="rowflex">
+      `<div class="rowflex shoptools">
         <button class="btn" id="shopPrint">🖨️ Print</button>
         <button class="btn" id="shopMerge" ${open.length > 1 ? '' : 'disabled'}>🧮 Læg ens varer sammen</button>
         ${S.settings.aiKeySet && unsorted ? `<button class="btn" id="shopAiSort">✨ Sortér ${unsorted} med AI</button>` : ''}
@@ -2418,6 +2426,8 @@ RENDER.shopping = () => {
   <div class="rowflex" style="margin-bottom:4px">
     <span class="chip chipbtn${bySection ? ' sel' : ''}" data-grp="section">Pr. afdeling</span>
     <span class="chip chipbtn${bySection ? '' : ' sel'}" data-grp="recipe">Pr. opskrift</span>
+    ${bySection ? `<span class="chip chipbtn${visGruppe ? ' sel' : ''}" id="shopToggleGrp"
+      title="Vis eller skjul hvilken opskrift varen kom fra">🏷️ Vis opskrift</span>` : ''}
   </div>
   <div class="panelbox">
     <div class="rowflex">
@@ -2452,6 +2462,11 @@ RENDER.shopping_bind = () => {
     try { localStorage.setItem('kk_shopgroup', c.dataset.grp); } catch (e) {}
     render();
   });
+  const tg = $('#shopToggleGrp');
+  if (tg) tg.onclick = () => {
+    try { localStorage.setItem('kk_shopgrp', shopShowGroup() ? '0' : '1'); } catch (e) {}
+    render();
+  };
 
   const add = async () => {
     const el = $('#shopNew');
