@@ -66,6 +66,14 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v18** (august 2026): **Installationen fylder en fjerdedel mindre.** Hele appen
+  ligger inde i runens install-script, og Linux sætter en hård grænse for, hvor
+  langt det må være – den var ved at være nået. App-filerne trimmes nu for
+  kommentarer og indrykning, inden de pakkes (kilderne i repoet er urørte), og
+  pakningen er skiftet fra gzip+base64 til brotli+base85. Tilsammen: install-
+  scriptet gik fra 113.959 til 84.779 tegn, uden at en eneste linje app-kode blev
+  ændret. Ingen synlige ændringer i appen – kun plads til at vokse videre.
+
 - **v17** (august 2026):
   - **AI-svar fra lokale modeller kunne ikke læses.** Svaret blev klippet ud fra
     første `[` til sidste `]` – men lokale modeller (LM Studio/Ollama) skriver
