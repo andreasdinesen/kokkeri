@@ -247,7 +247,11 @@ async function enterApp() {
   /* koerer der en site-import (startet foer browseren blev lukket)? vis den igen */
   api('/api/site/crawl/status').then(st => {
     if (st && st.running) { S.crawl = st; startCrawlPolling(); render(); }
-    else localizeRemoteImages(6);   // efterslaeb af billeder fra et tidligere crawl
+    else {
+      /* efterslaeb fra et tidligere crawl: manglende kategorier og billeder */
+      categorizeImported().then(n => { if (n) render(); });
+      localizeRemoteImages(6);
+    }
   }).catch(() => {});
   try { if (localStorage.getItem('kk_wake') === '1') setWakeLock(true); } catch (e) {}
   render();

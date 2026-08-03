@@ -121,6 +121,13 @@ RENDER.settings = () => {
     <span class="small muted" id="papStatus"></span>
   </div>
 
+  ${S.me.isAdmin ? `<div class="panelbox" style="border-color:var(--red)">
+    <h2 style="margin-top:0">🗑️ Ryd data</h2>
+    <p class="small muted">Sletter indhold permanent – brugere, kategorier, AI-nøgle og øvrige
+      indstillinger bevares. Tag en backup først, hvis du er i tvivl.</p>
+    <button class="btn danger" id="wipeOpen">Vælg hvad der skal slettes…</button>
+  </div>` : ''}
+
   <div class="panelbox">
     <h2 style="margin-top:0">Min konto</h2>
     <p class="small muted">Logget ind som <b>${esc(S.me.username)}</b>${S.me.isAdmin ? ' (administrator)' : ''}</p>
@@ -228,6 +235,9 @@ RENDER.settings_bind = () => {
     await saveSettings(settings);
     render();
   };
+
+  const wipeBtn = $('#wipeOpen');
+  if (wipeBtn) wipeBtn.onclick = wipeModal;
 
   $('#papImport').onclick = () => $('#papFile').click();
   $('#papFile').onchange = async e => {
@@ -348,6 +358,80 @@ async function loadAdminUsers() {
   } catch (e) {
     host.textContent = 'Kunne ikke hente brugere: ' + e.message;
   }
+}
+
+/* ---------------- ryd data (admin) ----------------
+ * To spaerringer mod uheld: man skal vaelge datatyperne aktivt, OG skrive
+ * KOKKERI. Ordet tjekkes ogsaa server-side. */
+const WIPE_KINDS = [
+  { kind: 'recipe', navn: 'Opskrifter', ico: '📖' },
+  { kind: 'planEntry', navn: 'Madplan', ico: '📅' },
+  { kind: 'menu', navn: 'Madplan-skabeloner', ico: '📋' },
+  { kind: 'shopItem', navn: 'Indkøbsliste', ico: '🛒' },
+  { kind: 'pantryItem', navn: 'Forråd', ico: '🏺' }
+];
+function wipeModal() {
+  const antal = k => K(k).length;
+  openModal(`<h2>🗑️ Ryd data</h2>
+    <p class="small muted">Vælg hvad der skal slettes. Det kan <b>ikke</b> fortrydes –
+      hverken brugere, kategorier eller andre indstillinger røres.</p>
+    <div style="margin:12px 0">
+      ${WIPE_KINDS.map(w => `<label class="chk" style="padding:5px 0">
+        <input type="checkbox" data-wk="${w.kind}">
+        <span>${w.ico} ${w.navn} <span class="muted small">(${antal(w.kind)})</span></span></label>`).join('')}
+    </div>
+    <div class="rowflex" style="margin-bottom:12px">
+      <button class="btn small" id="wipeAll">Markér alt</button>
+      <button class="btn small" id="wipeNone">Fjern markering</button>
+      <span style="flex:1"></span>
+      <button class="btn small" id="wipeBackup">⬇️ Tag backup først</button>
+    </div>
+    <label class="fld"><span>Skriv <b>KOKKERI</b> for at bekræfte</span>
+      <input id="wipeWord" autocomplete="off" placeholder="KOKKERI"></label>
+    <p class="small warn" id="wipeMsg" style="min-height:18px"></p>
+    <div class="actions">
+      <button class="btn" id="wipeCancel">Annullér</button>
+      <button class="btn danger" id="wipeGo" disabled>Slet permanent</button>
+    </div>`, m => {
+    const word = m.querySelector('#wipeWord');
+    const go = m.querySelector('#wipeGo');
+    const bokse = () => [...m.querySelectorAll('[data-wk]')];
+    const valgte = () => bokse().filter(b => b.checked).map(b => b.dataset.wk);
+    const opdater = () => {
+      const n = valgte().length;
+      const ordOk = word.value.trim().toUpperCase() === 'KOKKERI';
+      go.disabled = !n || !ordOk;
+      go.textContent = n ? `Slet ${valgte().reduce((a, k) => a + K(k).length, 0)} elementer permanent` : 'Slet permanent';
+      m.querySelector('#wipeMsg').textContent = !n ? 'Vælg mindst én datatype'
+        : (!ordOk ? 'Skriv KOKKERI for at låse op' : '');
+    };
+    bokse().forEach(b => b.onchange = opdater);
+    word.oninput = opdater;
+    m.querySelector('#wipeAll').onclick = () => { bokse().forEach(b => b.checked = true); opdater(); };
+    m.querySelector('#wipeNone').onclick = () => { bokse().forEach(b => b.checked = false); opdater(); };
+    m.querySelector('#wipeBackup').onclick = async () => {
+      const b = await api('/api/backup');
+      downloadFile('kokkeri-backup-' + isoDate() + '.json', JSON.stringify(b, null, 1), 'application/json');
+    };
+    m.querySelector('#wipeCancel').onclick = closeModal;
+    go.onclick = async () => {
+      const kinds = valgte();
+      go.disabled = true;
+      try {
+        const r = await api('/api/wipe', { body: { kinds, confirm: word.value.trim() } });
+        S.items = S.items.filter(it => !kinds.includes(it.kind));
+        reindex();
+        closeModal();
+        toast(`${r.deleted} elementer slettet`);
+        render();
+      } catch (e) {
+        m.querySelector('#wipeMsg').textContent = e.message;
+        go.disabled = false;
+      }
+    };
+    opdater();
+    word.focus();
+  });
 }
 
 /* start appen */

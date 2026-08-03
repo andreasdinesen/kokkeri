@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 9;
+const APP_VERSION = 10;
 
 /* ---------------- state ---------------- */
 const S = {
@@ -340,6 +340,63 @@ function convertLineToMetric(line) {
 function convertRecipeToMetric(r) {
   r.ingredients = (r.ingredients || []).map(convertLineToMetric);
   r.instructions = (r.instructions || []).map(convertLineToMetric);
+}
+
+/* ---- gaet kategori paa en importeret opskrift ----
+ * Sidens egen kategori bruges foerst, men den passer sjaeldent til ens egen
+ * liste ("Baalmad", "Nem aftensmad" ...). Derfor ogsaa noegleord i titel og
+ * tags: "Gullaschsuppe" -> Suppe. Mest specifikke regler foerst, saa
+ * "Kartoffelsalat" bliver Salat og ikke Hovedret. */
+const CAT_RULES = [
+  ['Suppe', /suppe|soup\b/],
+  ['Salat', /salat|coleslaw/],
+  ['Kage & bagværk', /kage|brød|bolle|muffin|cookie|tærte|scone|croissant|cupcake|brownie|snegl|kringle|bagværk|kiks|vaffel|pandekag|klejne|marengs/],
+  ['Dessert', /dessert|sorbet|mousse|tiramisu|budding|kompot|trifli|panna cotta|trøffel|trøfler|creme brulee|fromage|isdessert/],
+  ['Morgenmad', /morgenmad|brunch|grød|havregr|müsli|granola|omelet|æggekage|smoothiebowl/],
+  ['Drikkevarer', /drink|smoothie|juice|cocktail|kaffe|\bte\b|saft|milkshake|lemonade|glögg|gløgg/],
+  ['Forret', /forret|tapas|canapé|snacks?\b/],
+  ['Tilbehør', /tilbehør|dressing|\bdip\b|pesto|salsa|marinade|syltede|remoulade|\bsauce\b|kompot|chutney|rødkål/],
+  ['Hovedret', /hovedret|aftensmad|middag|gryde|steg\b|pasta|spaghetti|lasagne|risotto|curry|burger|pizza|frikadell|wok\b|gratin|bøf|fisk|kylling|kød|tærte|ret\b/]
+];
+function guessCategory(rec) {
+  const cats = app().categories || [];
+  if (!cats.length) return '';
+  /* 1) sidens egen kategori mod brugerens liste. Sammenlign fra ordets START
+   * ("Supper" ~ "Suppe"), IKKE som fri substring - ellers ville sidens
+   * "Aftensmad" matche en kategori ved navn "Mad". Sider angiver ofte flere,
+   * adskilt af komma. */
+  const src = normName(rec.sourceCategory || rec.category || '');
+  for (const del of src.split(/[,/|·•]+/).map(s => s.trim()).filter(Boolean)) {
+    const match = cats.find(c => {
+      const n = normName(c);
+      return n.length >= 4 && (del === n || del.startsWith(n) || n.startsWith(del));
+    });
+    if (match) return match;
+  }
+  /* 2) noegleord i sidens kategori, tags og titel */
+  const tekst = normName([src, (rec.tags || []).join(' '), rec.title || ''].join(' '));
+  for (const [navn, re] of CAT_RULES) {
+    if (!re.test(tekst)) continue;
+    const n = normName(navn);
+    const match = cats.find(c => normName(c) === n) ||
+      cats.find(c => normName(c).includes(n.split(' ')[0]) || n.includes(normName(c)));
+    if (match) return match;
+  }
+  return '';
+}
+/* saet kategori paa importerede opskrifter, der mangler den. Hver opskrift
+ * proeves kun én gang (catChecked), saa et bevidst fjernet valg ikke kommer igen. */
+async function categorizeImported() {
+  const mangler = K('recipe').filter(r => !r.category && !r.catChecked && (r.url || r.sourceCategory));
+  if (!mangler.length) return 0;
+  let n = 0;
+  for (const r of mangler) {
+    const c = guessCategory(r);
+    if (c) { r.category = c; n++; }
+    r.catChecked = true;
+  }
+  await saveBulk(mangler);
+  return n;
 }
 
 /* ---- indkoebslistens afdelinger (regelbaseret; AI kan tage resten) ---- */
@@ -793,7 +850,11 @@ async function enterApp() {
   /* koerer der en site-import (startet foer browseren blev lukket)? vis den igen */
   api('/api/site/crawl/status').then(st => {
     if (st && st.running) { S.crawl = st; startCrawlPolling(); render(); }
-    else localizeRemoteImages(6);   // efterslaeb af billeder fra et tidligere crawl
+    else {
+      /* efterslaeb fra et tidligere crawl: manglende kategorier og billeder */
+      categorizeImported().then(n => { if (n) render(); });
+      localizeRemoteImages(6);
+    }
   }).catch(() => {});
   try { if (localStorage.getItem('kk_wake') === '1') setWakeLock(true); } catch (e) {}
   render();
@@ -1450,9 +1511,11 @@ function importUrlModal() {
 }
 
 function openImportedRecipe(rec, image) {
-  /* gaet en kategori ud fra sidens egen kategori-tekst */
-  const cats = app().categories || [];
-  const catGuess = cats.find(c => normName(rec.category || '').includes(normName(c))) || '';
+  /* gaet en kategori ud fra sidens kategori-tekst, tags og titel */
+  const catGuess = guessCategory({
+    sourceCategory: rec.category || '', title: rec.title || '',
+    tags: rec.keywords ? String(rec.keywords).split(',') : []
+  });
   recipeModal(null, {
     title: rec.title || '',
     description: rec.description || '',
@@ -1824,6 +1887,7 @@ function startCrawlPolling() {
         S.items = items.items || [];
         reindex();
         render();
+        await categorizeImported();
         /* og hent billederne ned lokalt, lidt ad gangen */
         let rest = 1;
         while (rest > 0) rest = await localizeRemoteImages(6);
@@ -2870,6 +2934,13 @@ RENDER.settings = () => {
     <span class="small muted" id="papStatus"></span>
   </div>
 
+  ${S.me.isAdmin ? `<div class="panelbox" style="border-color:var(--red)">
+    <h2 style="margin-top:0">🗑️ Ryd data</h2>
+    <p class="small muted">Sletter indhold permanent – brugere, kategorier, AI-nøgle og øvrige
+      indstillinger bevares. Tag en backup først, hvis du er i tvivl.</p>
+    <button class="btn danger" id="wipeOpen">Vælg hvad der skal slettes…</button>
+  </div>` : ''}
+
   <div class="panelbox">
     <h2 style="margin-top:0">Min konto</h2>
     <p class="small muted">Logget ind som <b>${esc(S.me.username)}</b>${S.me.isAdmin ? ' (administrator)' : ''}</p>
@@ -2977,6 +3048,9 @@ RENDER.settings_bind = () => {
     await saveSettings(settings);
     render();
   };
+
+  const wipeBtn = $('#wipeOpen');
+  if (wipeBtn) wipeBtn.onclick = wipeModal;
 
   $('#papImport').onclick = () => $('#papFile').click();
   $('#papFile').onchange = async e => {
@@ -3097,6 +3171,80 @@ async function loadAdminUsers() {
   } catch (e) {
     host.textContent = 'Kunne ikke hente brugere: ' + e.message;
   }
+}
+
+/* ---------------- ryd data (admin) ----------------
+ * To spaerringer mod uheld: man skal vaelge datatyperne aktivt, OG skrive
+ * KOKKERI. Ordet tjekkes ogsaa server-side. */
+const WIPE_KINDS = [
+  { kind: 'recipe', navn: 'Opskrifter', ico: '📖' },
+  { kind: 'planEntry', navn: 'Madplan', ico: '📅' },
+  { kind: 'menu', navn: 'Madplan-skabeloner', ico: '📋' },
+  { kind: 'shopItem', navn: 'Indkøbsliste', ico: '🛒' },
+  { kind: 'pantryItem', navn: 'Forråd', ico: '🏺' }
+];
+function wipeModal() {
+  const antal = k => K(k).length;
+  openModal(`<h2>🗑️ Ryd data</h2>
+    <p class="small muted">Vælg hvad der skal slettes. Det kan <b>ikke</b> fortrydes –
+      hverken brugere, kategorier eller andre indstillinger røres.</p>
+    <div style="margin:12px 0">
+      ${WIPE_KINDS.map(w => `<label class="chk" style="padding:5px 0">
+        <input type="checkbox" data-wk="${w.kind}">
+        <span>${w.ico} ${w.navn} <span class="muted small">(${antal(w.kind)})</span></span></label>`).join('')}
+    </div>
+    <div class="rowflex" style="margin-bottom:12px">
+      <button class="btn small" id="wipeAll">Markér alt</button>
+      <button class="btn small" id="wipeNone">Fjern markering</button>
+      <span style="flex:1"></span>
+      <button class="btn small" id="wipeBackup">⬇️ Tag backup først</button>
+    </div>
+    <label class="fld"><span>Skriv <b>KOKKERI</b> for at bekræfte</span>
+      <input id="wipeWord" autocomplete="off" placeholder="KOKKERI"></label>
+    <p class="small warn" id="wipeMsg" style="min-height:18px"></p>
+    <div class="actions">
+      <button class="btn" id="wipeCancel">Annullér</button>
+      <button class="btn danger" id="wipeGo" disabled>Slet permanent</button>
+    </div>`, m => {
+    const word = m.querySelector('#wipeWord');
+    const go = m.querySelector('#wipeGo');
+    const bokse = () => [...m.querySelectorAll('[data-wk]')];
+    const valgte = () => bokse().filter(b => b.checked).map(b => b.dataset.wk);
+    const opdater = () => {
+      const n = valgte().length;
+      const ordOk = word.value.trim().toUpperCase() === 'KOKKERI';
+      go.disabled = !n || !ordOk;
+      go.textContent = n ? `Slet ${valgte().reduce((a, k) => a + K(k).length, 0)} elementer permanent` : 'Slet permanent';
+      m.querySelector('#wipeMsg').textContent = !n ? 'Vælg mindst én datatype'
+        : (!ordOk ? 'Skriv KOKKERI for at låse op' : '');
+    };
+    bokse().forEach(b => b.onchange = opdater);
+    word.oninput = opdater;
+    m.querySelector('#wipeAll').onclick = () => { bokse().forEach(b => b.checked = true); opdater(); };
+    m.querySelector('#wipeNone').onclick = () => { bokse().forEach(b => b.checked = false); opdater(); };
+    m.querySelector('#wipeBackup').onclick = async () => {
+      const b = await api('/api/backup');
+      downloadFile('kokkeri-backup-' + isoDate() + '.json', JSON.stringify(b, null, 1), 'application/json');
+    };
+    m.querySelector('#wipeCancel').onclick = closeModal;
+    go.onclick = async () => {
+      const kinds = valgte();
+      go.disabled = true;
+      try {
+        const r = await api('/api/wipe', { body: { kinds, confirm: word.value.trim() } });
+        S.items = S.items.filter(it => !kinds.includes(it.kind));
+        reindex();
+        closeModal();
+        toast(`${r.deleted} elementer slettet`);
+        render();
+      } catch (e) {
+        m.querySelector('#wipeMsg').textContent = e.message;
+        go.disabled = false;
+      }
+    };
+    opdater();
+    word.focus();
+  });
 }
 
 /* start appen */

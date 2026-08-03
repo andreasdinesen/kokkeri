@@ -100,6 +100,8 @@ const q = {
     ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, data = excluded.data,
       updated_at = excluded.updated_at, deleted = excluded.deleted`),
   wipeItems: db.prepare('DELETE FROM items'),
+  deleteByKind: db.prepare('DELETE FROM items WHERE kind = ?'),
+  countByKind: db.prepare('SELECT COUNT(*) AS n FROM items WHERE kind = ? AND deleted = 0'),
   allSettings: db.prepare('SELECT key, value FROM settings'),
   getSetting: db.prepare('SELECT value FROM settings WHERE key = ?'),
   setSetting: db.prepare('INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
@@ -661,7 +663,10 @@ Findes der ingen opskrift, svar {"error":"ingen"}. Oversæt intet.`,
             ingredients: rec.ingredients || [], instructions: rec.instructions || [],
             prepMin: rec.prepMin || null, cookMin: rec.cookMin || null, totalMin: rec.totalMin || null,
             servings: rec.servings || null, yieldText: rec.yieldText || '',
-            category: '', tags: rec.keywords ? String(rec.keywords).split(',').map(t => t.trim()).filter(Boolean).slice(0, 6) : [],
+            /* serveren kender ikke brugerens kategoriliste - gem sidens egen
+             * kategori raat, saa frontenden kan mappe den (guessCategory) */
+            category: '', sourceCategory: rec.category || '',
+            tags: rec.keywords ? String(rec.keywords).split(',').map(t => t.trim()).filter(Boolean).slice(0, 6) : [],
             rating: 0, favorite: false, notes: '', imageRemote: !!rec.image,
             createdAt: new Date().toISOString()
           };
@@ -1370,6 +1375,27 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
         res.end(data);
       });
     }
+    /* ---- toem data (admin) ----
+     * Bekraeftelsesordet tjekkes OGSAA her - ikke kun i browseren - saa et
+     * fejlkald mod API'et ikke kan slette alt. Brugere og indstillinger
+     * (kategorier, AI-noegle, logo) roeres ikke. */
+    if (p === '/api/wipe' && req.method === 'POST') {
+      if (!user.is_admin) return err(res, 403, 'Kræver administrator-rettigheder');
+      if (String(body.confirm || '').trim().toUpperCase() !== 'KOKKERI') {
+        return err(res, 400, 'Skriv KOKKERI for at bekræfte');
+      }
+      const kinds = (Array.isArray(body.kinds) ? body.kinds : []).filter(k => KINDS.has(k));
+      if (!kinds.length) return err(res, 400, 'Vælg mindst én datatype');
+      let n = 0;
+      db.exec('BEGIN');
+      try {
+        for (const k of kinds) n += q.deleteByKind.run(k).changes || 0;
+        db.exec('COMMIT');
+      } catch (e) { db.exec('ROLLBACK'); throw e; }
+      console.log(`[wipe] ${user.username} slettede ${n} elementer (${kinds.join(', ')})`);
+      return send(res, 200, { deleted: n });
+    }
+
     if (p === '/api/restore' && req.method === 'POST') {
       if (!user.is_admin) return err(res, 403, 'Kræver administrator-rettigheder');
       const arr = Array.isArray(body.items) ? body.items : null;

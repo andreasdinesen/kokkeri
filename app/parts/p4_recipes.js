@@ -525,9 +525,11 @@ function importUrlModal() {
 }
 
 function openImportedRecipe(rec, image) {
-  /* gaet en kategori ud fra sidens egen kategori-tekst */
-  const cats = app().categories || [];
-  const catGuess = cats.find(c => normName(rec.category || '').includes(normName(c))) || '';
+  /* gaet en kategori ud fra sidens kategori-tekst, tags og titel */
+  const catGuess = guessCategory({
+    sourceCategory: rec.category || '', title: rec.title || '',
+    tags: rec.keywords ? String(rec.keywords).split(',') : []
+  });
   recipeModal(null, {
     title: rec.title || '',
     description: rec.description || '',

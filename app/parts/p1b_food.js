@@ -39,6 +39,63 @@ function convertRecipeToMetric(r) {
   r.instructions = (r.instructions || []).map(convertLineToMetric);
 }
 
+/* ---- gaet kategori paa en importeret opskrift ----
+ * Sidens egen kategori bruges foerst, men den passer sjaeldent til ens egen
+ * liste ("Baalmad", "Nem aftensmad" ...). Derfor ogsaa noegleord i titel og
+ * tags: "Gullaschsuppe" -> Suppe. Mest specifikke regler foerst, saa
+ * "Kartoffelsalat" bliver Salat og ikke Hovedret. */
+const CAT_RULES = [
+  ['Suppe', /suppe|soup\b/],
+  ['Salat', /salat|coleslaw/],
+  ['Kage & bagværk', /kage|brød|bolle|muffin|cookie|tærte|scone|croissant|cupcake|brownie|snegl|kringle|bagværk|kiks|vaffel|pandekag|klejne|marengs/],
+  ['Dessert', /dessert|sorbet|mousse|tiramisu|budding|kompot|trifli|panna cotta|trøffel|trøfler|creme brulee|fromage|isdessert/],
+  ['Morgenmad', /morgenmad|brunch|grød|havregr|müsli|granola|omelet|æggekage|smoothiebowl/],
+  ['Drikkevarer', /drink|smoothie|juice|cocktail|kaffe|\bte\b|saft|milkshake|lemonade|glögg|gløgg/],
+  ['Forret', /forret|tapas|canapé|snacks?\b/],
+  ['Tilbehør', /tilbehør|dressing|\bdip\b|pesto|salsa|marinade|syltede|remoulade|\bsauce\b|kompot|chutney|rødkål/],
+  ['Hovedret', /hovedret|aftensmad|middag|gryde|steg\b|pasta|spaghetti|lasagne|risotto|curry|burger|pizza|frikadell|wok\b|gratin|bøf|fisk|kylling|kød|tærte|ret\b/]
+];
+function guessCategory(rec) {
+  const cats = app().categories || [];
+  if (!cats.length) return '';
+  /* 1) sidens egen kategori mod brugerens liste. Sammenlign fra ordets START
+   * ("Supper" ~ "Suppe"), IKKE som fri substring - ellers ville sidens
+   * "Aftensmad" matche en kategori ved navn "Mad". Sider angiver ofte flere,
+   * adskilt af komma. */
+  const src = normName(rec.sourceCategory || rec.category || '');
+  for (const del of src.split(/[,/|·•]+/).map(s => s.trim()).filter(Boolean)) {
+    const match = cats.find(c => {
+      const n = normName(c);
+      return n.length >= 4 && (del === n || del.startsWith(n) || n.startsWith(del));
+    });
+    if (match) return match;
+  }
+  /* 2) noegleord i sidens kategori, tags og titel */
+  const tekst = normName([src, (rec.tags || []).join(' '), rec.title || ''].join(' '));
+  for (const [navn, re] of CAT_RULES) {
+    if (!re.test(tekst)) continue;
+    const n = normName(navn);
+    const match = cats.find(c => normName(c) === n) ||
+      cats.find(c => normName(c).includes(n.split(' ')[0]) || n.includes(normName(c)));
+    if (match) return match;
+  }
+  return '';
+}
+/* saet kategori paa importerede opskrifter, der mangler den. Hver opskrift
+ * proeves kun én gang (catChecked), saa et bevidst fjernet valg ikke kommer igen. */
+async function categorizeImported() {
+  const mangler = K('recipe').filter(r => !r.category && !r.catChecked && (r.url || r.sourceCategory));
+  if (!mangler.length) return 0;
+  let n = 0;
+  for (const r of mangler) {
+    const c = guessCategory(r);
+    if (c) { r.category = c; n++; }
+    r.catChecked = true;
+  }
+  await saveBulk(mangler);
+  return n;
+}
+
 /* ---- indkoebslistens afdelinger (regelbaseret; AI kan tage resten) ---- */
 const SHOP_SECTIONS = ['Frugt & grønt', 'Kød & fisk', 'Mejeri & køl', 'Frost', 'Brød', 'Kolonial', 'Krydderier', 'Drikkevarer', 'Andet'];
 const SECTION_RULES = [

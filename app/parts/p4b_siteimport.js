@@ -182,6 +182,7 @@ function startCrawlPolling() {
         S.items = items.items || [];
         reindex();
         render();
+        await categorizeImported();
         /* og hent billederne ned lokalt, lidt ad gangen */
         let rest = 1;
         while (rest > 0) rest = await localizeRemoteImages(6);

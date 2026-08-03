@@ -66,6 +66,17 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v10** (august 2026): **Kategorier på importerede opskrifter.** Masse-importen
+  satte dem aldrig (serveren kender ikke kategorilisten), og gætningen krævede,
+  at sidens kategoritekst indeholdt ens eget kategorinavn – men sider bruger
+  deres egne navne ("Aftensmad", "Bålmad", "Brød & Boller"). Nu gemmes sidens
+  kategori råt, og Kokkeri kigger også på titlen: "Gullaschsuppe" → Suppe.
+  Eksisterende opskrifter uden kategori udfyldes automatisk ved næste start
+  (kun ét forsøg pr. opskrift, så et fravalg respekteres).
+  Desuden **»Ryd data«** under Indstillinger (admin): vælg datatyper og skriv
+  KOKKERI for at låse sletningen op – ordet tjekkes også server-side.
+  Brugere og indstillinger bevares.
+
 - **v9** (august 2026): Rettet de klikbare tider i fremgangsmåden. »1,5 time«
   blev læst som **5 timer**, fordi kun heltal blev genkendt. Nu forstås
   decimaler (1,5), brøker (1½), sammensatte tider (»1 time og 30 minutter«) og
