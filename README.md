@@ -66,6 +66,21 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v22** (august 2026): **»Hvad kan jeg lave?« – find opskrifter ud fra de
+  råvarer, du har.** Nyt panel på Opskrifter: vælg fx *Kylling* og *Svampe*, og
+  de opskrifter der har begge, lægger sig øverst – resten følger efter, sorteret
+  efter hvor mange af dine råvarer de rammer. En linje fortæller løbende, hvor
+  mange der har dem alle, og hvor mange der har mindst én.
+  - Råvarerne vises med antal fra **dit eget bibliotek**, så listen følger med,
+    når det vokser, og tomme grupper skjules. Kød og fisk står først, derefter
+    grønt og kulhydrater, og basisvarer til sidst – man vælger sjældent
+    aftensmad ud fra, at man har mælk.
+  - Fritekstfeltet dækker alt det, der ikke har sin egen knap – fx *porrer*.
+  - Retter hvor råvaren kun optræder som **smagsgiver** tælles ikke med: en ret
+    med en terning kyllingebouillon er ikke en kyllingeret.
+  - Opslaget sker i dine egne opskrifter – ingen AI-nøgle, ingen ventetid, og
+    tallene passer.
+
 - **v21** (august 2026): **Masse-import virker nu på sites som arla.dk.**
   Nogle sites deler deres sitemap op i flere dele og giver delene adresser som
   `sitemap.xml?type=…`. Kokkeri afgjorde på filnavnet, om der var tale om et

@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 21;
+const APP_VERSION = 22;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -22,7 +22,7 @@ const S = {
   view: 'dash',
   viewArg: null,        // fx opskrift-id på detaljesiden
   weekStart: null,      // mandag i den viste madplan-uge (YYYY-MM-DD)
-  recFilter: { q: '', category: '', fav: false, sort: lsGet('kk_recsort', 'nyeste'), minStars: +lsGet('kk_recminstars', 0) || 0 },
+  recFilter: { q: '', category: '', fav: false, sort: lsGet('kk_recsort', 'nyeste'), minStars: +lsGet('kk_recminstars', 0) || 0, raavarer: [] },
   chat: [],             // AI-samtale (kun i hukommelsen)
   chatBusy: false,
   timers: [],           // [{id,label,totalMs,endsAt,remainMs,paused,ringing}]
@@ -303,8 +303,11 @@ function hydrateItems() {
       }
       reindex();
       S.hydrated = true;
-      /* tegn kun om, hvis brugeren soeger - saa kan traefferne i ingredienser naa med */
-      if (S.view === 'recipes' && S.recFilter && S.recFilter.q) render();
+      /* Tegn om, hvis noget paa siden afhaenger af ingredienserne: soegningen
+       * kigger i dem, og raavare-panelet kan ikke taelle uden dem. Ellers ville
+       * panelet blive staaende paa "Henter …", til brugeren selv roerte noget. */
+      const f = S.recFilter || {};
+      if (S.view === 'recipes' && (f.q || S.raaOpen || (f.raavarer || []).length)) render();
     } catch (e) {
       /* ikke kritisk: ensureFull() henter den enkelte opskrift ved behov */
     } finally { S._hydrating = null; }

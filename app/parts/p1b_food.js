@@ -45,15 +45,15 @@ function convertRecipeToMetric(r) {
  * tags: "Gullaschsuppe" -> Suppe. Mest specifikke regler foerst, saa
  * "Kartoffelsalat" bliver Salat og ikke Hovedret. */
 const CAT_RULES = [
-  ['Suppe', /suppe|soup\b/],
-  ['Salat', /salat|coleslaw/],
-  ['Kage & bagværk', /kage|brød|bolle|muffin|cookie|tærte|scone|croissant|cupcake|brownie|snegl|kringle|bagværk|kiks|vaffel|pandekag|klejne|marengs/],
-  ['Dessert', /dessert|sorbet|mousse|tiramisu|budding|kompot|trifli|panna cotta|trøffel|trøfler|creme brulee|fromage|isdessert/],
-  ['Morgenmad', /morgenmad|brunch|grød|havregr|müsli|granola|omelet|æggekage|smoothiebowl/],
-  ['Drikkevarer', /drink|smoothie|juice|cocktail|kaffe|\bte\b|saft|milkshake|lemonade|glögg|gløgg/],
-  ['Forret', /forret|tapas|canapé|snacks?\b/],
-  ['Tilbehør', /tilbehør|dressing|\bdip\b|pesto|salsa|marinade|syltede|remoulade|\bsauce\b|kompot|chutney|rødkål/],
-  ['Hovedret', /hovedret|aftensmad|middag|gryde|steg\b|pasta|spaghetti|lasagne|risotto|curry|burger|pizza|frikadell|wok\b|gratin|bøf|fisk|kylling|kød|tærte|ret\b/]
+  ['Suppe', /suppe|soup\b/, 2],
+  ['Salat', /salat|coleslaw/, 2],
+  ['Kage & bagværk', /kage|brød|bolle|muffin|cookie|tærte|scone|croissant|cupcake|brownie|snegl|kringle|bagværk|kiks|vaffel|pandekag|klejne|marengs/, 2],
+  ['Dessert', /dessert|sorbet|mousse|tiramisu|budding|kompot|trifli|panna cotta|trøffel|trøfler|creme brulee|fromage|isdessert/, 2],
+  ['Morgenmad', /morgenmad|brunch|grød|havregr|müsli|granola|omelet|æggekage|smoothiebowl/, 2],
+  ['Drikkevarer', /drink|smoothie|juice|cocktail|kaffe|\bte\b|saft|milkshake|lemonade|glögg|gløgg/, 2],
+  ['Forret', /forret|tapas|canapé|snacks?\b/, 2],
+  ['Tilbehør', /tilbehør|dressing|\bdip\b|pesto|salsa|marinade|syltede|remoulade|\bsauce\b|kompot|chutney|rødkål/, 2],
+  ['Hovedret', /hovedret|aftensmad|middag|gryde|steg\b|pasta|spaghetti|lasagne|risotto|curry|burger|pizza|frikadell|wok\b|gratin|bøf|fisk|kylling|kød|tærte|ret\b/, 2]
 ];
 function guessCategory(rec) {
   const cats = app().categories || [];
@@ -302,4 +302,90 @@ async function importPaprikaFile(file, onProgress) {
   }
   if (batch.length) await saveBulk(batch);
   return out;
+}
+
+/* ---------------- "Hvad kan jeg lave?" ----------------
+ * Opslag i BRUGERENS EGNE ingredienslister - ikke AI. Ingredienserne ligger
+ * allerede som tekst pr. opskrift, og et regelbaseret match rammer praecist:
+ * maalt paa 2539 opskrifter gav "kylling" 221 rigtige mod 7 falske, hvor ordet
+ * kun optraadte som kyllingebouillon (dem sorterer SMAGSORD fra).
+ *
+ * Grupperne er kuraterede regexer - samme moenster som SECTION_RULES og
+ * CAT_RULES - fordi danske sammensatte ord ikke kan klares med praefiks alene:
+ * "kylling" findes forrest i kyllingebryst, men "koed" staar BAGEST i oksekoed
+ * og hakkekoed. Taellingen og raekkefoelgen kommer derimod fra biblioteket, saa
+ * listen foelger med, naar det vokser, og tomme grupper skjules. */
+const SMAGSORD = /(bouillon|fond|suppeterning|krydderi|essens|aroma|ekstrakt)/;
+/* Tredje felt er RAEKKEFOELGEN: 1 = koed og fisk, 2 = groent og kulhydrat,
+ * 3 = basisvarer. Sorteres der kun efter antal, ligger "Floede & maelk" (853)
+ * og "Ost" (583) oeverst - men man vaelger sjaeldent en ret ud fra, at man har
+ * maelk. Inden for hver gruppe afgoer antallet i BRUGERENS bibliotek. */
+const RAAVARE_GRUPPER = [
+  ['Kylling',         /kylling|unghane|hønse|hane\b/, 1],
+  ['Hakket kød',      /hakket (okse|svine|kalve|lamme|kyllinge|kalkun)?kød|hakkekød|hakket (okse|svin|kalv|lam)|\bfars\b|oksefars|svinefars|kødfars/, 1],
+  ['Oksekød',         /oksekød|okseinderlår|culotte|entrecote|ribeye|bøf(?!fel)|okseklump|tyndstegsfilet|højreb/, 1],
+  ['Svinekød',        /svinekød|flæsk|nakkefilet|svinemørbrad|kotelet|bacon|skinke|pancetta/, 1],
+  ['Lam',             /lammekød|lammekølle|lammefilet|lammekotelet|\blam\b/, 1],
+  ['Kalkun',          /kalkun/, 1],
+  ['Fisk',            /laks|torsk|rødspætte|makrel|tun\b|sej\b|kulmule|hellefisk|fiskefilet|\bfisk\b/, 1],
+  ['Skaldyr',         /rejer|muslinger|krebse|hummer|blæksprutte|jomfruhummer/, 1],
+  ['Æg',              /\bæg\b|æggeblomme|æggehvide/, 1],
+  ['Pasta',           /pasta|spaghetti|penne|tagliatelle|lasagne|makaroni|fusilli|orzo/, 2],
+  ['Ris',             /\bris\b|risotto|jasminris|basmati|grødris/, 2],
+  ['Kartofler',       /kartof/, 2],
+  ['Bønner & linser', /kikærter|linser|kidneybønner|sorte bønner|hvide bønner|bønner/, 2],
+  ['Svampe',          /champignon|svampe|portobello|karljohan|shiitake/, 2],
+  ['Broccoli & kål',  /broccoli|blomkål|spidskål|hvidkål|rødkål|grønkål|rosenkål/, 2],
+  ['Tomater',         /tomat/, 2],
+  ['Squash & auberginer', /squash|zucchini|aubergine/, 2],
+  ['Spinat',          /spinat/, 2],
+  ['Ost',             /\bost\b|mozzarella|feta|parmesan|cheddar|flødeost/, 3],
+  ['Fløde & mælk',    /piskefløde|madlagningsfløde|\bfløde\b|\bmælk\b|kærnemælk|creme fraiche|cremefraiche/, 3]
+];
+const raaNorm = s => String(s || '').toLowerCase().replace(/[^a-zæøå0-9 ]/g, ' ').replace(/\s+/g, ' ');
+/* Fritekst bliver til et almindeligt delstrengs-match: paa dansk staar hovedordet
+ * tit sidst i et sammensat ord ("porre" i "forårsporrer"), saa praefiks duer ikke. */
+const raaFritRe = tekst => {
+  const t = raaNorm(tekst).trim();
+  return t.length < 3 ? null : new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+};
+
+/* Ingredienslinjerne uden sektions-overskrifter, normaliseret. Caches pr.
+ * opskrift, saa 2539 opskrifter x 20 regexer ikke koeres ved hver render. */
+function raavareLinjer(r) {
+  const noegle = r.id + '|' + (r.updatedAt || '');
+  if (!S._raaLinjer) S._raaLinjer = new Map();
+  let v = S._raaLinjer.get(noegle);
+  if (!v) {
+    v = (r.ingredients || []).filter(l => !/^##/.test(l)).map(raaNorm);
+    S._raaLinjer.set(noegle, v);
+  }
+  return v;
+}
+/* Matcher opskriften raavaren? Linjer hvor ordet KUN optraeder som smagsgiver
+ * (kyllingebouillon, oksefond) taeller ikke - retten er ikke en kyllingeret. */
+function harRaavare(r, re) {
+  const traef = raavareLinjer(r).filter(l => re.test(l));
+  return traef.length > 0 && !traef.every(l => SMAGSORD.test(l));
+}
+/* Hvor mange af de valgte raavarer har opskriften? */
+function raavareTraef(r, valgte) {
+  let n = 0;
+  for (const v of valgte) if (v.re && harRaavare(r, v.re)) n++;
+  return n;
+}
+/* Grupper med antal, stoerste foerst. Tomme grupper vises ikke. */
+function raavareListe() {
+  const rec = K('recipe');
+  return RAAVARE_GRUPPER
+    .map(([navn, re, rang]) => ({ navn, re, rang: rang || 2, n: rec.reduce((a, r) => a + (harRaavare(r, re) ? 1 : 0), 0) }))
+    .filter(g => g.n > 0)
+    .sort((a, b) => a.rang - b.rang || b.n - a.n);
+}
+/* De valgte (grupper + fritekst) som {navn, re}-objekter */
+function valgteRaavarer() {
+  return (S.recFilter.raavarer || []).map(navn => {
+    const g = RAAVARE_GRUPPER.find(x => x[0] === navn);
+    return { navn, re: g ? g[1] : raaFritRe(navn) };
+  }).filter(v => v.re);
 }

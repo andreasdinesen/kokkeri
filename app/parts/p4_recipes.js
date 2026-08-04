@@ -63,6 +63,76 @@ function bindRecipeCards() {
   $$('.reccard[data-rec]').forEach(c => c.onclick = () => goto('recipeDetail', c.dataset.rec));
 }
 
+/* ---------------- "Hvad kan jeg lave?" ----------------
+ * Raavare-chips bygget af biblioteket selv (se raavareListe() i p1b). Tallene
+ * caches: 20 grupper x tusindvis af opskrifter maa ikke koeres ved hver render. */
+function raavareListeCached() {
+  const noegle = K('recipe').length + '|' + (S.hydrated ? 1 : 0);
+  if (!S._raaListe || S._raaListeNoegle !== noegle) {
+    S._raaListe = raavareListe();
+    S._raaListeNoegle = noegle;
+  }
+  return S._raaListe;
+}
+function raavarePanelHtml(valgte, medAlle, antal) {
+  const valgtNavne = new Set(S.recFilter.raavarer || []);
+  const aaben = valgtNavne.size > 0 || S.raaOpen;
+  /* Ingredienserne kommer foerst med, naar hydreringen er faerdig (login henter
+   * kun kort-felterne) - ellers ville alle grupper staa med 0. */
+  const indhold = !S.hydrated
+    ? '<p class="muted small" style="margin:8px 0 0">Henter opskrifternes ingredienser …</p>'
+    : `<div class="rowflex" style="margin-top:10px">
+        ${raavareListeCached().map(g => `<span class="chip chipbtn${valgtNavne.has(g.navn) ? ' sel' : ''}" data-raa="${esc(g.navn)}">
+          ${esc(g.navn)} <span class="muted">${g.n}</span></span>`).join('')}
+        ${[...valgtNavne].filter(n => !RAAVARE_GRUPPER.some(g => g[0] === n))
+          .map(n => `<span class="chip chipbtn sel" data-raa="${esc(n)}">${esc(n)} ✕</span>`).join('')}
+      </div>
+      <div class="rowflex" style="margin-top:10px">
+        <input id="raaFri" placeholder="anden råvare, fx porrer …" style="max-width:220px">
+        <button class="btn small" id="raaAdd">Tilføj</button>
+        ${valgtNavne.size ? '<button class="btn small" id="raaRyd">Ryd valg</button>' : ''}
+      </div>
+      ${valgte.length ? `<p class="small" style="margin:10px 0 0">
+        <b>${medAlle}</b> ${medAlle === 1 ? 'opskrift har' : 'opskrifter har'} alle ${valgte.length}
+        ${valgte.length === 1 ? 'råvare' : 'råvarer'} · <b>${antal}</b> har mindst én.
+        ${medAlle ? '' : ' <span class="muted">Prøv at fjerne en råvare.</span>'}</p>` : ''}`;
+  return `<details class="panelbox raabox"${aaben ? ' open' : ''} id="raaBox" style="margin:12px 0 0;padding:12px 14px">
+    <summary style="cursor:pointer;font-weight:600">🍳 Hvad kan jeg lave?
+      ${valgtNavne.size ? `<span class="chip on">${valgtNavne.size} valgt</span>`
+        : '<span class="muted small" style="font-weight:400">– vælg de råvarer du har</span>'}</summary>
+    ${indhold}</details>`;
+}
+function bindRaavarePanel() {
+  const box = $('#raaBox');
+  if (!box) return;
+  box.ontoggle = () => {
+    S.raaOpen = box.open;
+    /* ingredienserne skal vaere hentet, foer chippene kan taelle rigtigt */
+    if (box.open && !S.hydrated) hydrateItems().then(() => { if (S.view === 'recipes') render(); });
+  };
+  const vaelg = navn => {
+    const nu = new Set(S.recFilter.raavarer || []);
+    nu.has(navn) ? nu.delete(navn) : nu.add(navn);
+    S.recFilter.raavarer = [...nu];
+    S.recLimit = REC_SIDE;
+    S.raaOpen = true;
+    render();
+  };
+  $$('[data-raa]').forEach(c => c.onclick = () => vaelg(c.dataset.raa));
+  const fri = $('#raaFri'), add = $('#raaAdd');
+  if (add) {
+    const tilfoej = () => {
+      const t = fri.value.trim();
+      if (t.length < 3) return toast('Skriv mindst 3 bogstaver', true);
+      vaelg(t);
+    };
+    add.onclick = tilfoej;
+    fri.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); tilfoej(); } };
+  }
+  const ryd = $('#raaRyd');
+  if (ryd) ryd.onclick = () => { S.recFilter.raavarer = []; S.recLimit = REC_SIDE; render(); };
+}
+
 RENDER.recipes = () => {
   const f = S.recFilter;
   const cats = app().categories || [];
@@ -79,7 +149,19 @@ RENDER.recipes = () => {
       normName((r.ingredients || []).join(' ')).includes(q));
   }
   if (f.minStars) list = list.filter(r => (r.rating || 0) >= f.minStars);
-  SORTERINGER[f.sort] ? list.sort(SORTERINGER[f.sort].fn) : list.sort(SORTERINGER.nyeste.fn);
+  /* "Hvad kan jeg lave?": behold opskrifter med mindst én af raavarerne, og
+   * laeg dem med FLEST traef oeverst - den valgte sortering afgoer inden for
+   * hver gruppe. Ingredienserne findes kun paa fuldt hentede opskrifter, saa
+   * bindingen nedenfor sikrer, at hydreringen er faerdig, foer man kan vaelge. */
+  const raa = valgteRaavarer();
+  const traef = new Map();
+  if (raa.length) {
+    for (const r of list) traef.set(r.id, raavareTraef(r, raa));
+    list = list.filter(r => traef.get(r.id) > 0);
+  }
+  const sorter = SORTERINGER[f.sort] ? SORTERINGER[f.sort].fn : SORTERINGER.nyeste.fn;
+  list.sort(raa.length ? (a, b) => (traef.get(b.id) - traef.get(a.id)) || sorter(a, b) : sorter);
+  const medAlle = raa.length ? list.filter(r => traef.get(r.id) === raa.length).length : 0;
   const udenKat = K('recipe').filter(r => !r.category).length;
   /* Vis kun et vindue ad gangen: 5000 kort paa én gang er 5000 DOM-noder,
    * og gridet bygges forfra ved hvert tastetryk i soegefeltet. */
@@ -103,6 +185,7 @@ RENDER.recipes = () => {
     ${udenKat ? `<span class="chip chipbtn${f.noCat ? ' sel' : ''}" id="recNoCat"
       title="Opskrifter der mangler en kategori">🏷️ Uden kategori (${udenKat})</span>` : ''}
   </div>
+  ${raavarePanelHtml(raa, medAlle, list.length)}
   ${f.noCat ? `<p class="small muted" style="margin:10px 0 0">
     Vælg en kategori direkte på kortet – den gemmes med det samme.</p>` : ''}
   <div id="crawlBanner">${crawlBannerHtml()}</div>
@@ -150,6 +233,7 @@ RENDER.recipes_bind = () => {
     }
   }
   bindStarPickers();
+  bindRaavarePanel();
   /* saet kategori direkte fra kortet - ét klik pr. opskrift i stedet for
    * at aabne og gemme hver enkelt */
   $$('[data-katfor]').forEach(sel => {
