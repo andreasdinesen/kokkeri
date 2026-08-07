@@ -66,6 +66,19 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v24** (august 2026): **En stoppet masse-import forsvinder ikke længere
+  sporløst.** Afviser et site hentningen, stopper Kokkeri – men indtil nu blev
+  statusfeltet kun vist, mens en import kørte, så beskeden om hvorfor forsvandt
+  i samme øjeblik. Man fik »Importen er startet« og hørte aldrig mere.
+  - Et stoppet job med en fejl vises nu som en tydelig besked med, hvor langt
+    den nåede, og en OK-knap. Beskeden overlever en genindlæsning.
+  - Teksten skelner nu mellem, at **din adgang** ikke virker længere, og at
+    **sitet blokerer for automatisk hentning** – før stod der »cookien virker
+    ikke«, også når man aldrig havde brugt en.
+  - **Én afvist side stopper ikke længere hele importen.** Der skal tre
+    afvisninger i træk til, så en enkelt beskyttet side ikke kan dræbe en
+    import af tusindvis af opskrifter.
+
 - **v23** (august 2026): **Overblik over de sites, du har hentet fra.** Øverst i
   masse-import-vinduet står nu hvert site med antal opskrifter og datoen for
   seneste hentning – og en **»Hent nye«**-knap, der starter søgningen med det

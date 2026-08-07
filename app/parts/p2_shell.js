@@ -264,8 +264,12 @@ async function enterApp() {
   startTimerEngine();
   /* koerer der en site-import (startet foer browseren blev lukket)? vis den igen */
   api('/api/site/crawl/status').then(st => {
-    if (st && st.running) { S.crawl = st; startCrawlPolling(); render(); }
+    /* saettes ogsaa naar jobbet IKKE koerer: er det stoppet med en fejl, skal
+     * banneret kunne vise den - ogsaa efter en genindlaesning */
+    S.crawl = st || null;
+    if (st && st.running) { startCrawlPolling(); render(); }
     else {
+      if (st && st.error) render();
       /* efterslaeb fra et tidligere crawl: manglende kategorier og billeder */
       categorizeImported().then(n => { if (n) render(); });
       localizeRemoteImages(6);

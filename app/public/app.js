@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 23;
+const APP_VERSION = 24;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -1114,8 +1114,12 @@ async function enterApp() {
   startTimerEngine();
   /* koerer der en site-import (startet foer browseren blev lukket)? vis den igen */
   api('/api/site/crawl/status').then(st => {
-    if (st && st.running) { S.crawl = st; startCrawlPolling(); render(); }
+    /* saettes ogsaa naar jobbet IKKE koerer: er det stoppet med en fejl, skal
+     * banneret kunne vise den - ogsaa efter en genindlaesning */
+    S.crawl = st || null;
+    if (st && st.running) { startCrawlPolling(); render(); }
     else {
+      if (st && st.error) render();
       /* efterslaeb fra et tidligere crawl: manglende kategorier og billeder */
       categorizeImported().then(n => { if (n) render(); });
       localizeRemoteImages(6);
@@ -2474,6 +2478,19 @@ function refreshCrawlBanner() {
 /* banner oeverst paa Opskrifter-siden, mens en import koerer */
 function crawlBannerHtml() {
   const c = S.crawl;
+  /* En STOPPET import med en fejl skal stadig ses. Foer viste banneret kun
+   * koerende jobs, saa en import der blev afvist paa foerste side forsvandt
+   * sporloest - brugeren fik "importen er startet" og hoerte aldrig mere. */
+  if (c && !c.running && c.error) {
+    return `<div class="panelbox" style="margin:0 0 14px;border-color:var(--red)">
+      <div class="rowflex"><b class="warn">📚 Importen blev stoppet</b>
+        <span style="flex:1"></span>
+        <button class="btn small" id="crawlClear">OK</button></div>
+      <p class="small" style="margin:8px 0 0">${esc(c.error)}</p>
+      ${c.done ? `<p class="small muted" style="margin:6px 0 0">Nåede ${c.done} af ${c.total} sider${
+        c.imported ? ` · ${c.imported} nye opskrifter blev hentet` : ''}.</p>` : ''}
+    </div>`;
+  }
   if (!c || !c.running) return '';
   const pct = c.total ? Math.round((c.done / c.total) * 100) : 0;
   return `<div class="panelbox" style="margin:0 0 14px">
@@ -2486,6 +2503,11 @@ function crawlBannerHtml() {
   </div>`;
 }
 function bindCrawlBanner() {
+  const clear = $('#crawlClear');
+  if (clear) clear.onclick = async () => {
+    try { S.crawl = await api('/api/site/crawl/clear', { body: {} }); } catch (e) { S.crawl = null; }
+    render();
+  };
   const b = $('#crawlStop');
   if (b) b.onclick = async () => {
     await api('/api/site/crawl/stop', { body: {} });

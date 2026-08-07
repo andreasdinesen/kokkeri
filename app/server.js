@@ -730,15 +730,30 @@ async function runCrawlJob() {
     .map(r => { try { return String(JSON.parse(r.data).title || '').toLowerCase().replace(/\s+/g, ' ').trim(); } catch (e) { return ''; } })
     .filter(Boolean));
 
+  let afvist = 0;                 // 401/403 i traek - se nedenfor
   for (const url of crawlJob.urls) {
     if (crawlJob.stop) break;
     crawlJob.current = url;
     try {
       const r = await fetch(url, { headers, signal: AbortSignal.timeout(25000), redirect: 'follow' });
       if (r.status === 401 || r.status === 403) {
-        crawlJob.error = 'Adgang nægtet (' + r.status + ') – cookien virker ikke længere. Stoppet.';
-        break;
+        /* Ét afvist svar stopper ikke hele jobbet - en enkelt side kan vaere
+         * beskyttet, uden at resten er det. Men afviser sitet tre i traek (fx
+         * bot-beskyttelse), er der ingen grund til at hamre videre paa det. */
+        afvist++;
+        crawlJob.failed++;
+        crawlJob.done++;
+        if (afvist >= 3) {
+          crawlJob.error = crawlJob.cookie
+            ? `${crawlJob.site} afviste hentningen (${r.status}) – din cookie virker ikke længere. Stoppet efter ${crawlJob.done} sider.`
+            : `${crawlJob.site} afviser automatisk hentning (${r.status}) – sitet blokerer for robotter. ` +
+              'Prøv »Importér fra URL« på en enkelt opskrift ad gangen, eller indsæt siden under »Indsat HTML«.';
+          break;
+        }
+        await new Promise(r2 => setTimeout(r2, 1100 + Math.random() * 400));
+        continue;
       }
+      afvist = 0;
       if (!r.ok) { crawlJob.failed++; }
       else {
         const html = (await r.text()).slice(0, 8e6);
@@ -1391,6 +1406,13 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
     }
     if (p === '/api/site/crawl/stop' && req.method === 'POST') {
       crawlJob.stop = true;
+      return send(res, 200, crawlStatus());
+    }
+    /* Kvittér for en fejlbesked, saa banneret kan forsvinde igen. Fejlen bor i
+     * hukommelsen ved siden af jobbet - uden det her ville den blive vist,
+     * indtil serveren blev genstartet. */
+    if (p === '/api/site/crawl/clear' && req.method === 'POST') {
+      if (!crawlJob.running) { crawlJob.error = ''; crawlJob.site = ''; crawlJob.total = 0; crawlJob.done = 0; }
       return send(res, 200, crawlStatus());
     }
     if (p === '/api/site/crawl/start' && req.method === 'POST') {
