@@ -243,6 +243,23 @@ label.chk { display: flex; align-items: center; gap: 8px; font-size: 14px; color
 /* "Vis flere" under gridet - gridet tegner kun et vindue ad gangen */
 .loadmore { display: flex; justify-content: center; margin: 18px 0 4px; }
 
+/* "Hentet fra tidligere" i masse-importen. Bevidst en LISTE og ikke en tabel:
+ * i en tabel havnede "Hent nye"-knappen uden for skaermen paa en telefon, fordi
+ * .tablewrap scroller vandret - og saa var selve handlingen skjult. */
+.kilder { margin-top: 8px; }
+.kilde {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px;
+  padding: 9px 0; border-bottom: 1px solid var(--border);
+}
+.kilde:last-child { border-bottom: 0; }
+.kilde .kildenavn { flex: 1 1 190px; min-width: 0; }
+.kilde .kildetal { flex: none; }
+.kilde .btn { margin-left: auto; flex: none; }
+@media (max-width: 620px) {
+  /* navnet paa egen linje, tal og knap side om side under det */
+  .kilde .kildenavn { flex: 1 1 100%; }
+}
+
 /* opskrift-detalje */
 .recdetail { display: grid; grid-template-columns: minmax(260px, 340px) 1fr; gap: 22px; align-items: start; }
 .recdetail .recphoto { border-radius: 12px; overflow: hidden; border: 1px solid var(--border); }

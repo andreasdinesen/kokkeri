@@ -66,6 +66,18 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v23** (august 2026): **Overblik over de sites, du har hentet fra.** Øverst i
+  masse-import-vinduet står nu hvert site med antal opskrifter og datoen for
+  seneste hentning – og en **»Hent nye«**-knap, der starter søgningen med det
+  samme. Sider, du allerede har hentet, springes over, så knappen henter kun
+  det, der er kommet til siden sidst.
+  - Metode og mønster **huskes pr. site**, så »Hent nye« rammer rigtigt – uden
+    det skulle man selv huske, at fx arla.dk kræver mønsteret `/opskrifter/`.
+    Mønsteret vises som en lille undertekst på linjen.
+  - Listen udledes af opskrifternes egen kilde-adresse i stedet for en separat
+    historik. Så viser den altid, hvad der faktisk ligger i biblioteket – også
+    efter en oprydning eller en gendannet backup.
+
 - **v22** (august 2026): **»Hvad kan jeg lave?« – find opskrifter ud fra de
   råvarer, du har.** Nyt panel på Opskrifter: vælg fx *Kylling* og *Svampe*, og
   de opskrifter der har begge, lægger sig øverst – resten følger efter, sorteret

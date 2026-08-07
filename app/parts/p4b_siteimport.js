@@ -33,12 +33,65 @@ function parseCurl(text) {
   return out;
 }
 
+/* ---------------- hvor er opskrifterne hentet fra? ----------------
+ * Udledt af opskrifternes egen kilde-URL. Der foeres bevidst ikke en separat
+ * import-historik: den ville kunne komme ud af trit med det, der faktisk ligger
+ * i biblioteket (slettede opskrifter, gendannet backup), og listen her skal
+ * vise virkeligheden. "Sidst hentet" er nyeste createdAt for sitet.
+ * Kraever ikke hydrering - url og createdAt er med i kort-felterne. */
+function importKilder() {
+  const pr = new Map();
+  for (const r of K('recipe')) {
+    if (!r.url) continue;
+    let u;
+    try { u = new URL(r.url); } catch (e) { continue; }
+    const vaert = u.hostname.replace(/^www\./, '');
+    const k = pr.get(vaert) || { vaert, origin: u.origin, n: 0, sidst: '' };
+    k.n++;
+    const d = r.createdAt || '';
+    if (d > k.sidst) k.sidst = d;
+    pr.set(vaert, k);
+  }
+  return [...pr.values()].sort((a, b) => b.n - a.n);
+}
+/* Sidste valg af metode + moenster pr. site, saa "Hent nye" rammer rigtigt.
+ * Uden det skulle man huske, at arla.dk kraever moensteret /opskrifter/. */
+function siHuskLaes() {
+  try { return JSON.parse(lsGet('kk_siteimport', '{}')) || {}; } catch (e) { return {}; }
+}
+function siHuskGem(vaert, data) {
+  const alle = siHuskLaes();
+  alle[vaert] = data;
+  lsSet('kk_siteimport', JSON.stringify(alle));
+}
+function importKilderHtml() {
+  const kilder = importKilder();
+  if (!kilder.length) return '';
+  const husk = siHuskLaes();
+  return `<details class="panelbox" open style="margin:12px 0;padding:10px 12px">
+    <summary style="cursor:pointer;font-weight:600">📚 Hentet fra tidligere
+      <span class="muted small" style="font-weight:400">– ${kilder.length} ${kilder.length === 1 ? 'site' : 'sites'}</span></summary>
+    <div class="kilder">${kilder.slice(0, 15).map(k => `<div class="kilde">
+      <div class="kildenavn"><b>${esc(k.vaert)}</b>${husk[k.vaert] && husk[k.vaert].pattern
+        ? ` <span class="muted small">mønster: ${esc(husk[k.vaert].pattern)}</span>` : ''}</div>
+      <div class="kildetal small muted"><span class="mono">${k.n}</span>
+        ${k.n === 1 ? 'opskrift' : 'opskrifter'}${k.sidst ? ' · sidst ' + esc(fmtDate(k.sidst.slice(0, 10))) : ''}</div>
+      <button class="btn small" data-hentnye="${esc(k.origin)}" data-vaert="${esc(k.vaert)}"
+        title="Søg efter nye opskrifter på ${esc(k.vaert)}">Hent nye</button>
+    </div>`).join('')}</div>
+    <p class="small muted" style="margin:8px 0 0">Sider, du allerede har hentet, springes over – så
+      »Hent nye« henter kun det, der er kommet til.</p>
+  </details>`;
+}
+
 function siteImportModal() {
   SI.urls = [];
   openModal(`<h2>📚 Masse-import fra et site</h2>
     <p class="small muted">Kokkeri finder opskrifterne og henter dem i baggrunden – du kan roligt
     lukke vinduet undervejs. Offentlige sider kræver ingenting; ligger opskrifterne bag et
     abonnement, indsætter du din egen adgang under »Login-adgang«.</p>
+
+    ${importKilderHtml()}
 
     <div class="formgrid" style="grid-template-columns:2fr 1fr">
       <label class="fld"><span>Adresse</span>
@@ -81,6 +134,15 @@ function siteImportModal() {
     const result = m.querySelector('#siResult');
     m.querySelector('#siClose').onclick = closeModal;
     m.querySelector('#siUrl').focus();
+
+    /* "Hent nye" ud for et kendt site: fyld felterne med sidste valg og soeg */
+    m.querySelectorAll('[data-hentnye]').forEach(b => b.onclick = () => {
+      const husket = siHuskLaes()[b.dataset.vaert] || {};
+      m.querySelector('#siUrl').value = husket.url || b.dataset.hentnye;
+      if (husket.mode) m.querySelector('#siMode').value = husket.mode;
+      m.querySelector('#siPattern').value = husket.pattern || '';
+      m.querySelector('#siFind').click();
+    });
 
     const curl = m.querySelector('#siCurl');
     curl.onchange = curl.onblur = () => {
@@ -127,6 +189,13 @@ function siteImportModal() {
         ].filter(Boolean));
         SI.urls = fundne.filter(u => !kendte.has(normUrlFront(u)));
         const alleredeSet = fundne.length - SI.urls.length;
+        /* husk metode + moenster til "Hent nye" naeste gang */
+        try {
+          siHuskGem(new URL(url).hostname.replace(/^www\./, ''), {
+            url, mode: m.querySelector('#siMode').value,
+            pattern: m.querySelector('#siPattern').value.trim()
+          });
+        } catch (e) {}
         if (!SI.urls.length) {
           status.innerHTML = fundne.length
             ? `Fandt <b>${fundne.length}</b> sider – dem har du <b>alle</b> hentet før. ` +
