@@ -304,6 +304,24 @@ async function importPaprikaFile(file, onProgress) {
   return out;
 }
 
+/* ---------------- kilde (grunddomaene) ----------------
+ * Kun vaerten uden "www." - ikke hele adressen. Bruges baade til filteret paa
+ * Opskrifter og til oversigten i masse-importen. */
+function recipeHost(r) {
+  if (!r || !r.url) return '';
+  try { return new URL(r.url).hostname.replace(/^www\./, ''); } catch (e) { return ''; }
+}
+/* Domaener med antal, stoerste foerst. Regnes over hele biblioteket, saa tallet
+ * er "hvor mange har jeg herfra", ikke "hvor mange matcher de oevrige filtre". */
+function kildeListe() {
+  const pr = new Map();
+  for (const r of K('recipe')) {
+    const h = recipeHost(r);
+    if (h) pr.set(h, (pr.get(h) || 0) + 1);
+  }
+  return [...pr.entries()].map(([vaert, n]) => ({ vaert, n })).sort((a, b) => b.n - a.n);
+}
+
 /* ---------------- "Hvad kan jeg lave?" ----------------
  * Opslag i BRUGERENS EGNE ingredienslister - ikke AI. Ingredienserne ligger
  * allerede som tekst pr. opskrift, og et regelbaseret match rammer praecist:

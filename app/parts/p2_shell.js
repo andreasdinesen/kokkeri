@@ -134,6 +134,15 @@ function openPalette() {
   let sel = 0, shown = [];
 
   const close = () => wrap.remove();
+  /* Flytter KUN markeringen. Foer gentegnede baade hover og piletaster hele
+   * listen med innerHTML - og et element, der udskiftes mellem museknappen ned
+   * og op, udloeser aldrig et klik. Paa en touch-skaerm sker det hver gang,
+   * fordi browseren sender mouseover lige foer klikket. */
+  const marker = () => {
+    const el = list.querySelectorAll('.palitem');
+    el.forEach((e, i) => e.classList.toggle('sel', i === sel));
+    if (el[sel]) el[sel].scrollIntoView({ block: 'nearest' });
+  };
   const draw = () => {
     const q = normName(input.value);
     shown = paletteItems().filter(it => !q || normName(it.label).includes(q)).slice(0, 40);
@@ -142,17 +151,29 @@ function openPalette() {
       <div class="palitem${i === sel ? ' sel' : ''}" data-i="${i}">
         <span class="ico">${it.ico}</span><span>${esc(it.label)}</span><span class="hint">${it.hint}</span>
       </div>`).join('') : '<div class="palempty">Ingen resultater</div>';
-    list.querySelectorAll('.palitem').forEach(el => {
-      el.onmouseenter = () => { sel = +el.dataset.i; draw(); };
-      el.onclick = () => { const it = shown[+el.dataset.i]; close(); it.run(); };
-    });
-    const selEl = list.querySelector('.palitem.sel');
-    if (selEl) selEl.scrollIntoView({ block: 'nearest' });
+    marker();
   };
+  /* Delegeret paa listen, ikke paa hvert element: beholderen overlever en
+   * gentegning, saa klikket kan ikke gaa tabt. mouseover bobler (mouseenter
+   * goer ikke), derfor den. */
+  list.addEventListener('mouseover', e => {
+    const el = e.target.closest('.palitem');
+    if (!el) return;
+    sel = +el.dataset.i;
+    marker();
+  });
+  list.addEventListener('click', e => {
+    const el = e.target.closest('.palitem');
+    if (!el) return;
+    const it = shown[+el.dataset.i];
+    if (!it) return;
+    close();
+    it.run();
+  });
   input.oninput = () => { sel = 0; draw(); };
   input.onkeydown = e => {
-    if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(sel + 1, shown.length - 1); draw(); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(sel - 1, 0); draw(); }
+    if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(sel + 1, shown.length - 1); marker(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(sel - 1, 0); marker(); }
     else if (e.key === 'Enter') { e.preventDefault(); if (shown[sel]) { close(); shown[sel].run(); } }
     else if (e.key === 'Escape') close();
   };

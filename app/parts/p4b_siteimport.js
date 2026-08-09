@@ -42,10 +42,10 @@ function parseCurl(text) {
 function importKilder() {
   const pr = new Map();
   for (const r of K('recipe')) {
-    if (!r.url) continue;
+    const vaert = recipeHost(r);          // samme grunddomaene som kilde-filteret
+    if (!vaert) continue;
     let u;
     try { u = new URL(r.url); } catch (e) { continue; }
-    const vaert = u.hostname.replace(/^www\./, '');
     const k = pr.get(vaert) || { vaert, origin: u.origin, n: 0, sidst: '' };
     k.n++;
     const d = r.createdAt || '';

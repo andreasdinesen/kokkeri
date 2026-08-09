@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 24;
+const APP_VERSION = 25;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -22,7 +22,10 @@ const S = {
   view: 'dash',
   viewArg: null,        // fx opskrift-id på detaljesiden
   weekStart: null,      // mandag i den viste madplan-uge (YYYY-MM-DD)
-  recFilter: { q: '', category: '', fav: false, sort: lsGet('kk_recsort', 'nyeste'), minStars: +lsGet('kk_recminstars', 0) || 0, raavarer: [] },
+  recFilter: { q: '', category: '', fav: false, sort: lsGet('kk_recsort', 'nyeste'), minStars: +lsGet('kk_recminstars', 0) || 0, raavarer: [], kilde: '' },
+  /* undefined = ikke valgt endnu; filter-panelet starter da aabent paa en stor
+   * skaerm og lukket paa en telefon */
+  filterOpen: lsGet('kk_filteropen', '') === '' ? undefined : lsGet('kk_filteropen', '') === '1',
   chat: [],             // AI-samtale (kun i hukommelsen)
   chatBusy: false,
   timers: [],           // [{id,label,totalMs,endsAt,remainMs,paused,ringing}]
@@ -762,6 +765,24 @@ async function importPaprikaFile(file, onProgress) {
   return out;
 }
 
+/* ---------------- kilde (grunddomaene) ----------------
+ * Kun vaerten uden "www." - ikke hele adressen. Bruges baade til filteret paa
+ * Opskrifter og til oversigten i masse-importen. */
+function recipeHost(r) {
+  if (!r || !r.url) return '';
+  try { return new URL(r.url).hostname.replace(/^www\./, ''); } catch (e) { return ''; }
+}
+/* Domaener med antal, stoerste foerst. Regnes over hele biblioteket, saa tallet
+ * er "hvor mange har jeg herfra", ikke "hvor mange matcher de oevrige filtre". */
+function kildeListe() {
+  const pr = new Map();
+  for (const r of K('recipe')) {
+    const h = recipeHost(r);
+    if (h) pr.set(h, (pr.get(h) || 0) + 1);
+  }
+  return [...pr.entries()].map(([vaert, n]) => ({ vaert, n })).sort((a, b) => b.n - a.n);
+}
+
 /* ---------------- "Hvad kan jeg lave?" ----------------
  * Opslag i BRUGERENS EGNE ingredienslister - ikke AI. Ingredienserne ligger
  * allerede som tekst pr. opskrift, og et regelbaseret match rammer praecist:
@@ -984,6 +1005,15 @@ function openPalette() {
   let sel = 0, shown = [];
 
   const close = () => wrap.remove();
+  /* Flytter KUN markeringen. Foer gentegnede baade hover og piletaster hele
+   * listen med innerHTML - og et element, der udskiftes mellem museknappen ned
+   * og op, udloeser aldrig et klik. Paa en touch-skaerm sker det hver gang,
+   * fordi browseren sender mouseover lige foer klikket. */
+  const marker = () => {
+    const el = list.querySelectorAll('.palitem');
+    el.forEach((e, i) => e.classList.toggle('sel', i === sel));
+    if (el[sel]) el[sel].scrollIntoView({ block: 'nearest' });
+  };
   const draw = () => {
     const q = normName(input.value);
     shown = paletteItems().filter(it => !q || normName(it.label).includes(q)).slice(0, 40);
@@ -992,17 +1022,29 @@ function openPalette() {
       <div class="palitem${i === sel ? ' sel' : ''}" data-i="${i}">
         <span class="ico">${it.ico}</span><span>${esc(it.label)}</span><span class="hint">${it.hint}</span>
       </div>`).join('') : '<div class="palempty">Ingen resultater</div>';
-    list.querySelectorAll('.palitem').forEach(el => {
-      el.onmouseenter = () => { sel = +el.dataset.i; draw(); };
-      el.onclick = () => { const it = shown[+el.dataset.i]; close(); it.run(); };
-    });
-    const selEl = list.querySelector('.palitem.sel');
-    if (selEl) selEl.scrollIntoView({ block: 'nearest' });
+    marker();
   };
+  /* Delegeret paa listen, ikke paa hvert element: beholderen overlever en
+   * gentegning, saa klikket kan ikke gaa tabt. mouseover bobler (mouseenter
+   * goer ikke), derfor den. */
+  list.addEventListener('mouseover', e => {
+    const el = e.target.closest('.palitem');
+    if (!el) return;
+    sel = +el.dataset.i;
+    marker();
+  });
+  list.addEventListener('click', e => {
+    const el = e.target.closest('.palitem');
+    if (!el) return;
+    const it = shown[+el.dataset.i];
+    if (!it) return;
+    close();
+    it.run();
+  });
   input.oninput = () => { sel = 0; draw(); };
   input.onkeydown = e => {
-    if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(sel + 1, shown.length - 1); draw(); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(sel - 1, 0); draw(); }
+    if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(sel + 1, shown.length - 1); marker(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(sel - 1, 0); marker(); }
     else if (e.key === 'Enter') { e.preventDefault(); if (shown[sel]) { close(); shown[sel].run(); } }
     else if (e.key === 'Escape') close();
   };
@@ -1321,6 +1363,65 @@ function bindRecipeCards() {
 /* ---------------- "Hvad kan jeg lave?" ----------------
  * Raavare-chips bygget af biblioteket selv (se raavareListe() i p1b). Tallene
  * caches: 20 grupper x tusindvis af opskrifter maa ikke koeres ved hver render. */
+/* ---------------- filter-panelet ----------------
+ * Soegefeltet staar ALTID frit - det er det, man bruger mest. Resten (sortering,
+ * vurdering, kilde, favoritter, kategorier) ligger i et foldeligt panel, saa
+ * raekken ikke fylder tre linjer paa en telefon, foer man ser en eneste opskrift.
+ * Sammendraget paa den lukkede linje viser, hvad der er slaaet til - ellers
+ * kunne man sidde med et skjult filter og undre sig over, at halvdelen mangler. */
+function aktiveFiltre(f) {
+  const ud = [];
+  if (f.fav) ud.push('⭐ Favoritter');
+  if (f.noCat) ud.push('🏷️ Uden kategori');
+  else if (f.category) ud.push(f.category);
+  if (f.minStars) ud.push('★'.repeat(f.minStars) + ' og op');
+  if (f.kilde) ud.push(f.kilde);
+  return ud;
+}
+function filterPanelHtml(f, cats, udenKat) {
+  const aktive = aktiveFiltre(f);
+  const aaben = S.filterOpen === undefined ? !smalSkaerm() : S.filterOpen;
+  const kilder = kildeListeCached();
+  return `<details class="panelbox filterbox" id="filterBox"${aaben ? ' open' : ''}>
+    <summary><span class="ftitel">⚙️ Filtre</span>
+      ${aktive.length
+        ? aktive.map(a => `<span class="chip on">${esc(a)}</span>`).join('')
+        : '<span class="muted small">– viser alle opskrifter</span>'}
+      ${f.sort !== 'nyeste' ? `<span class="chip">${esc(SORTERINGER[f.sort].navn)}</span>` : ''}
+    </summary>
+    <div class="rowflex" style="margin-top:10px">
+      <select id="recSort" title="Sortering">
+        ${Object.entries(SORTERINGER).map(([k, s]) => `<option value="${k}"${f.sort === k ? ' selected' : ''}>${s.navn}</option>`).join('')}
+      </select>
+      <select id="recMinStars" title="Vis kun opskrifter med mindst så mange stjerner">
+        <option value="0">★ Alle vurderinger</option>
+        ${[1, 2, 3, 4, 5].map(i => `<option value="${i}"${f.minStars === i ? ' selected' : ''}>${'★'.repeat(i)} og op</option>`).join('')}
+      </select>
+      ${kilder.length ? `<select id="recSource" title="Vis kun opskrifter fra ét site">
+        <option value="">🌐 Alle kilder</option>
+        ${kilder.map(k => `<option value="${esc(k.vaert)}"${f.kilde === k.vaert ? ' selected' : ''}>${esc(k.vaert)} (${k.n})</option>`).join('')}
+      </select>` : ''}
+      ${aktive.length ? '<button class="btn small" id="recFilterClear">Ryd filtre</button>' : ''}
+    </div>
+    <div class="rowflex" style="margin-top:10px">
+      <span class="chip chipbtn${f.fav ? ' sel' : ''}" id="recFav">⭐ Favoritter</span>
+      ${cats.map(c => `<span class="chip chipbtn${!f.noCat && f.category === c ? ' sel' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}
+      ${udenKat ? `<span class="chip chipbtn${f.noCat ? ' sel' : ''}" id="recNoCat"
+        title="Opskrifter der mangler en kategori">🏷️ Uden kategori (${udenKat})</span>` : ''}
+    </div>
+  </details>`;
+}
+
+/* Kilde-listen gaar gennem hele biblioteket - caches som raavarerne, saa den
+ * ikke regnes forfra ved hvert tastetryk i soegefeltet. */
+function kildeListeCached() {
+  const noegle = K('recipe').length;
+  if (!S._kilder || S._kilderNoegle !== noegle) {
+    S._kilder = kildeListe();
+    S._kilderNoegle = noegle;
+  }
+  return S._kilder;
+}
 function raavareListeCached() {
   const noegle = K('recipe').length + '|' + (S.hydrated ? 1 : 0);
   if (!S._raaListe || S._raaListeNoegle !== noegle) {
@@ -1404,6 +1505,7 @@ RENDER.recipes = () => {
       normName((r.ingredients || []).join(' ')).includes(q));
   }
   if (f.minStars) list = list.filter(r => (r.rating || 0) >= f.minStars);
+  if (f.kilde) list = list.filter(r => recipeHost(r) === f.kilde);
   /* "Hvad kan jeg lave?": behold opskrifter med mindst én af raavarerne, og
    * laeg dem med FLEST traef oeverst - den valgte sortering afgoer inden for
    * hver gruppe. Ingredienserne findes kun paa fuldt hentede opskrifter, saa
@@ -1427,19 +1529,9 @@ RENDER.recipes = () => {
        <button class="btn" id="recSiteImport">📚 Masse-import</button>
        <button class="btn primary" id="recImport">🌐 Importér fra URL</button>`) + `
   <div class="rowflex">
-    <input id="recSearch" placeholder="🔍 Søg i titel, ingredienser og tags…" value="${esc(f.q)}" style="min-width:240px;flex:1;max-width:380px">
-    <select id="recSort" title="Sortering">
-      ${Object.entries(SORTERINGER).map(([k, s]) => `<option value="${k}"${f.sort === k ? ' selected' : ''}>${s.navn}</option>`).join('')}
-    </select>
-    <select id="recMinStars" title="Vis kun opskrifter med mindst så mange stjerner">
-      <option value="0">★ Alle vurderinger</option>
-      ${[1, 2, 3, 4, 5].map(i => `<option value="${i}"${f.minStars === i ? ' selected' : ''}>${'★'.repeat(i)} og op</option>`).join('')}
-    </select>
-    <span class="chip chipbtn${f.fav ? ' sel' : ''}" id="recFav">⭐ Favoritter</span>
-    ${cats.map(c => `<span class="chip chipbtn${!f.noCat && f.category === c ? ' sel' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}
-    ${udenKat ? `<span class="chip chipbtn${f.noCat ? ' sel' : ''}" id="recNoCat"
-      title="Opskrifter der mangler en kategori">🏷️ Uden kategori (${udenKat})</span>` : ''}
+    <input id="recSearch" placeholder="🔍 Søg i titel, ingredienser og tags…" value="${esc(f.q)}" style="min-width:0;flex:1;max-width:380px">
   </div>
+  ${filterPanelHtml(f, cats, udenKat)}
   ${raavarePanelHtml(raa, medAlle, list.length)}
   ${f.noCat ? `<p class="small muted" style="margin:10px 0 0">
     Vælg en kategori direkte på kortet – den gemmes med det samme.</p>` : ''}
@@ -1464,6 +1556,16 @@ RENDER.recipes_bind = () => {
   };
   $('#recSort').onchange = e => { S.recFilter.sort = e.target.value; lsSet('kk_recsort', e.target.value); omTegn(); };
   $('#recMinStars').onchange = e => { S.recFilter.minStars = +e.target.value || 0; lsSet('kk_recminstars', S.recFilter.minStars); omTegn(); };
+  const kilde = $('#recSource');
+  if (kilde) kilde.onchange = e => { S.recFilter.kilde = e.target.value; omTegn(); };
+  const fbox = $('#filterBox');
+  if (fbox) fbox.ontoggle = () => { S.filterOpen = fbox.open; lsSet('kk_filteropen', fbox.open ? '1' : '0'); };
+  const ryd = $('#recFilterClear');
+  if (ryd) ryd.onclick = () => {
+    Object.assign(S.recFilter, { category: '', noCat: false, fav: false, minStars: 0, kilde: '' });
+    lsSet('kk_recminstars', 0);
+    omTegn();
+  };
   $('#recFav').onclick = () => { S.recFilter.fav = !S.recFilter.fav; omTegn(); };
   $$('[data-cat]').forEach(c => c.onclick = () => {
     S.recFilter.noCat = false;
@@ -2197,10 +2299,10 @@ function parseCurl(text) {
 function importKilder() {
   const pr = new Map();
   for (const r of K('recipe')) {
-    if (!r.url) continue;
+    const vaert = recipeHost(r);          // samme grunddomaene som kilde-filteret
+    if (!vaert) continue;
     let u;
     try { u = new URL(r.url); } catch (e) { continue; }
-    const vaert = u.hostname.replace(/^www\./, '');
     const k = pr.get(vaert) || { vaert, origin: u.origin, n: 0, sidst: '' };
     k.n++;
     const d = r.createdAt || '';

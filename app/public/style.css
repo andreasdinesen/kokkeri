@@ -243,6 +243,25 @@ label.chk { display: flex; align-items: center; gap: 8px; font-size: 14px; color
 /* "Vis flere" under gridet - gridet tegner kun et vindue ad gangen */
 .loadmore { display: flex; justify-content: center; margin: 18px 0 4px; }
 
+/* Foldeligt filter-panel paa Opskrifter. Summary-linjen skal kunne ombryde:
+ * med fire aktive filtre bliver den lang, og paa en telefon skal den falde ned
+ * i flere linjer i stedet for at skubbe siden bredere. */
+.filterbox { margin: 10px 0 0; padding: 10px 13px; }
+.filterbox > summary {
+  cursor: pointer; display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  list-style: none;
+}
+.filterbox > summary::-webkit-details-marker { display: none; }
+.filterbox > summary::before { content: '▸'; color: var(--muted); flex: none; }
+.filterbox[open] > summary::before { content: '▾'; }
+.filterbox > summary .ftitel { font-weight: 600; flex: none; }
+.filterbox > summary .chip { font-size: 12px; }
+@media (max-width: 620px) {
+  /* vaelgerne i to kolonner i stedet for tre smalle */
+  .filterbox select { flex: 1 1 calc(50% - 5px); min-width: 0; }
+  .filterbox > summary { gap: 5px; }
+}
+
 /* "Hentet fra tidligere" i masse-importen. Bevidst en LISTE og ikke en tabel:
  * i en tabel havnede "Hent nye"-knappen uden for skaermen paa en telefon, fordi
  * .tablewrap scroller vandret - og saa var selve handlingen skjult. */

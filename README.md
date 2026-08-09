@@ -66,6 +66,22 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v25** (august 2026): **Søgningen med ⌘K virker igen – og filtrene fylder
+  ikke længere den halve skærm.**
+  - **Opskrifter fundet med ⌘K kunne ikke vælges.** Listen blev tegnet helt om,
+    hver gang musen kørte hen over et resultat, så elementet blev skiftet ud
+    midt i klikket – og et klik, der begynder på ét element og slutter på et
+    andet, tæller ikke. På en telefon eller tablet skete det hver gang, så dér
+    har det aldrig virket. Nu flyttes kun markeringen.
+  - **Filtrene ligger i et foldeligt panel.** Søgefeltet står stadig frit, mens
+    sortering, vurdering, kilde, favoritter og kategorier er samlet ét sted.
+    Den sammenfoldede linje viser, hvilke filtre der er slået til, så man ikke
+    kan komme til at lede efter opskrifter, der er filtreret væk. Panelet
+    starter åbent på en computer og lukket på en telefon – og husker dit valg.
+  - **Nyt kildefilter:** vis kun opskrifter fra ét site, fx `valdemarsro.dk`.
+    Vælgeren viser antallet fra hvert site og kan kombineres med søgning,
+    kategori og stjerner.
+
 - **v24** (august 2026): **En stoppet masse-import forsvinder ikke længere
   sporløst.** Afviser et site hentningen, stopper Kokkeri – men indtil nu blev
   statusfeltet kun vist, mens en import kørte, så beskeden om hvorfor forsvandt

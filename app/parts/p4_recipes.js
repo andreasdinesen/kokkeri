@@ -66,6 +66,65 @@ function bindRecipeCards() {
 /* ---------------- "Hvad kan jeg lave?" ----------------
  * Raavare-chips bygget af biblioteket selv (se raavareListe() i p1b). Tallene
  * caches: 20 grupper x tusindvis af opskrifter maa ikke koeres ved hver render. */
+/* ---------------- filter-panelet ----------------
+ * Soegefeltet staar ALTID frit - det er det, man bruger mest. Resten (sortering,
+ * vurdering, kilde, favoritter, kategorier) ligger i et foldeligt panel, saa
+ * raekken ikke fylder tre linjer paa en telefon, foer man ser en eneste opskrift.
+ * Sammendraget paa den lukkede linje viser, hvad der er slaaet til - ellers
+ * kunne man sidde med et skjult filter og undre sig over, at halvdelen mangler. */
+function aktiveFiltre(f) {
+  const ud = [];
+  if (f.fav) ud.push('⭐ Favoritter');
+  if (f.noCat) ud.push('🏷️ Uden kategori');
+  else if (f.category) ud.push(f.category);
+  if (f.minStars) ud.push('★'.repeat(f.minStars) + ' og op');
+  if (f.kilde) ud.push(f.kilde);
+  return ud;
+}
+function filterPanelHtml(f, cats, udenKat) {
+  const aktive = aktiveFiltre(f);
+  const aaben = S.filterOpen === undefined ? !smalSkaerm() : S.filterOpen;
+  const kilder = kildeListeCached();
+  return `<details class="panelbox filterbox" id="filterBox"${aaben ? ' open' : ''}>
+    <summary><span class="ftitel">⚙️ Filtre</span>
+      ${aktive.length
+        ? aktive.map(a => `<span class="chip on">${esc(a)}</span>`).join('')
+        : '<span class="muted small">– viser alle opskrifter</span>'}
+      ${f.sort !== 'nyeste' ? `<span class="chip">${esc(SORTERINGER[f.sort].navn)}</span>` : ''}
+    </summary>
+    <div class="rowflex" style="margin-top:10px">
+      <select id="recSort" title="Sortering">
+        ${Object.entries(SORTERINGER).map(([k, s]) => `<option value="${k}"${f.sort === k ? ' selected' : ''}>${s.navn}</option>`).join('')}
+      </select>
+      <select id="recMinStars" title="Vis kun opskrifter med mindst så mange stjerner">
+        <option value="0">★ Alle vurderinger</option>
+        ${[1, 2, 3, 4, 5].map(i => `<option value="${i}"${f.minStars === i ? ' selected' : ''}>${'★'.repeat(i)} og op</option>`).join('')}
+      </select>
+      ${kilder.length ? `<select id="recSource" title="Vis kun opskrifter fra ét site">
+        <option value="">🌐 Alle kilder</option>
+        ${kilder.map(k => `<option value="${esc(k.vaert)}"${f.kilde === k.vaert ? ' selected' : ''}>${esc(k.vaert)} (${k.n})</option>`).join('')}
+      </select>` : ''}
+      ${aktive.length ? '<button class="btn small" id="recFilterClear">Ryd filtre</button>' : ''}
+    </div>
+    <div class="rowflex" style="margin-top:10px">
+      <span class="chip chipbtn${f.fav ? ' sel' : ''}" id="recFav">⭐ Favoritter</span>
+      ${cats.map(c => `<span class="chip chipbtn${!f.noCat && f.category === c ? ' sel' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}
+      ${udenKat ? `<span class="chip chipbtn${f.noCat ? ' sel' : ''}" id="recNoCat"
+        title="Opskrifter der mangler en kategori">🏷️ Uden kategori (${udenKat})</span>` : ''}
+    </div>
+  </details>`;
+}
+
+/* Kilde-listen gaar gennem hele biblioteket - caches som raavarerne, saa den
+ * ikke regnes forfra ved hvert tastetryk i soegefeltet. */
+function kildeListeCached() {
+  const noegle = K('recipe').length;
+  if (!S._kilder || S._kilderNoegle !== noegle) {
+    S._kilder = kildeListe();
+    S._kilderNoegle = noegle;
+  }
+  return S._kilder;
+}
 function raavareListeCached() {
   const noegle = K('recipe').length + '|' + (S.hydrated ? 1 : 0);
   if (!S._raaListe || S._raaListeNoegle !== noegle) {
@@ -149,6 +208,7 @@ RENDER.recipes = () => {
       normName((r.ingredients || []).join(' ')).includes(q));
   }
   if (f.minStars) list = list.filter(r => (r.rating || 0) >= f.minStars);
+  if (f.kilde) list = list.filter(r => recipeHost(r) === f.kilde);
   /* "Hvad kan jeg lave?": behold opskrifter med mindst én af raavarerne, og
    * laeg dem med FLEST traef oeverst - den valgte sortering afgoer inden for
    * hver gruppe. Ingredienserne findes kun paa fuldt hentede opskrifter, saa
@@ -172,19 +232,9 @@ RENDER.recipes = () => {
        <button class="btn" id="recSiteImport">📚 Masse-import</button>
        <button class="btn primary" id="recImport">🌐 Importér fra URL</button>`) + `
   <div class="rowflex">
-    <input id="recSearch" placeholder="🔍 Søg i titel, ingredienser og tags…" value="${esc(f.q)}" style="min-width:240px;flex:1;max-width:380px">
-    <select id="recSort" title="Sortering">
-      ${Object.entries(SORTERINGER).map(([k, s]) => `<option value="${k}"${f.sort === k ? ' selected' : ''}>${s.navn}</option>`).join('')}
-    </select>
-    <select id="recMinStars" title="Vis kun opskrifter med mindst så mange stjerner">
-      <option value="0">★ Alle vurderinger</option>
-      ${[1, 2, 3, 4, 5].map(i => `<option value="${i}"${f.minStars === i ? ' selected' : ''}>${'★'.repeat(i)} og op</option>`).join('')}
-    </select>
-    <span class="chip chipbtn${f.fav ? ' sel' : ''}" id="recFav">⭐ Favoritter</span>
-    ${cats.map(c => `<span class="chip chipbtn${!f.noCat && f.category === c ? ' sel' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}
-    ${udenKat ? `<span class="chip chipbtn${f.noCat ? ' sel' : ''}" id="recNoCat"
-      title="Opskrifter der mangler en kategori">🏷️ Uden kategori (${udenKat})</span>` : ''}
+    <input id="recSearch" placeholder="🔍 Søg i titel, ingredienser og tags…" value="${esc(f.q)}" style="min-width:0;flex:1;max-width:380px">
   </div>
+  ${filterPanelHtml(f, cats, udenKat)}
   ${raavarePanelHtml(raa, medAlle, list.length)}
   ${f.noCat ? `<p class="small muted" style="margin:10px 0 0">
     Vælg en kategori direkte på kortet – den gemmes med det samme.</p>` : ''}
@@ -209,6 +259,16 @@ RENDER.recipes_bind = () => {
   };
   $('#recSort').onchange = e => { S.recFilter.sort = e.target.value; lsSet('kk_recsort', e.target.value); omTegn(); };
   $('#recMinStars').onchange = e => { S.recFilter.minStars = +e.target.value || 0; lsSet('kk_recminstars', S.recFilter.minStars); omTegn(); };
+  const kilde = $('#recSource');
+  if (kilde) kilde.onchange = e => { S.recFilter.kilde = e.target.value; omTegn(); };
+  const fbox = $('#filterBox');
+  if (fbox) fbox.ontoggle = () => { S.filterOpen = fbox.open; lsSet('kk_filteropen', fbox.open ? '1' : '0'); };
+  const ryd = $('#recFilterClear');
+  if (ryd) ryd.onclick = () => {
+    Object.assign(S.recFilter, { category: '', noCat: false, fav: false, minStars: 0, kilde: '' });
+    lsSet('kk_recminstars', 0);
+    omTegn();
+  };
   $('#recFav').onclick = () => { S.recFilter.fav = !S.recFilter.fav; omTegn(); };
   $$('[data-cat]').forEach(c => c.onclick = () => {
     S.recFilter.noCat = false;
