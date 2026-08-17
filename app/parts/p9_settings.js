@@ -145,11 +145,79 @@ RENDER.settings = () => {
     </div>
   </div>
 
+  <div class="panelbox">
+    <h2 style="margin-top:0">Claude-adgang (MCP)</h2>
+    <p class="small muted">Lad Claude læse og skrive i dine opskrifter, din madplan og din
+      indkøbsliste. <b>claude.ai</b> forbinder du med knappen »Add custom connector« og
+      adressen herunder – du bliver sendt hertil for at godkende. <b>Claude Code</b> og
+      <b>Claude Desktop</b> bruger i stedet en nøgle, du laver her.</p>
+    <div id="accessBox" class="muted small">Henter …</div>
+  </div>
+
   ${S.me.isAdmin ? `<div class="panelbox">
     <h2 style="margin-top:0">Brugere (admin)</h2>
     <div id="adminUsers" class="muted small">Henter …</div>
   </div>` : ''}`;
 };
+
+/* ---------------- Claude-adgang: noegler og forbundne apps ---------------- */
+async function tegnAdgang() {
+  const box = $('#accessBox');
+  if (!box) return;
+  let d;
+  try { d = await api('/api/access'); } catch (e) { box.textContent = 'Kunne ikke hente adgangen.'; return; }
+  box.innerHTML = `
+    <div class="fld" style="max-width:560px">
+      <span class="small muted">Adresse til connector</span>
+      <div class="rowflex"><input id="mcpUrl" readonly value="${esc(d.mcpUrl)}" style="flex:1;min-width:0">
+        <button class="btn small" id="mcpCopy">Kopiér</button></div>
+    </div>
+    <h3>Forbundne apps</h3>
+    ${d.connections.length ? `<div class="kilder">${d.connections.map(c => `<div class="kilde">
+        <div class="kildenavn"><b>${esc(c.name)}</b></div>
+        <div class="kildetal small muted">forbundet ${fmtDate(String(c.last_token || '').slice(0, 10))}</div>
+        <button class="btn small danger" data-conndel="${esc(c.id)}">Fjern</button></div>`).join('')}</div>`
+      : '<p class="small muted">Ingen apps er forbundet endnu.</p>'}
+    <h3>Nøgler til Claude Code og Desktop</h3>
+    ${d.tokens.length ? `<div class="kilder">${d.tokens.map(t => `<div class="kilde">
+        <div class="kildenavn"><b>${esc(t.label || 'Uden navn')}</b>
+          <span class="muted small">${t.scope === 'read' ? 'kun læsning' : 'fuld adgang'}</span></div>
+        <div class="kildetal small muted">${t.last_used ? 'brugt ' + fmtDate(t.last_used.slice(0, 10)) : 'aldrig brugt'}</div>
+        <button class="btn small danger" data-tokdel="${esc(t.id)}">Slet</button></div>`).join('')}</div>`
+      : '<p class="small muted">Ingen nøgler endnu.</p>'}
+    <div class="rowflex" style="margin-top:10px">
+      <input id="tokLabel" placeholder="Navn, fx »Claude på laptoppen«" style="max-width:240px">
+      <select id="tokScope">
+        <option value="full">Fuld adgang</option>
+        <option value="read">Kun læsning</option>
+      </select>
+      <button class="btn small" id="tokNew">Lav nøgle</button>
+    </div>`;
+
+  $('#mcpCopy').onclick = () => { $('#mcpUrl').select(); document.execCommand('copy'); toast('Adressen er kopieret'); };
+  $$('[data-conndel]').forEach(b => b.onclick = async () => {
+    if (!await confirmBox('Fjern forbindelsen? Appen mister adgangen med det samme.')) return;
+    await api('/api/access/connection/revoke', { body: { clientId: b.dataset.conndel } });
+    toast('Forbindelsen er fjernet');
+    tegnAdgang();
+  });
+  $$('[data-tokdel]').forEach(b => b.onclick = async () => {
+    if (!await confirmBox('Slet nøglen? Det, der bruger den, mister adgangen.')) return;
+    await api('/api/access/token/revoke', { body: { id: b.dataset.tokdel } });
+    toast('Nøglen er slettet');
+    tegnAdgang();
+  });
+  $('#tokNew').onclick = async () => {
+    const r = await api('/api/access/token', { body: { label: $('#tokLabel').value, scope: $('#tokScope').value } });
+    /* Klarteksten findes kun her og nu - serveren gemmer kun en hash. */
+    openModal(`<h2>🔑 Nøglen er lavet</h2>
+      <p class="small muted">Kopiér den nu – den kan ikke vises igen. Serveren gemmer kun et aftryk af den.</p>
+      <textarea readonly rows="3" style="width:100%;font-family:ui-monospace,monospace">${esc(r.token)}</textarea>
+      <p class="small muted">I Claude Code: <code>claude mcp add --transport http kokkeri ${esc(d.mcpUrl)} --header "Authorization: Bearer DIN_NØGLE"</code></p>
+      <div class="actions"><button class="btn primary" id="tokOk">Færdig</button></div>`,
+      m => { m.querySelector('#tokOk').onclick = () => { closeModal(); tegnAdgang(); }; }, true);
+  };
+}
 
 RENDER.settings_bind = () => {
   let logoData = undefined; // undefined = uaendret, '' = fjern
@@ -323,6 +391,7 @@ RENDER.settings_bind = () => {
     } catch (e) { toast(e.message, true); }
   };
 
+  tegnAdgang();
   if (S.me.isAdmin) loadAdminUsers();
 };
 

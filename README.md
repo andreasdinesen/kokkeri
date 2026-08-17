@@ -66,6 +66,20 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v26** (august 2026): **Claude kan nu læse og skrive i Kokkeri – og appen har
+  fået sin egen »Opdatér«-knap i panelet.**
+  - **Claude-adgang (MCP).** Under Indstillinger kan du forbinde **claude.ai**
+    med adressen til din Kokkeri – du bliver sendt til appen for at godkende
+    forbindelsen, præcis som med andre connectors. **Claude Code** og **Claude
+    Desktop** bruger i stedet en nøgle, du laver samme sted. Claude kan søge i
+    dine opskrifter, foreslå hvad du kan lave af det, du har hjemme, læse og
+    lægge på madplanen, læse og tilføje til indkøbslisten samt oprette og rette
+    opskrifter. En nøgle kan gives **kun læsning**, hvis den ikke skal kunne
+    ændre noget, og du kan trække enhver forbindelse tilbage med det samme.
+  - **»Opdatér Kokkeri«-knap** på serveren i panelet: skifter appens filer uden
+    at geninstallere, og databasen røres ikke. Samtidig er Node-versionen blevet
+    et felt i panelet, så den kan skiftes uden en ny udgave af appen.
+
 - **v25** (august 2026): **Søgningen med ⌘K virker igen – og filtrene fylder
   ikke længere den halve skærm.**
   - **Opskrifter fundet med ⌘K kunne ikke vælges.** Listen blev tegnet helt om,

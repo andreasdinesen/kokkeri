@@ -260,7 +260,20 @@ function showLogin() {
   };
 }
 
+/* Kom man hertil fra en samtykkeside (?next=/oauth/authorize?...), sendes man
+ * tilbage efter login. Stien WHITELISTES: uden det ville login-siden vaere en
+ * aaben viderestilling - og det er praecis dér, brugeren er indstillet paa at
+ * godkende noget. */
+function fortsaetEfterLogin() {
+  let n = '';
+  try { n = new URL(location.href).searchParams.get('next') || ''; } catch (e) {}
+  if (!n.startsWith('/oauth/authorize?')) return false;
+  location.replace(n);
+  return true;
+}
+
 async function enterApp() {
+  if (fortsaetEfterLogin()) return;
   /* Kun kort-felterne ved login - resten hentes i baggrunden af hydrateItems().
    * Med billederne inde i opskrifterne var dette kald 248 MB ved 2534 opskrifter. */
   const [settings, items] = await Promise.all([api('/api/settings'), api('/api/items?fields=card')]);

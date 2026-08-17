@@ -75,6 +75,34 @@ CREATE INDEX IF NOT EXISTS idx_items_share ON items(json_extract(data, '$.shareT
   WHERE json_extract(data, '$.shareToken') IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+/* --- adgangsnoegler og OAuth (MCP) ---
+ * Access-tokens faar IKKE deres egen tabel: de ligger i tokens sammen med de
+ * haandlavede noegler, bare med et client_id og et expires_at. Saa valideres de
+ * ad PRAECIS samme vej (findToken) - én validering, ét sted at tilbagekalde. */
+CREATE TABLE IF NOT EXISTS tokens (
+  id TEXT PRIMARY KEY,
+  hash TEXT NOT NULL UNIQUE,          -- sha256, aldrig klartekst
+  user_id INTEGER NOT NULL,
+  label TEXT,
+  scope TEXT NOT NULL DEFAULT 'full', -- read | full
+  client_id TEXT,                     -- sat = udstedt via OAuth, ikke i hånden
+  created_at TEXT NOT NULL,
+  last_used TEXT,
+  expires_at INTEGER                  -- unix-sekunder; NULL = udloeber aldrig
+);
+CREATE INDEX IF NOT EXISTS idx_tokens_client ON tokens(client_id);
+CREATE TABLE IF NOT EXISTS oauth_clients (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL,
+  redirect_uris TEXT NOT NULL,        -- JSON-array, matches NOEJAGTIGT
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS oauth_refresh (
+  hash TEXT PRIMARY KEY,
+  token_id TEXT NOT NULL, client_id TEXT NOT NULL,
+  scope TEXT NOT NULL, user_id INTEGER NOT NULL,
+  created_at INTEGER NOT NULL, revoked_at INTEGER
+);
 `);
 
 const q = {
@@ -118,6 +146,38 @@ const q = {
   wipeItems: db.prepare('DELETE FROM items'),
   deleteByKind: db.prepare('DELETE FROM items WHERE kind = ?'),
   countByKind: db.prepare('SELECT COUNT(*) AS n FROM items WHERE kind = ? AND deleted = 0'),
+  /* --- noegler og OAuth --- */
+  insertToken: db.prepare(`INSERT INTO tokens (id, hash, user_id, label, scope, client_id, created_at, expires_at)
+    VALUES (?,?,?,?,?,?,?,?)`),
+  /* Udloebstjekket SKAL staa her: uden det lever et access-token evigt,
+   * uanset hvad expires_in lovede klienten. */
+  tokenByHash: db.prepare(`SELECT * FROM tokens WHERE hash = ?
+    AND (expires_at IS NULL OR expires_at > ?)`),
+  touchToken: db.prepare('UPDATE tokens SET last_used = ? WHERE id = ?'),
+  deleteToken: db.prepare('DELETE FROM tokens WHERE id = ? AND user_id = ?'),
+  deleteTokensForClient: db.prepare('DELETE FROM tokens WHERE client_id = ?'),
+  /* Egne noegler i UI'et: OAuth-udstedte hoerer under "Forbundne apps". */
+  ownTokens: db.prepare(`SELECT id, label, scope, created_at, last_used FROM tokens
+    WHERE user_id = ? AND client_id IS NULL ORDER BY created_at DESC`),
+  insertClient: db.prepare('INSERT INTO oauth_clients (id, name, redirect_uris, created_at) VALUES (?,?,?,?)'),
+  clientById: db.prepare('SELECT id, name, redirect_uris FROM oauth_clients WHERE id = ?'),
+  /* En registrering er IKKE en forbindelse: klienten registrerer sig ved hvert
+   * forsoeg, ogsaa dem man siger nej til. Vis kun dem med et levende token. */
+  connectedClients: db.prepare(`SELECT c.id, c.name, c.created_at,
+      (SELECT MAX(t.created_at) FROM tokens t WHERE t.client_id = c.id) AS last_token
+    FROM oauth_clients c
+    WHERE EXISTS (SELECT 1 FROM tokens t WHERE t.client_id = c.id)
+    ORDER BY c.created_at DESC`),
+  deleteClient: db.prepare('DELETE FROM oauth_clients WHERE id = ?'),
+  insertRefresh: db.prepare(`INSERT INTO oauth_refresh (hash, token_id, client_id, scope, user_id, created_at)
+    VALUES (?,?,?,?,?,?)`),
+  refreshByHash: db.prepare('SELECT * FROM oauth_refresh WHERE hash = ? AND revoked_at IS NULL'),
+  revokeRefresh: db.prepare('UPDATE oauth_refresh SET revoked_at = ? WHERE hash = ?'),
+  revokeRefreshForClient: db.prepare('UPDATE oauth_refresh SET revoked_at = ? WHERE client_id = ? AND revoked_at IS NULL'),
+  purgeTokens: db.prepare('DELETE FROM tokens WHERE expires_at IS NOT NULL AND expires_at < ?'),
+  /* Klienter der aldrig blev til en forbindelse ryddes efter en uge. */
+  purgeClients: db.prepare(`DELETE FROM oauth_clients WHERE created_at < ?
+    AND NOT EXISTS (SELECT 1 FROM tokens t WHERE t.client_id = oauth_clients.id)`),
   allSettings: db.prepare('SELECT key, value FROM settings'),
   getSetting: db.prepare('SELECT value FROM settings WHERE key = ?'),
   setSetting: db.prepare('INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
@@ -937,6 +997,163 @@ async function aiMessage(body) {
 }
 
 /* ---------------- router ---------------- */
+/* ================= adgangsnoegler, OAuth og MCP =================
+ * Se RUNE-ERFARINGER §9a. Modulerne kender hverken databasen eller http'en -
+ * alt kommer ind gennem srv-objekterne herunder. */
+
+const nowSec = () => Math.floor(Date.now() / 1000);
+const hashToken = raw => crypto.createHash('sha256').update(String(raw)).digest('hex');
+const APP_VER_NR = (() => {
+  try {
+    const m = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8').match(/app\.js\?v=(\d+)/);
+    return m ? m[1] : '0';
+  } catch (e) { return '0'; }
+})();
+
+/** Laver en noegle og returnerer klartekst ÉN gang - kun hashen gemmes. */
+function opretToken({ userId, label, scope, clientId, ttl }) {
+  const raw = 'kok_' + crypto.randomBytes(24).toString('base64url');
+  const id = crypto.randomUUID();
+  q.insertToken.run(id, hashToken(raw), userId, label || null,
+    scope === 'read' ? 'read' : 'full', clientId || null, nowIso(),
+    ttl ? nowSec() + ttl : null);
+  return { id, raw };
+}
+/** Eneste vej ind: baade haandlavede noegler og OAuth-tokens valideres her. */
+function findToken(raw) {
+  if (!raw) return null;
+  const row = q.tokenByHash.get(hashToken(raw), nowSec());
+  if (!row) return null;
+  const u2 = q.userById.get(row.user_id);
+  if (!u2) return null;
+  try { q.touchToken.run(nowIso(), row.id); } catch (e) {}
+  return { token: row, user: u2, scope: row.scope };
+}
+
+const oauth = require('./oauth.js').opret({
+  gemKlient(k) {
+    q.insertClient.run(k.id, k.name, k.redirect_uris, nowSec());
+    console.log(`[oauth] klient registreret: ${k.name}`);
+  },
+  hentKlient: id => q.clientById.get(String(id || '')) || null,
+  /* Access- og refresh-token i ét. Access-tokenet gaar gennem opretToken, saa
+   * det ender i tokens-tabellen og valideres af findToken praecis som en
+   * haandlavet noegle - bare med et udloeb. */
+  udstedTokens(clientId, scope, userId) {
+    const ttl = 8 * 3600;
+    const t = opretToken({ userId, label: 'OAuth', scope, clientId, ttl });
+    const refresh = crypto.randomBytes(32).toString('base64url');
+    q.insertRefresh.run(hashToken(refresh), t.id, clientId, scope, userId, nowSec());
+    return { access_token: t.raw, token_type: 'Bearer', expires_in: ttl, refresh_token: refresh, scope };
+  },
+  findRefresh: raw => (raw ? q.refreshByHash.get(hashToken(raw)) : null) || null,
+  tilbagekaldRefresh(raw) { if (raw) q.revokeRefresh.run(nowSec(), hashToken(raw)); }
+});
+
+const SCOPE_TILLADER = { read: new Set(['read']), full: new Set(['read', 'full']) };
+
+const mcp = require('./mcp.js').opret({
+  version: APP_VER_NR,
+  maa: (auth, scope) => (SCOPE_TILLADER[auth.scope] || SCOPE_TILLADER.read).has(scope),
+  godkendMcp(req) {
+    const h = String(req.headers.authorization || '');
+    const m = /^Bearer\s+(.+)$/i.exec(h.trim());
+    return m ? findToken(m[1].trim()) : null;
+  },
+  /* Pegepinden til autorisationsserveren. Stien med /mcp bagpaa er den
+   * kanoniske i RFC 9728; den nogne form serveres ogsaa, fordi flere klienter
+   * proever den foerst. */
+  oauthUdfordring: req => `Bearer realm="Kokkeri", `
+    + `resource_metadata="${oauth.base(req)}/.well-known/oauth-protected-resource/mcp"`,
+  readJsonBody: req => readBody(req),
+  logError: besked => console.error('[fejl] ' + besked),
+  /* Data: PRAECIS de veje webappen bruger. */
+  listItems: kind => q.itemsByKind.all(kind).map(r => { try { return JSON.parse(r.data); } catch (e) { return null; } }).filter(Boolean),
+  getItem(id) {
+    const row = q.itemById.get(String(id || ''));
+    if (!row || row.deleted) return null;
+    try { return JSON.parse(row.data); } catch (e) { return null; }
+  },
+  gemItem(item) {
+    const rent = sanitizeItem(item);
+    if (!rent) return false;
+    q.upsertItem.run(rent.id, rent.kind, rent.json, nowIso(), rent.deleted);
+    return true;
+  },
+  nyId: () => crypto.randomUUID(),
+  totalMin: r => Math.max(r.totalMin || 0, (r.prepMin || 0) + (r.cookMin || 0)) || null,
+  host(r) {
+    if (!r || !r.url) return '';
+    try { return new URL(r.url).hostname.replace(/^www\./, ''); } catch (e) { return ''; }
+  },
+  /* Afdelingen gaettes i browseren (guessSection i p1b_food.js). Serveren
+   * lader feltet staa tomt - listen viser den saa under "Andet". */
+  gaetAfdeling: () => ''
+});
+
+/* De offentlige OAuth-ruter skal kunne naas fra claude.ai's oprindelse. */
+function oauthCors(res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, MCP-Protocol-Version');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+}
+const sendJson = (res, kode, obj, cors) => {
+  if (cors) oauthCors(res);
+  const s = JSON.stringify(obj);
+  res.writeHead(kode, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+  res.end(s);
+};
+/* /token og /revoke sender form-kodet krop (OAuth-standard), /register JSON. */
+async function oauthKrop(req) {
+  const raa = await new Promise((resolve, reject) => {
+    let n = 0; const dele = [];
+    req.on('data', c => { n += c.length; if (n > 1e6) { reject(new Error('for stor')); req.destroy(); return; } dele.push(c); });
+    req.on('end', () => resolve(Buffer.concat(dele).toString('utf8')));
+    req.on('error', reject);
+  });
+  if ((req.headers['content-type'] || '').includes('application/json')) {
+    try { return JSON.parse(raa || '{}'); } catch (e) { return {}; }
+  }
+  return Object.fromEntries(new URLSearchParams(raa));
+}
+
+/* Skjult felt, der binder samtykke-formularen til netop denne session.
+ * Formularen er appens eneste cookie-godkendte rute uden JSON-krop og staar
+ * derfor uden for den faelles Content-Type-barriere. */
+function samtykkeBevis(req) {
+  const tok = readCookies(req).kokkeri_session || '';
+  return crypto.createHmac('sha256', tok + setting('ical_token', '')).update('oauth-consent').digest('hex');
+}
+function samtykkeHtml(req, q2, o) {
+  const H = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const felter = ['client_id', 'redirect_uri', 'response_type', 'scope', 'state',
+    'code_challenge', 'code_challenge_method']
+    .map(k => `<input type="hidden" name="${k}" value="${H(q2.get(k) || '')}">`).join('');
+  return `<!doctype html><html lang="da"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Giv adgang til ${H(APP_NAME)}</title>
+<link rel="stylesheet" href="/style.css?v=${APP_VER_NR}">
+</head><body style="padding:0">
+<main style="max-width:520px;margin:8vh auto;padding:0 18px">
+  <div class="panelbox">
+    <h1 style="margin-top:0">Giv adgang til ${H(APP_NAME)}?</h1>
+    <p><b>${H(o.klient.name)}</b> vil have adgang til dine opskrifter, din madplan
+       og din indkøbsliste som <b>${H(o.bruger)}</b>.</p>
+    <p class="small muted">Adgangen er ${o.scope === 'read' ? 'kun læsning' : 'læsning og skrivning'}.
+       Du kan trække den tilbage når som helst under Indstillinger.</p>
+    <form method="post" action="/oauth/authorize">
+      ${felter}
+      <input type="hidden" name="bevis" value="${samtykkeBevis(req)}">
+      <div class="actions" style="display:flex;gap:10px;margin-top:20px">
+        <button class="btn" type="submit" name="godkend" value="nej">Afvis</button>
+        <button class="btn primary" type="submit" name="godkend" value="ja">Giv adgang</button>
+      </div>
+    </form>
+  </div>
+</main></body></html>`;
+}
+
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://x');
   const p = u.pathname;
@@ -1007,6 +1224,98 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
 <p class="foot">Delt fra ${H(APP_NAME)} 🍳</p>
 </div></body></html>`);
     }
+
+    /* ================= OAuth + MCP =================
+     * Ligger UDEN for /api/: de to .well-known-dokumenter har faste stier,
+     * og /token sender form-kodet krop, ikke JSON. Derfor gaar de heller ikke
+     * gennem Content-Type-barrieren nedenfor. */
+    if (req.method === 'OPTIONS' && (p === '/mcp' || p.startsWith('/oauth/') || p.startsWith('/.well-known/oauth-'))) {
+      oauthCors(res);
+      res.writeHead(204);
+      return res.end();
+    }
+
+    /* Opdagelse. BEGGE former serveres: RFC 9728 haenger ressourcens sti paa
+     * (/.well-known/oauth-protected-resource/mcp), men flere klienter proever
+     * den nogne form foerst. To linjer sparer en tavs opdagelsesfejl. */
+    if (/^\/\.well-known\/oauth-protected-resource(\/.*)?$/.test(p) && req.method === 'GET') {
+      return sendJson(res, 200, oauth.beskyttetRessource(req), true);
+    }
+    if (/^\/\.well-known\/oauth-authorization-server(\/.*)?$/.test(p) && req.method === 'GET') {
+      return sendJson(res, 200, oauth.serverMetadata(req), true);
+    }
+
+    if (p === '/oauth/register' && req.method === 'POST') {
+      const r = oauth.registrer(await oauthKrop(req));
+      if (r.fejl) return sendJson(res, 400, { error: 'invalid_client_metadata', error_description: r.fejl }, true);
+      return sendJson(res, 201, r.klient, true);
+    }
+
+    if (p === '/oauth/authorize' && (req.method === 'GET' || req.method === 'POST')) {
+      const felter = req.method === 'GET' ? u.searchParams
+        : new URLSearchParams(Object.entries(await oauthKrop(req)).map(([k, v]) => [k, String(v)]));
+      const bruger = currentUser(req);
+      if (!bruger) {
+        /* Send til login og tilbage bagefter. Frontenden whitelister stien,
+         * saa login-siden ikke bliver en aaben viderestilling - og det er
+         * praecis her, brugeren er indstillet paa at godkende noget. */
+        res.writeHead(302, { Location: '/?next=' + encodeURIComponent(req.url), 'Cache-Control': 'no-store' });
+        return res.end();
+      }
+      const o = oauth.tjekAutorisation(felter);
+      if (o.fejl) {
+        res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+        return res.end(o.fejl);
+      }
+      if (req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+        return res.end(samtykkeHtml(req, felter, Object.assign({ bruger: bruger.username }, o)));
+      }
+      /* CSRF: sammenlign bufferLAENGDER, ikke strenglaengder - timingSafeEqual
+       * kaster paa forskellig laengde, og et flerbyte-tegn snyder .length. */
+      const givet = Buffer.from(String(felter.get('bevis') || ''));
+      const vaentet = Buffer.from(samtykkeBevis(req));
+      if (givet.length !== vaentet.length || !crypto.timingSafeEqual(givet, vaentet)) {
+        console.log('[fejl] oauth-samtykke afvist (ugyldigt bevis)');
+        res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+        return res.end('Ugyldig formular. Prøv at forbinde igen.');
+      }
+      /* Afvisning skal meldes tilbage til klienten - ellers staar den og
+       * venter paa en kode, der aldrig kommer. */
+      if (felter.get('godkend') !== 'ja') {
+        const url = new URL(o.redirect);
+        url.searchParams.set('error', 'access_denied');
+        if (o.state) url.searchParams.set('state', o.state);
+        res.writeHead(302, { Location: url.toString(), 'Cache-Control': 'no-store' });
+        return res.end();
+      }
+      const maal = oauth.giveTilladelse(o, bruger.id);
+      console.log(`[oauth] ${bruger.username} gav "${o.klient.name}" adgang (${o.scope})`);
+      res.writeHead(302, { Location: maal, 'Cache-Control': 'no-store' });
+      return res.end();
+    }
+
+    if (p === '/oauth/token' && req.method === 'POST') {
+      const krop = await oauthKrop(req);
+      const r = krop.grant_type === 'refresh_token' ? oauth.forny(krop)
+        : krop.grant_type === 'authorization_code' ? oauth.byttKode(krop)
+          : { fejl: 'unsupported_grant_type' };
+      if (r.fejl) return sendJson(res, 400, { error: r.fejl }, true);
+      return sendJson(res, 200, r, true);
+    }
+
+    if (p === '/oauth/revoke' && req.method === 'POST') {
+      const krop = await oauthKrop(req);
+      const raa = String(krop.token || '');
+      if (raa) {
+        const t = q.tokenByHash.get(hashToken(raa), nowSec());
+        if (t) db.prepare('DELETE FROM tokens WHERE id = ?').run(t.id);
+        q.revokeRefresh.run(nowSec(), hashToken(raa));
+      }
+      return sendJson(res, 200, {}, true);      // RFC 7009: altid 200
+    }
+
+    if (p === '/mcp') return mcp.haandter(req, res);
 
     if (!p.startsWith('/api/')) return err(res, 404, 'Ikke fundet');
 
@@ -1596,6 +1905,38 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
       }
     }
 
+    /* ---- adgangsnoegler og forbundne apps (MCP) ----
+     * Ligger under /api/ og bruger derfor cookie-login. En connector kan
+     * ALDRIG administrere sig selv: bearer-tokens godkendes kun paa /mcp. */
+    if (p === '/api/access' && req.method === 'GET') {
+      return send(res, 200, {
+        tokens: q.ownTokens.all(user.id),
+        connections: q.connectedClients.all(),
+        mcpUrl: oauth.base(req) + '/mcp'
+      });
+    }
+    if (p === '/api/access/token' && req.method === 'POST') {
+      const label = String(body.label || '').trim().slice(0, 60) || 'Uden navn';
+      const scope = body.scope === 'read' ? 'read' : 'full';
+      const t = opretToken({ userId: user.id, label, scope });
+      console.log(`[access] ${user.username} oprettede nøglen "${label}" (${scope})`);
+      /* Klarteksten vises ÉN gang - kun hashen er gemt. */
+      return send(res, 200, { id: t.id, token: t.raw, label, scope });
+    }
+    if (p === '/api/access/token/revoke' && req.method === 'POST') {
+      q.deleteToken.run(String(body.id || ''), user.id);
+      return send(res, 200, { ok: true });
+    }
+    if (p === '/api/access/connection/revoke' && req.method === 'POST') {
+      const cid = String(body.clientId || '');
+      /* Tilbagekaldelse skal ramme BAADE access- og refresh-tokens. */
+      const n = q.deleteTokensForClient.run(cid).changes || 0;
+      q.revokeRefreshForClient.run(nowSec(), cid);
+      q.deleteClient.run(cid);
+      console.log(`[access] ${user.username} fjernede forbindelsen ${cid} (${n} tokens)`);
+      return send(res, 200, { ok: true });
+    }
+
     /* ---- backup / restore ---- */
     if (p === '/api/backup' && req.method === 'GET') {
       /* Backuppen indeholder ALT - ogsaa billederne. Den skrives i bidder;
@@ -1744,7 +2085,13 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
   }
 });
 
-setInterval(() => { try { q.purgeSessions.run(nowIso()); } catch (e) {} }, 6 * 3600e3).unref();
+setInterval(() => {
+  try { q.purgeSessions.run(nowIso()); } catch (e) {}
+  /* Udloebne access-tokens, og klienter der registrerede sig uden nogensinde
+   * at blive en forbindelse (man siger nej - klienten registrerer sig alligevel). */
+  try { q.purgeTokens.run(nowSec()); } catch (e) {}
+  try { q.purgeClients.run(nowSec() - 7 * 86400); } catch (e) {}
+}, 6 * 3600e3).unref();
 
 server.listen(BIND_PORT, () => {
   console.log(`${APP_NAME}: Kokkeri lytter på port ${BIND_PORT} (data: ${DB_PATH})`);

@@ -19,6 +19,8 @@ with open('app/public/app.js', 'w', encoding='utf-8') as f:
 subprocess.run(['node', '--check', 'app/public/app.js'], check=True)
 
 server_js = read('app/server.js')
+oauth_js = read('app/oauth.js')
+mcp_js = read('app/mcp.js')
 style_css = read('app/public/style.css')
 
 m = re.search(r'const APP_VERSION = (\d+);', app_js)
@@ -44,7 +46,8 @@ if f"const APP_VER = '{app_version}';" not in sw_js:
     sys.exit('FEJL: APP_VER ikke fundet/stemplet i sw.js')
 
 # --- sikkerhedstjek ---
-for name, txt in [('server.js', server_js), ('index.html', index_html), ('app.js', app_js),
+for name, txt in [('server.js', server_js), ('oauth.js', oauth_js), ('mcp.js', mcp_js),
+                  ('index.html', index_html), ('app.js', app_js),
                   ('style.css', style_css), ('sw.js', sw_js)]:
     hits = set(re.findall(r'\{\{[A-Z_]+\}\}', txt))
     if hits:
@@ -128,7 +131,8 @@ def kør_dekoderen(payload_tekst):
         sys.exit(f'FEJL: dekoderen i install-scriptet fejlede: {p.stderr.decode()[:400]}')
     return p.stdout
 
-FILES = ['app/server.js', 'app/public/index.html', 'app/public/style.css',
+FILES = ['app/server.js', 'app/oauth.js', 'app/mcp.js',
+         'app/public/index.html', 'app/public/style.css',
          'app/public/app.js', 'app/public/sw.js', 'app/public/icon-192.png', 'app/public/icon-512.png']
 TRIMMERE = {'.js': trim.trim_js, '.css': trim.trim_css, '.html': trim.trim_html}
 
@@ -178,6 +182,23 @@ echo "Node: $(node --version)"
 echo "Kokkeri v{app_version} er installeret."
 """
 
+# update:-blokken (panelfunktion, se RUNE-ERFARINGER §9). En selvstaendig
+# "Opdater app"-knap: panelet stopper appen, vi smider app/ vaek og pakker
+# samme payload ud igen. /data (databasen) roeres IKKE, og skemaet opdaterer
+# sig selv ved naeste start. Det er vejen til at skifte app-filerne - eller
+# Node-versionen via NODE_IMAGE - uden at geninstallere.
+opdater_script = f"""set -eu
+echo "Opdaterer Kokkeri til v{app_version} ..."
+echo "Node: $(node --version)"
+rm -rf app
+
+node -e '{B85_DEKODER}' <<'YGG_PAYLOAD_EOF' | tar x
+{wrap(payload)}
+YGG_PAYLOAD_EOF
+
+echo "App-filerne er skiftet ud. Databasen i /data er uroert."
+"""
+
 # Loftet er Linux' MAX_ARG_STRLEN (131072 b) for ETT sh -c-argument. 120 K giver
 # ~11 K margin. Ikonerne fylder kun ~4 K komprimeret - det er app.js der vokser.
 # NB: at dele payloaden i to heredocs hjaelper IKKE - hele scriptet er det ene
@@ -204,18 +225,33 @@ gameskill:
   icon: "app"
 
   docker:
-    image: "node:24-alpine"
+    # Templated, saa Node-versionen er et felt i panelet: kommer der en CVE i
+    # Node, kan man skifte image og trykke "Opdater app" - uden ny udgivelse.
+    image: "{{{{NODE_IMAGE}}}}"
 
   variables:
     - key: APP_NAME
       name: "Appens navn"
       type: string
       default: "Kokkeri"
+    - key: NODE_IMAGE
+      name: "Node-image"
+      type: string
+      default: "node:24-alpine"
+      pattern: '^node:[0-9][A-Za-z0-9._-]*$'
+      hint: "Skal vaere et node:-image, fx node:24-alpine eller node:24.9.0-alpine"
 
   install:
-    image: "node:24-alpine"
+    image: "{{{{NODE_IMAGE}}}}"
     script: |
 {indent(install_script.rstrip(), 6)}
+
+  # Egen knap i panelet: skifter app-filerne uden at geninstallere. /data bliver.
+  update:
+    image: "{{{{NODE_IMAGE}}}}"
+    label: "Opdater Kokkeri"
+    script: |
+{indent(opdater_script.rstrip(), 6)}
 
   startup:
     # node:sqlite er stabilt i Node 24; fallback-flaget daekker aeldre images.
@@ -259,6 +295,17 @@ _tar = tarfile.open(fileobj=io.BytesIO(kør_dekoderen(_m.group(1))))
 for _p in FILES:
     assert _tar.extractfile(_p).read() == payload_filer[_p], f'payload afviger for {_p}'
 assert "require('node:sqlite')" in g['startup']['command']
+# Payloaden staar TO gange i YAML'en (install + update) - verificer begge. En
+# opdatering, der pakker noget andet ud end installationen, er svaer at opdage.
+_u = g['update']['script']
+assert _u.count('YGG_PAYLOAD_EOF') == 2 and 'rm -rf app' in _u
+_um = re.search(r"\| tar x\n(.*?)\nYGG_PAYLOAD_EOF", _u, re.S)
+_utar = tarfile.open(fileobj=io.BytesIO(kør_dekoderen(_um.group(1))))
+for _p in FILES:
+    assert _utar.extractfile(_p).read() == payload_filer[_p], f'update-payload afviger for {_p}'
+# update maa ALDRIG roere /data - det er hele pointen med knappen
+assert '/data' not in _u.replace('Databasen i /data er uroert.', '')
+assert g['docker']['image'] == '{{NODE_IMAGE}}' and g['install']['image'] == '{{NODE_IMAGE}}'
 print(f'trimning: {raa_i_alt} -> {trimmet_i_alt} b app-filer (sparet {raa_i_alt - trimmet_i_alt} b foer komprimering)')
 print(f'payload: tar {len(tar_bytes)} -> brotli {len(komprimeret)} -> base85 {len(payload)} tegn')
 print(f'install-script: {len(script)} tegn af 120000 (sh -c-graense 131072); payload verificeret byte-identisk')
