@@ -6,7 +6,7 @@
 <title>Kokkeri</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon-192.png">
-<link rel="stylesheet" href="style.css?v=26">
+<link rel="stylesheet" href="style.css?v=27">
 <script data-theme-init>
 /* anvend gemt tema foer foerste paint */
 (function(){try{var t=localStorage.getItem('kk_theme');
@@ -61,10 +61,27 @@ else document.documentElement.dataset.theme='dark';}catch(e){}})();
 <div id="toast"></div>
 <div id="printHost" class="printsheet"></div>
 
-<script src="app.js?v=26"></script>
+<script src="app.js?v=27"></script>
 <script>
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js').catch(function () {});
+  navigator.serviceWorker.register('/sw.js').then(function (reg) {
+    /* Uden det her opdager en aaben fane aldrig, at der ligger en ny sw.js,
+       og serverer sin egen cache videre. doda stod paa v33 paa Andreas'
+       telefon, mens serveren koerte v38 (RUNE-ERFARINGER, 19-08-2026). */
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) reg.update().catch(function () {});
+    });
+  }).catch(function () {});
+  /* En ny service worker skifter arbejderen ud - ikke koden foran brugeren.
+     Kun hvis der var en controller i forvejen; ellers ville en frisk
+     installation genindlaese sig selv uden grund. */
+  var havdeStyring = !!navigator.serviceWorker.controller;
+  var genindlaeser = false;
+  navigator.serviceWorker.addEventListener('controllerchange', function () {
+    if (!havdeStyring || genindlaeser) return;
+    genindlaeser = true;
+    window.location.reload();
+  });
 }
 </script>
 </body>

@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 26;
+const APP_VERSION = 27;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -911,7 +911,24 @@ function renderNav() {
   });
   $('#navSearch').onclick = openPalette;
   renderNavTimers();
-  $('#navVersion').textContent = 'Kokkeri v' + APP_VERSION;
+  /* Versionsnummeret er ogsaa UDVEJEN: en service worker kan servere gammel
+     kode, og saa er et klik her den hurtigste vej til den nye. Automatikken
+     (reg.update i index.html) klarer det normalt - men en udvej skal virke
+     praecis dér, hvor automatikken svigtede (doda v39). */
+  const vEl = $('#navVersion');
+  vEl.textContent = 'Kokkeri v' + APP_VERSION;
+  vEl.title = 'Click to clear the cache and load the newest version';
+  vEl.style.cursor = 'pointer';
+  vEl.onclick = async () => {
+    try {
+      if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+        const alle = await navigator.serviceWorker.getRegistrations();
+        for (const r of alle) await r.update();
+      }
+      if (window.caches) await Promise.all((await caches.keys()).map((n) => caches.delete(n)));
+    } catch { /* uden cache-api er der ikke noget at rydde */ }
+    location.reload();
+  };
   const A = app();
   $('#brandName').textContent = A.appTitle || 'Kokkeri';
   $('#brandLogo').innerHTML = S.settings.logo ? `<img class="navlogo" src="${S.settings.logo}">` : '🍳';

@@ -66,6 +66,12 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v27** (august 2026): **Appen henter ny kode af sig selv.**
+  - En åben fane kunne servere gammel kode i det uendelige, fordi den aldrig
+    opdagede, at der lå en ny udgave. Nu tjekker den, hver gang du vender
+    tilbage til den, og genindlæser når den nye udgave er hentet.
+  - **Versionsnummeret nederst i menuen kan klikkes.** Det rydder cachen og
+    henter den nyeste udgave — udvejen, hvis automatikken skulle svigte.
 - **v26** (august 2026): **Claude kan nu læse og skrive i Kokkeri – og appen har
   fået sin egen »Opdatér«-knap i panelet.**
   - **Claude-adgang (MCP).** Under Indstillinger kan du forbinde **claude.ai**
