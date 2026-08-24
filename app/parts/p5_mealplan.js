@@ -293,6 +293,9 @@ function autoFillWeek() {
       <button class="btn small" id="fcAll">Markér alt</button>
       <button class="btn small" id="fcMain">Kun hovedretter</button>
     </div>
+    <label class="chk" style="margin-top:14px"><input type="checkbox" id="fcFrokost">
+      <span>Udfyld også frokost <span class="muted small">(fra frokost-opskrifter: madpakker,
+        sandwich, brunch og lette retter – på tværs af kategorier)</span></span></label>
     <label class="fld" style="margin-top:14px"><span>Mindste vurdering</span>
       <select id="fcStars">
         <option value="0">★ Alle – også uvurderede</option>
@@ -321,6 +324,7 @@ function autoFillWeek() {
     };
     bokse().forEach(b => b.onchange = opdater);
     m.querySelector('#fcStars').onchange = opdater;
+    m.querySelector('#fcFrokost').checked = lsGet('kk_fillfrokost', '') === '1';
     m.querySelector('#fcAll').onclick = () => { bokse().forEach(b => b.checked = true); opdater(); };
     m.querySelector('#fcMain').onclick = () => {
       bokse().forEach(b => b.checked = normName(b.dataset.fc) === 'hovedret');
@@ -332,14 +336,27 @@ function autoFillWeek() {
       const pulje = puljen();
       try { localStorage.setItem('kk_fillcats', JSON.stringify(v)); } catch (e) {}
       lsSet('kk_fillminstars', minStjerner());
+      const ogsaaFrokost = m.querySelector('#fcFrokost').checked;
+      lsSet('kk_fillfrokost', ogsaaFrokost ? '1' : '0');
       closeModal();
-      await doAutoFill(free, dates, pulje);
+      const nAften = await doAutoFill(free, dates, pulje, 'dinner');
+      let nFrokost = 0;
+      if (ogsaaFrokost) {
+        /* Frokost gaar UDEN om kategori-valget: frokost er et filter paa tvaers
+         * af kategorier, ikke en kategori. Stjernekravet gaelder stadig. */
+        const frokostPulje = K('recipe').filter(r => erFrokost(r) && opfylderStjerner(r, minStjerner()));
+        const frieFrokost = dates.filter(d => !K('planEntry').some(e => e.date === d && slotOf(e) === 'lunch'));
+        if (frokostPulje.length) nFrokost = await doAutoFill(frieFrokost, dates, frokostPulje, 'lunch');
+        else toast('Ingen frokost-opskrifter matcher stjernekravet', true);
+      }
+      toast(`${nAften} aftensmåltider${nFrokost ? ' og ' + nFrokost + ' frokoster' : ''} udfyldt – træk retterne rundt, som du vil`);
+      render();
     };
     opdater();
   });
 }
 
-async function doAutoFill(free, dates, recipes) {
+async function doAutoFill(free, dates, recipes, slot) {
   const usedIds = new Set(K('planEntry').filter(e => dates.includes(e.date) && e.recipeId).map(e => e.recipeId));
   const weight = r => 1 + (r.rating || 0) + (r.favorite ? 3 : 0);
   let pool = recipes.filter(r => !usedIds.has(r.id));
@@ -356,11 +373,10 @@ async function doAutoFill(free, dates, recipes) {
   };
 
   const items = free.map(d => ({
-    id: uid(), kind: 'planEntry', date: d, slot: 'dinner', recipeId: draw().id, text: '', servings: null
+    id: uid(), kind: 'planEntry', date: d, slot: slot || 'dinner', recipeId: draw().id, text: '', servings: null
   }));
-  await saveBulk(items);
-  toast(`${items.length} dage udfyldt – træk retterne rundt, som du vil`);
-  render();
+  if (items.length) await saveBulk(items);
+  return items.length;
 }
 
 /* Hurtigt kig paa retten fra madplanen - man planlaegger tit ud fra tid og

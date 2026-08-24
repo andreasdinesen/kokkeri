@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 27;
+const APP_VERSION = 28;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -22,7 +22,7 @@ const S = {
   view: 'dash',
   viewArg: null,        // fx opskrift-id på detaljesiden
   weekStart: null,      // mandag i den viste madplan-uge (YYYY-MM-DD)
-  recFilter: { q: '', category: '', fav: false, sort: lsGet('kk_recsort', 'nyeste'), minStars: +lsGet('kk_recminstars', 0) || 0, raavarer: [], kilde: '' },
+  recFilter: { q: '', category: '', fav: false, sort: lsGet('kk_recsort', 'nyeste'), minStars: +lsGet('kk_recminstars', 0) || 0, raavarer: [], kilde: '', frokost: false },
   /* undefined = ikke valgt endnu; filter-panelet starter da aabent paa en stor
    * skaerm og lukket paa en telefon */
   filterOpen: lsGet('kk_filteropen', '') === '' ? undefined : lsGet('kk_filteropen', '') === '1',
@@ -506,15 +506,15 @@ function convertRecipeToMetric(r) {
  * tags: "Gullaschsuppe" -> Suppe. Mest specifikke regler foerst, saa
  * "Kartoffelsalat" bliver Salat og ikke Hovedret. */
 const CAT_RULES = [
-  ['Suppe', /suppe|soup\b/, 2],
-  ['Salat', /salat|coleslaw/, 2],
-  ['Kage & bagværk', /kage|brød|bolle|muffin|cookie|tærte|scone|croissant|cupcake|brownie|snegl|kringle|bagværk|kiks|vaffel|pandekag|klejne|marengs/, 2],
-  ['Dessert', /dessert|sorbet|mousse|tiramisu|budding|kompot|trifli|panna cotta|trøffel|trøfler|creme brulee|fromage|isdessert/, 2],
-  ['Morgenmad', /morgenmad|brunch|grød|havregr|müsli|granola|omelet|æggekage|smoothiebowl/, 2],
-  ['Drikkevarer', /drink|smoothie|juice|cocktail|kaffe|\bte\b|saft|milkshake|lemonade|glögg|gløgg/, 2],
-  ['Forret', /forret|tapas|canapé|snacks?\b/, 2],
-  ['Tilbehør', /tilbehør|dressing|\bdip\b|pesto|salsa|marinade|syltede|remoulade|\bsauce\b|kompot|chutney|rødkål/, 2],
-  ['Hovedret', /hovedret|aftensmad|middag|gryde|steg\b|pasta|spaghetti|lasagne|risotto|curry|burger|pizza|frikadell|wok\b|gratin|bøf|fisk|kylling|kød|tærte|ret\b/, 2]
+  ['Suppe', /suppe|soup\b/],
+  ['Salat', /salat|coleslaw/],
+  ['Kage & bagværk', /kage|brød|bolle|muffin|cookie|tærte|scone|croissant|cupcake|brownie|snegl|kringle|bagværk|kiks|vaffel|pandekag|klejne|marengs/],
+  ['Dessert', /dessert|sorbet|mousse|tiramisu|budding|kompot|trifli|panna cotta|trøffel|trøfler|creme brulee|fromage|isdessert/],
+  ['Morgenmad', /morgenmad|brunch|grød|havregr|müsli|granola|omelet|æggekage|smoothiebowl/],
+  ['Drikkevarer', /drink|smoothie|juice|cocktail|kaffe|\bte\b|saft|milkshake|lemonade|glögg|gløgg/],
+  ['Forret', /forret|tapas|canapé|snacks?\b/],
+  ['Tilbehør', /tilbehør|dressing|\bdip\b|pesto|salsa|marinade|syltede|remoulade|\bsauce\b|kompot|chutney|rødkål/],
+  ['Hovedret', /hovedret|aftensmad|middag|gryde|steg\b|pasta|spaghetti|lasagne|risotto|curry|burger|pizza|frikadell|wok\b|gratin|bøf|fisk|kylling|kød|tærte|ret\b/]
 ];
 function guessCategory(rec) {
   const cats = app().categories || [];
@@ -765,6 +765,20 @@ async function importPaprikaFile(file, onProgress) {
   return out;
 }
 
+/* ---------------- frokost ----------------
+ * Kokkeri har ingen Frokost-KATEGORI, og det skal den heller ikke have: en
+ * opskrift kan kun have én kategori, og "Frokostsalat" er allerede en Salat.
+ * Til gengaeld VED dine data det godt - maalt paa 12.296 opskrifter stod ordet
+ * 828 gange i sidens egen kategori (sourceCategory) og 708 gange i tags, men
+ * kun 13 gange i titlen. Derfor er frokost et FILTER paa tvaers af kategorier,
+ * ikke en kategori. Felterne er alle med i KORT_FELTER, saa det virker uden
+ * hydrering. */
+const FROKOST_RE = /frokost|madpakke|madkasse|brunch|smørrebrød|sandwich|\bwrap\b|panini|\bpita\b|toast|croque|æggekage|omelet|frittata|tapas|\bbowl\b|quiche|let ret|letret|mellemmåltid/;
+function erFrokost(r) {
+  if (!r) return false;
+  return FROKOST_RE.test(normName([r.sourceCategory || '', (r.tags || []).join(' '), r.title || ''].join(' ')));
+}
+
 /* ---------------- kilde (grunddomaene) ----------------
  * Kun vaerten uden "www." - ikke hele adressen. Bruges baade til filteret paa
  * Opskrifter og til oversigten i masse-importen. */
@@ -808,7 +822,10 @@ const RAAVARE_GRUPPER = [
   ['Kalkun',          /kalkun/, 1],
   ['Fisk',            /laks|torsk|rødspætte|makrel|tun\b|sej\b|kulmule|hellefisk|fiskefilet|\bfisk\b/, 1],
   ['Skaldyr',         /rejer|muslinger|krebse|hummer|blæksprutte|jomfruhummer/, 1],
-  ['Æg',              /\bæg\b|æggeblomme|æggehvide/, 1],
+  /* IKKE \bæg\b: JavaScripts ordgraense er ASCII-baseret, saa æ taeller ikke
+   * som bogstav, og /\bæg\b/ matcher ALDRIG "2 æg". Gruppen har undertalt
+   * siden v22. raaNorm() giver mellemrums-adskilte ord, saa (^| ) duer. */
+  ['Æg',              /(^| )æg( |$)|æggeblomme|æggehvide/, 1],
   ['Pasta',           /pasta|spaghetti|penne|tagliatelle|lasagne|makaroni|fusilli|orzo/, 2],
   ['Ris',             /\bris\b|risotto|jasminris|basmati|grødris/, 2],
   ['Kartofler',       /kartof/, 2],
@@ -1390,9 +1407,6 @@ function bindRecipeCards() {
   $$('.reccard[data-rec]').forEach(c => c.onclick = () => goto('recipeDetail', c.dataset.rec));
 }
 
-/* ---------------- "Hvad kan jeg lave?" ----------------
- * Raavare-chips bygget af biblioteket selv (se raavareListe() i p1b). Tallene
- * caches: 20 grupper x tusindvis af opskrifter maa ikke koeres ved hver render. */
 /* ---------------- filter-panelet ----------------
  * Soegefeltet staar ALTID frit - det er det, man bruger mest. Resten (sortering,
  * vurdering, kilde, favoritter, kategorier) ligger i et foldeligt panel, saa
@@ -1402,6 +1416,7 @@ function bindRecipeCards() {
 function aktiveFiltre(f) {
   const ud = [];
   if (f.fav) ud.push('⭐ Favoritter');
+  if (f.frokost) ud.push('🥪 Frokost');
   if (f.noCat) ud.push('🏷️ Uden kategori');
   else if (f.category) ud.push(f.category);
   if (f.minStars) ud.push('★'.repeat(f.minStars) + ' og op');
@@ -1435,6 +1450,8 @@ function filterPanelHtml(f, cats, udenKat) {
     </div>
     <div class="rowflex" style="margin-top:10px">
       <span class="chip chipbtn${f.fav ? ' sel' : ''}" id="recFav">⭐ Favoritter</span>
+      <span class="chip chipbtn${f.frokost ? ' sel' : ''}" id="recFrokost"
+        title="Frokost, madpakker, sandwich, brunch og lette retter - paa tvaers af kategorier">🥪 Frokost (${frokostAntal()})</span>
       ${cats.map(c => `<span class="chip chipbtn${!f.noCat && f.category === c ? ' sel' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}
       ${udenKat ? `<span class="chip chipbtn${f.noCat ? ' sel' : ''}" id="recNoCat"
         title="Opskrifter der mangler en kategori">🏷️ Uden kategori (${udenKat})</span>` : ''}
@@ -1442,8 +1459,17 @@ function filterPanelHtml(f, cats, udenKat) {
   </details>`;
 }
 
-/* Kilde-listen gaar gennem hele biblioteket - caches som raavarerne, saa den
- * ikke regnes forfra ved hvert tastetryk i soegefeltet. */
+/* Antal frokost-opskrifter. Caches som kilderne - erFrokost koerer over hele
+ * biblioteket, og chippen tegnes ved hvert tastetryk i soegefeltet. */
+function frokostAntal() {
+  const noegle = K('recipe').length;
+  if (S._frokostAntal === undefined || S._frokostNoegle !== noegle) {
+    S._frokostAntal = K('recipe').reduce((a, r) => a + (erFrokost(r) ? 1 : 0), 0);
+    S._frokostNoegle = noegle;
+  }
+  return S._frokostAntal;
+}
+/* Kilde-listen gaar gennem hele biblioteket - caches som frokost-tallet. */
 function kildeListeCached() {
   const noegle = K('recipe').length;
   if (!S._kilder || S._kilderNoegle !== noegle) {
@@ -1452,6 +1478,9 @@ function kildeListeCached() {
   }
   return S._kilder;
 }
+/* ---------------- "Hvad kan jeg lave?" ----------------
+ * Raavare-chips bygget af biblioteket selv (se raavareListe() i p1b). Tallene
+ * caches: 20 grupper x tusindvis af opskrifter maa ikke koeres ved hver render. */
 function raavareListeCached() {
   const noegle = K('recipe').length + '|' + (S.hydrated ? 1 : 0);
   if (!S._raaListe || S._raaListeNoegle !== noegle) {
@@ -1536,6 +1565,7 @@ RENDER.recipes = () => {
   }
   if (f.minStars) list = list.filter(r => (r.rating || 0) >= f.minStars);
   if (f.kilde) list = list.filter(r => recipeHost(r) === f.kilde);
+  if (f.frokost) list = list.filter(erFrokost);
   /* "Hvad kan jeg lave?": behold opskrifter med mindst én af raavarerne, og
    * laeg dem med FLEST traef oeverst - den valgte sortering afgoer inden for
    * hver gruppe. Ingredienserne findes kun paa fuldt hentede opskrifter, saa
@@ -1592,11 +1622,13 @@ RENDER.recipes_bind = () => {
   if (fbox) fbox.ontoggle = () => { S.filterOpen = fbox.open; lsSet('kk_filteropen', fbox.open ? '1' : '0'); };
   const ryd = $('#recFilterClear');
   if (ryd) ryd.onclick = () => {
-    Object.assign(S.recFilter, { category: '', noCat: false, fav: false, minStars: 0, kilde: '' });
+    Object.assign(S.recFilter, { category: '', noCat: false, fav: false, minStars: 0, kilde: '', frokost: false });
     lsSet('kk_recminstars', 0);
     omTegn();
   };
   $('#recFav').onclick = () => { S.recFilter.fav = !S.recFilter.fav; omTegn(); };
+  const frok = $('#recFrokost');
+  if (frok) frok.onclick = () => { S.recFilter.frokost = !S.recFilter.frokost; omTegn(); };
   $$('[data-cat]').forEach(c => c.onclick = () => {
     S.recFilter.noCat = false;
     S.recFilter.category = S.recFilter.category === c.dataset.cat ? '' : c.dataset.cat;
@@ -2942,6 +2974,9 @@ function autoFillWeek() {
       <button class="btn small" id="fcAll">Markér alt</button>
       <button class="btn small" id="fcMain">Kun hovedretter</button>
     </div>
+    <label class="chk" style="margin-top:14px"><input type="checkbox" id="fcFrokost">
+      <span>Udfyld også frokost <span class="muted small">(fra frokost-opskrifter: madpakker,
+        sandwich, brunch og lette retter – på tværs af kategorier)</span></span></label>
     <label class="fld" style="margin-top:14px"><span>Mindste vurdering</span>
       <select id="fcStars">
         <option value="0">★ Alle – også uvurderede</option>
@@ -2970,6 +3005,7 @@ function autoFillWeek() {
     };
     bokse().forEach(b => b.onchange = opdater);
     m.querySelector('#fcStars').onchange = opdater;
+    m.querySelector('#fcFrokost').checked = lsGet('kk_fillfrokost', '') === '1';
     m.querySelector('#fcAll').onclick = () => { bokse().forEach(b => b.checked = true); opdater(); };
     m.querySelector('#fcMain').onclick = () => {
       bokse().forEach(b => b.checked = normName(b.dataset.fc) === 'hovedret');
@@ -2981,14 +3017,27 @@ function autoFillWeek() {
       const pulje = puljen();
       try { localStorage.setItem('kk_fillcats', JSON.stringify(v)); } catch (e) {}
       lsSet('kk_fillminstars', minStjerner());
+      const ogsaaFrokost = m.querySelector('#fcFrokost').checked;
+      lsSet('kk_fillfrokost', ogsaaFrokost ? '1' : '0');
       closeModal();
-      await doAutoFill(free, dates, pulje);
+      const nAften = await doAutoFill(free, dates, pulje, 'dinner');
+      let nFrokost = 0;
+      if (ogsaaFrokost) {
+        /* Frokost gaar UDEN om kategori-valget: frokost er et filter paa tvaers
+         * af kategorier, ikke en kategori. Stjernekravet gaelder stadig. */
+        const frokostPulje = K('recipe').filter(r => erFrokost(r) && opfylderStjerner(r, minStjerner()));
+        const frieFrokost = dates.filter(d => !K('planEntry').some(e => e.date === d && slotOf(e) === 'lunch'));
+        if (frokostPulje.length) nFrokost = await doAutoFill(frieFrokost, dates, frokostPulje, 'lunch');
+        else toast('Ingen frokost-opskrifter matcher stjernekravet', true);
+      }
+      toast(`${nAften} aftensmåltider${nFrokost ? ' og ' + nFrokost + ' frokoster' : ''} udfyldt – træk retterne rundt, som du vil`);
+      render();
     };
     opdater();
   });
 }
 
-async function doAutoFill(free, dates, recipes) {
+async function doAutoFill(free, dates, recipes, slot) {
   const usedIds = new Set(K('planEntry').filter(e => dates.includes(e.date) && e.recipeId).map(e => e.recipeId));
   const weight = r => 1 + (r.rating || 0) + (r.favorite ? 3 : 0);
   let pool = recipes.filter(r => !usedIds.has(r.id));
@@ -3005,11 +3054,10 @@ async function doAutoFill(free, dates, recipes) {
   };
 
   const items = free.map(d => ({
-    id: uid(), kind: 'planEntry', date: d, slot: 'dinner', recipeId: draw().id, text: '', servings: null
+    id: uid(), kind: 'planEntry', date: d, slot: slot || 'dinner', recipeId: draw().id, text: '', servings: null
   }));
-  await saveBulk(items);
-  toast(`${items.length} dage udfyldt – træk retterne rundt, som du vil`);
-  render();
+  if (items.length) await saveBulk(items);
+  return items.length;
 }
 
 /* Hurtigt kig paa retten fra madplanen - man planlaegger tit ud fra tid og

@@ -66,6 +66,23 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v28** (august 2026): **Frokost – find de retter, du aldrig kunne finde.**
+  - **Nyt 🥪 Frokost-filter** på Opskrifter. Kokkeri har ingen frokost-kategori,
+    og det skal den heller ikke have: en opskrift kan kun have én kategori, og
+    en frokostsalat er stadig en salat. Men **sidernes egne oplysninger vidste
+    det godt** – ordet »frokost« står i 828 opskrifters kilde-kategori og i 708
+    opskrifters tags. Filteret samler dem på tværs: **2.312 opskrifter**,
+    fordelt over ni kategorier, som ellers var umulige at finde samlet.
+  - **Madplanen kan udfylde frokosterne.** Under »Udfyld fra biblioteket« kan du
+    sætte flueben ved frokost, så ugens frokoster fyldes fra frokost-retterne,
+    mens aftensmaden kommer fra dine valgte kategorier. Valget huskes.
+  - **Claude kan søge efter frokost** gennem connectoren – fx »hvad kan jeg lave
+    til frokost af det, jeg har hjemme?«
+  - **Rettet: »Æg« fandt kun en fjerdedel af opskrifterne.** Under »Hvad kan jeg
+    lave?« viste råvaren Æg 953 opskrifter, hvor det rigtige tal er 3.864. En
+    teknisk detalje gjorde, at mønstret aldrig kunne genkende ordet »æg«, når
+    det stod alene i en ingrediens. Fejlen har været der siden v22.
+
 - **v27** (august 2026): **Appen henter ny kode af sig selv.**
   - En åben fane kunne servere gammel kode i det uendelige, fordi den aldrig
     opdagede, at der lå en ny udgave. Nu tjekker den, hver gang du vender

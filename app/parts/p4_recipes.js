@@ -63,9 +63,6 @@ function bindRecipeCards() {
   $$('.reccard[data-rec]').forEach(c => c.onclick = () => goto('recipeDetail', c.dataset.rec));
 }
 
-/* ---------------- "Hvad kan jeg lave?" ----------------
- * Raavare-chips bygget af biblioteket selv (se raavareListe() i p1b). Tallene
- * caches: 20 grupper x tusindvis af opskrifter maa ikke koeres ved hver render. */
 /* ---------------- filter-panelet ----------------
  * Soegefeltet staar ALTID frit - det er det, man bruger mest. Resten (sortering,
  * vurdering, kilde, favoritter, kategorier) ligger i et foldeligt panel, saa
@@ -75,6 +72,7 @@ function bindRecipeCards() {
 function aktiveFiltre(f) {
   const ud = [];
   if (f.fav) ud.push('⭐ Favoritter');
+  if (f.frokost) ud.push('🥪 Frokost');
   if (f.noCat) ud.push('🏷️ Uden kategori');
   else if (f.category) ud.push(f.category);
   if (f.minStars) ud.push('★'.repeat(f.minStars) + ' og op');
@@ -108,6 +106,8 @@ function filterPanelHtml(f, cats, udenKat) {
     </div>
     <div class="rowflex" style="margin-top:10px">
       <span class="chip chipbtn${f.fav ? ' sel' : ''}" id="recFav">⭐ Favoritter</span>
+      <span class="chip chipbtn${f.frokost ? ' sel' : ''}" id="recFrokost"
+        title="Frokost, madpakker, sandwich, brunch og lette retter - paa tvaers af kategorier">🥪 Frokost (${frokostAntal()})</span>
       ${cats.map(c => `<span class="chip chipbtn${!f.noCat && f.category === c ? ' sel' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}
       ${udenKat ? `<span class="chip chipbtn${f.noCat ? ' sel' : ''}" id="recNoCat"
         title="Opskrifter der mangler en kategori">🏷️ Uden kategori (${udenKat})</span>` : ''}
@@ -115,8 +115,17 @@ function filterPanelHtml(f, cats, udenKat) {
   </details>`;
 }
 
-/* Kilde-listen gaar gennem hele biblioteket - caches som raavarerne, saa den
- * ikke regnes forfra ved hvert tastetryk i soegefeltet. */
+/* Antal frokost-opskrifter. Caches som kilderne - erFrokost koerer over hele
+ * biblioteket, og chippen tegnes ved hvert tastetryk i soegefeltet. */
+function frokostAntal() {
+  const noegle = K('recipe').length;
+  if (S._frokostAntal === undefined || S._frokostNoegle !== noegle) {
+    S._frokostAntal = K('recipe').reduce((a, r) => a + (erFrokost(r) ? 1 : 0), 0);
+    S._frokostNoegle = noegle;
+  }
+  return S._frokostAntal;
+}
+/* Kilde-listen gaar gennem hele biblioteket - caches som frokost-tallet. */
 function kildeListeCached() {
   const noegle = K('recipe').length;
   if (!S._kilder || S._kilderNoegle !== noegle) {
@@ -125,6 +134,9 @@ function kildeListeCached() {
   }
   return S._kilder;
 }
+/* ---------------- "Hvad kan jeg lave?" ----------------
+ * Raavare-chips bygget af biblioteket selv (se raavareListe() i p1b). Tallene
+ * caches: 20 grupper x tusindvis af opskrifter maa ikke koeres ved hver render. */
 function raavareListeCached() {
   const noegle = K('recipe').length + '|' + (S.hydrated ? 1 : 0);
   if (!S._raaListe || S._raaListeNoegle !== noegle) {
@@ -209,6 +221,7 @@ RENDER.recipes = () => {
   }
   if (f.minStars) list = list.filter(r => (r.rating || 0) >= f.minStars);
   if (f.kilde) list = list.filter(r => recipeHost(r) === f.kilde);
+  if (f.frokost) list = list.filter(erFrokost);
   /* "Hvad kan jeg lave?": behold opskrifter med mindst én af raavarerne, og
    * laeg dem med FLEST traef oeverst - den valgte sortering afgoer inden for
    * hver gruppe. Ingredienserne findes kun paa fuldt hentede opskrifter, saa
@@ -265,11 +278,13 @@ RENDER.recipes_bind = () => {
   if (fbox) fbox.ontoggle = () => { S.filterOpen = fbox.open; lsSet('kk_filteropen', fbox.open ? '1' : '0'); };
   const ryd = $('#recFilterClear');
   if (ryd) ryd.onclick = () => {
-    Object.assign(S.recFilter, { category: '', noCat: false, fav: false, minStars: 0, kilde: '' });
+    Object.assign(S.recFilter, { category: '', noCat: false, fav: false, minStars: 0, kilde: '', frokost: false });
     lsSet('kk_recminstars', 0);
     omTegn();
   };
   $('#recFav').onclick = () => { S.recFilter.fav = !S.recFilter.fav; omTegn(); };
+  const frok = $('#recFrokost');
+  if (frok) frok.onclick = () => { S.recFilter.frokost = !S.recFilter.frokost; omTegn(); };
   $$('[data-cat]').forEach(c => c.onclick = () => {
     S.recFilter.noCat = false;
     S.recFilter.category = S.recFilter.category === c.dataset.cat ? '' : c.dataset.cat;

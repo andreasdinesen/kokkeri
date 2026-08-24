@@ -33,7 +33,7 @@ const RAAVARE_GRUPPER = [
   ['kalkun', /kalkun/],
   ['fisk', /laks|torsk|rødspætte|makrel|tun\b|sej\b|kulmule|hellefisk|fiskefilet|\bfisk\b/],
   ['skaldyr', /rejer|muslinger|krebse|hummer|blæksprutte|jomfruhummer/],
-  ['æg', /\bæg\b|æggeblomme|æggehvide/],
+  ['æg', /(^| )æg( |$)|æggeblomme|æggehvide/],   // ikke \\bæg\\b - se p1b_food.js
   ['pasta', /pasta|spaghetti|penne|tagliatelle|lasagne|makaroni|fusilli|orzo/],
   ['ris', /\bris\b|risotto|jasminris|basmati|grødris/],
   ['kartofler', /kartof/],
@@ -46,6 +46,12 @@ const RAAVARE_GRUPPER = [
   ['ost', /\bost\b|mozzarella|feta|parmesan|cheddar|flødeost/],
   ['mælk', /piskefløde|madlagningsfløde|\bfløde\b|\bmælk\b|kærnemælk|creme fraiche|cremefraiche/]
 ];
+/* Frokost-genkendelse - samme regex som erFrokost() i app/parts/p1b_food.js.
+ * Kokkeri har ingen Frokost-KATEGORI (en opskrift kan kun have én), men ordet
+ * staar i sidens egen kategori og i tags paa tusindvis af opskrifter.
+ * HOLD DEN I SYNC med frontenden, samme aftale som RAAVARE_GRUPPER. */
+const FROKOST_RE = /frokost|madpakke|madkasse|brunch|smørrebrød|sandwich|\bwrap\b|panini|\bpita\b|toast|croque|æggekage|omelet|frittata|tapas|\bbowl\b|quiche|let ret|letret|mellemmåltid/;
+
 const norm = s => String(s || '').toLowerCase().replace(/[^a-zæøå0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 
 function opret(srv) {
@@ -63,6 +69,7 @@ function opret(srv) {
     url: r.url || '', tags: r.tags || [], favorite: !!r.favorite,
     timesCooked: r.timesCooked || 0, lastCooked: r.lastCooked || null
   });
+  const erFrokost = r => FROKOST_RE.test(norm([r.sourceCategory || '', (r.tags || []).join(' '), r.title || ''].join(' ')));
   const linjer = r => (r.ingredients || []).filter(l => !/^##/.test(l)).map(norm);
   /* Findes der en gruppe for ordet, bruges dens regex ("svampe" skal ogsaa
    * finde champignon). Ellers delstreng - ikke praefiks, for paa dansk staar
@@ -96,6 +103,9 @@ function opret(srv) {
           category: { type: 'string' },
           source: { type: 'string', description: 'Base domain, e.g. valdemarsro.dk' },
           min_rating: { type: 'number', description: '0-5' },
+          meal: { type: 'string', description: 'Set to "lunch" to only get recipes suited for lunch '
+            + '(lunch, packed lunch, sandwiches, brunch, light dishes). The library has no lunch '
+            + 'category - this matches how the source sites tagged them.' },
           limit: { type: 'number', description: 'Default 20, max 100.' }
         }
       },
@@ -106,6 +116,7 @@ function opret(srv) {
         if (a.category) liste = liste.filter(r => norm(r.category) === norm(a.category));
         if (a.source) liste = liste.filter(r => srv.host(r) === String(a.source).replace(/^www\./, ''));
         if (a.min_rating) liste = liste.filter(r => (r.rating || 0) >= +a.min_rating);
+        if (/lunch|frokost/i.test(String(a.meal || ''))) liste = liste.filter(erFrokost);
         if (q) {
           liste = liste.filter(r => norm(r.title).includes(q)
             || norm((r.tags || []).join(' ')).includes(q)
@@ -150,16 +161,23 @@ function opret(srv) {
         type: 'object',
         properties: {
           ingredients: { type: 'array', items: { type: 'string' }, description: 'One or more ingredients.' },
+          meal: { type: 'string', description: 'Set to "lunch" to only suggest lunch-friendly recipes.' },
           limit: { type: 'number', description: 'Default 15.' }
         },
         required: ['ingredients']
       },
       kald(a) {
-        const ord = (Array.isArray(a.ingredients) ? a.ingredients : []).map(norm).filter(x => x.length >= 3);
-        if (!ord.length) return { fejl: 'Angiv mindst én råvare på mindst tre bogstaver.' };
+        /* To bogstaver er nok, HVIS ordet er en kendt raavaregruppe - "æg",
+         * "ost" og "ris" er rigtige danske raavarer. Ellers kraeves tre, saa et
+         * tilfaeldigt "af" ikke matcher det halve bibliotek. */
+        const ord = (Array.isArray(a.ingredients) ? a.ingredients : []).map(norm)
+          .filter(x => x.length >= 3 || (x.length >= 2 && RAAVARE_GRUPPER.some(([navn]) => navn === x)));
+        if (!ord.length) return { fejl: 'Angiv mindst én råvare (mindst to bogstaver for kendte råvarer som æg, ost og ris).' };
         const grænse = Math.min(50, Math.max(1, +a.limit || 15));
         const scoret = [];
+        const kunFrokost = /lunch|frokost/i.test(String(a.meal || ''));
         for (const r of opskrifter()) {
+          if (kunFrokost && !erFrokost(r)) continue;
           const n = ord.filter(o => harRaavare(r, o)).length;
           if (n) scoret.push({ n, r });
         }

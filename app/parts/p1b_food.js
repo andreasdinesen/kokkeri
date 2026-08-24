@@ -45,15 +45,15 @@ function convertRecipeToMetric(r) {
  * tags: "Gullaschsuppe" -> Suppe. Mest specifikke regler foerst, saa
  * "Kartoffelsalat" bliver Salat og ikke Hovedret. */
 const CAT_RULES = [
-  ['Suppe', /suppe|soup\b/, 2],
-  ['Salat', /salat|coleslaw/, 2],
-  ['Kage & bagværk', /kage|brød|bolle|muffin|cookie|tærte|scone|croissant|cupcake|brownie|snegl|kringle|bagværk|kiks|vaffel|pandekag|klejne|marengs/, 2],
-  ['Dessert', /dessert|sorbet|mousse|tiramisu|budding|kompot|trifli|panna cotta|trøffel|trøfler|creme brulee|fromage|isdessert/, 2],
-  ['Morgenmad', /morgenmad|brunch|grød|havregr|müsli|granola|omelet|æggekage|smoothiebowl/, 2],
-  ['Drikkevarer', /drink|smoothie|juice|cocktail|kaffe|\bte\b|saft|milkshake|lemonade|glögg|gløgg/, 2],
-  ['Forret', /forret|tapas|canapé|snacks?\b/, 2],
-  ['Tilbehør', /tilbehør|dressing|\bdip\b|pesto|salsa|marinade|syltede|remoulade|\bsauce\b|kompot|chutney|rødkål/, 2],
-  ['Hovedret', /hovedret|aftensmad|middag|gryde|steg\b|pasta|spaghetti|lasagne|risotto|curry|burger|pizza|frikadell|wok\b|gratin|bøf|fisk|kylling|kød|tærte|ret\b/, 2]
+  ['Suppe', /suppe|soup\b/],
+  ['Salat', /salat|coleslaw/],
+  ['Kage & bagværk', /kage|brød|bolle|muffin|cookie|tærte|scone|croissant|cupcake|brownie|snegl|kringle|bagværk|kiks|vaffel|pandekag|klejne|marengs/],
+  ['Dessert', /dessert|sorbet|mousse|tiramisu|budding|kompot|trifli|panna cotta|trøffel|trøfler|creme brulee|fromage|isdessert/],
+  ['Morgenmad', /morgenmad|brunch|grød|havregr|müsli|granola|omelet|æggekage|smoothiebowl/],
+  ['Drikkevarer', /drink|smoothie|juice|cocktail|kaffe|\bte\b|saft|milkshake|lemonade|glögg|gløgg/],
+  ['Forret', /forret|tapas|canapé|snacks?\b/],
+  ['Tilbehør', /tilbehør|dressing|\bdip\b|pesto|salsa|marinade|syltede|remoulade|\bsauce\b|kompot|chutney|rødkål/],
+  ['Hovedret', /hovedret|aftensmad|middag|gryde|steg\b|pasta|spaghetti|lasagne|risotto|curry|burger|pizza|frikadell|wok\b|gratin|bøf|fisk|kylling|kød|tærte|ret\b/]
 ];
 function guessCategory(rec) {
   const cats = app().categories || [];
@@ -304,6 +304,20 @@ async function importPaprikaFile(file, onProgress) {
   return out;
 }
 
+/* ---------------- frokost ----------------
+ * Kokkeri har ingen Frokost-KATEGORI, og det skal den heller ikke have: en
+ * opskrift kan kun have én kategori, og "Frokostsalat" er allerede en Salat.
+ * Til gengaeld VED dine data det godt - maalt paa 12.296 opskrifter stod ordet
+ * 828 gange i sidens egen kategori (sourceCategory) og 708 gange i tags, men
+ * kun 13 gange i titlen. Derfor er frokost et FILTER paa tvaers af kategorier,
+ * ikke en kategori. Felterne er alle med i KORT_FELTER, saa det virker uden
+ * hydrering. */
+const FROKOST_RE = /frokost|madpakke|madkasse|brunch|smørrebrød|sandwich|\bwrap\b|panini|\bpita\b|toast|croque|æggekage|omelet|frittata|tapas|\bbowl\b|quiche|let ret|letret|mellemmåltid/;
+function erFrokost(r) {
+  if (!r) return false;
+  return FROKOST_RE.test(normName([r.sourceCategory || '', (r.tags || []).join(' '), r.title || ''].join(' ')));
+}
+
 /* ---------------- kilde (grunddomaene) ----------------
  * Kun vaerten uden "www." - ikke hele adressen. Bruges baade til filteret paa
  * Opskrifter og til oversigten i masse-importen. */
@@ -347,7 +361,10 @@ const RAAVARE_GRUPPER = [
   ['Kalkun',          /kalkun/, 1],
   ['Fisk',            /laks|torsk|rødspætte|makrel|tun\b|sej\b|kulmule|hellefisk|fiskefilet|\bfisk\b/, 1],
   ['Skaldyr',         /rejer|muslinger|krebse|hummer|blæksprutte|jomfruhummer/, 1],
-  ['Æg',              /\bæg\b|æggeblomme|æggehvide/, 1],
+  /* IKKE \bæg\b: JavaScripts ordgraense er ASCII-baseret, saa æ taeller ikke
+   * som bogstav, og /\bæg\b/ matcher ALDRIG "2 æg". Gruppen har undertalt
+   * siden v22. raaNorm() giver mellemrums-adskilte ord, saa (^| ) duer. */
+  ['Æg',              /(^| )æg( |$)|æggeblomme|æggehvide/, 1],
   ['Pasta',           /pasta|spaghetti|penne|tagliatelle|lasagne|makaroni|fusilli|orzo/, 2],
   ['Ris',             /\bris\b|risotto|jasminris|basmati|grødris/, 2],
   ['Kartofler',       /kartof/, 2],
