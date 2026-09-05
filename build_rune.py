@@ -187,16 +187,59 @@ echo "Kokkeri v{app_version} er installeret."
 # samme payload ud igen. /data (databasen) roeres IKKE, og skemaet opdaterer
 # sig selv ved naeste start. Det er vejen til at skifte app-filerne - eller
 # Node-versionen via NODE_IMAGE - uden at geninstallere.
+# Fire ting, som Sagu v48 maalte sig frem til - to af dem kostede ti timers
+# nedetid i en soesterrune:
+#
+#  1. LAAS om HELE scriptet. Knappen kan trykkes to gange, og to koerlser delte
+#     arbejdsmappe. `mkdir` er atomisk paa alle filsystemer; "[ -d ] og saa
+#     mkdir" har et hul imellem sig. `trap` frigiver den, for en fejlet
+#     opdatering er den almindelige fejl - og en laas, der overlever den, goer
+#     knappen doed for altid.
+#  2. BYT, slet ikke. `rm -rf app` foer udpakningen efterlod et vindue helt uden
+#     app/ - og dermed intet at redde sig selv med. Den gamle app flyttes nu til
+#     side som en helhed. Det loeser samtidig det, `rm -rf app` var der for:
+#     filer, der er slettet i en ny version, bliver ikke liggende (Beanledger
+#     v30). Derfor er build-valideringen SKIFTET UD, ikke bare fjernet.
+#  3. Ingen /tmp. Vi havde den ikke - payloaden ligger i scriptet - men
+#     udpakningen sker nu i .kokkeri-ny ved siden af app/, saa begge flytninger
+#     er rename inden for samme filsystem.
+#  4. GENSTART-BESKED. Panelets app-update svarer 202 og genstarter IKKE
+#     serveren; `restart` er et andet endepunkt. Uden beskeden kan den gamle
+#     proces koere videre oven paa nye filer - det var de ti timer.
 opdater_script = f"""set -eu
 echo "Opdaterer Kokkeri til v{app_version} ..."
 echo "Node: $(node --version)"
-rm -rf app
 
-node -e '{B85_DEKODER}' <<'YGG_PAYLOAD_EOF' | tar x
+if ! mkdir .kokkeri-laas 2>/dev/null; then
+  echo "[fejl] en anden opdatering er allerede i gang."
+  echo "Vent til den er faerdig, eller genstart Kokkeri og proev igen."
+  exit 1
+fi
+trap 'rm -rf .kokkeri-laas .kokkeri-ny' EXIT INT TERM
+
+rm -rf .kokkeri-ny .kokkeri-gammel
+mkdir -p .kokkeri-ny
+
+node -e '{B85_DEKODER}' <<'YGG_PAYLOAD_EOF' | tar x -C .kokkeri-ny
 {wrap(payload)}
 YGG_PAYLOAD_EOF
 
+NY=$(find .kokkeri-ny -maxdepth 2 -type d -name app | head -n 1)
+if [ -z "$NY" ] || [ ! -f "$NY/server.js" ]; then
+  echo "[fejl] payloaden indeholder ingen app/server.js - intet er aendret."
+  exit 1
+fi
+if [ -d app ]; then mv app .kokkeri-gammel; fi
+mv "$NY" app
+rm -rf .kokkeri-ny .kokkeri-gammel
+
 echo "App-filerne er skiftet ud. Databasen i /data er uroert."
+echo ""
+echo "============================================"
+echo "  GENSTART KOKKERI NU."
+echo "  Filerne er skiftet ud, men serveren koerer"
+echo "  stadig den gamle kode, indtil den genstartes."
+echo "============================================"
 """
 
 # Loftet er Linux' MAX_ARG_STRLEN (131072 b) for ETT sh -c-argument. 120 K giver
@@ -255,7 +298,20 @@ gameskill:
 
   startup:
     # node:sqlite er stabilt i Node 24; fallback-flaget daekker aeldre images.
+    # Foerst to oprydninger efter en afbrudt opdatering (se opdater_script):
+    # den gamle app flyttes til side frem for at blive slettet, saa et nedbrud
+    # midt i byttet kan rulles tilbage - og en laas, trap ikke naaede at
+    # frigive ved et haardt drab, ryddes her.
     command: |
+      if [ ! -f app/server.js ] && [ -f .kokkeri-gammel/server.js ]; then
+        rm -rf app
+        mv .kokkeri-gammel app
+        echo "[kode] en afbrudt opdatering er rullet tilbage - koerer forrige udgave"
+      fi
+      if [ -d .kokkeri-laas ]; then
+        rm -rf .kokkeri-laas .kokkeri-ny
+        echo "[kode] en strandet opdateringslaas er ryddet"
+      fi
       if node -e "require('node:sqlite')" >/dev/null 2>&1; then exec node app/server.js; else exec node --experimental-sqlite app/server.js; fi
     done_regex: 'Kokkeri lytter'
     stop_timeout: 30
@@ -298,13 +354,43 @@ assert "require('node:sqlite')" in g['startup']['command']
 # Payloaden staar TO gange i YAML'en (install + update) - verificer begge. En
 # opdatering, der pakker noget andet ud end installationen, er svaer at opdage.
 _u = g['update']['script']
-assert _u.count('YGG_PAYLOAD_EOF') == 2 and 'rm -rf app' in _u
-_um = re.search(r"\| tar x\n(.*?)\nYGG_PAYLOAD_EOF", _u, re.S)
+assert _u.count('YGG_PAYLOAD_EOF') == 2
+
+def _foer(a, b, hvorfor):
+    """Rækkefølge-assertion. BEVIS FØRST at begge led findes: str.find giver -1,
+    og -1 er mindre end alt - en naiv find(a) < find(b) ville bestå netop den
+    dag, det ene led var forsvundet (Sagu v48)."""
+    ia, ib = _u.find(a), _u.find(b)
+    assert ia >= 0, f'FEJL: update-scriptet mangler {a!r} - {hvorfor}'
+    assert ib >= 0, f'FEJL: update-scriptet mangler {b!r} - {hvorfor}'
+    assert ia < ib, f'FEJL: {a!r} skal staa foer {b!r} - {hvorfor}'
+
+# Laasen skal tages foer ENHVER aendring, og om hele scriptet - ikke inde i en gren.
+_foer('mkdir .kokkeri-laas', 'rm -rf .kokkeri-ny', 'laasen skal tages foer foerste aendring')
+_foer('mkdir .kokkeri-laas', 'mv "$NY" app', 'laasen skal tages foer byttet')
+_foer("trap 'rm -rf .kokkeri-laas", 'mv "$NY" app', 'trap skal sidde, foer noget kan fejle')
+# BYT, slet ikke. Denne regel ERSTATTER det gamle krav om `rm -rf app`: at flytte
+# den gamle app vaek som helhed loeser det samme (slettede filer bliver ikke
+# liggende) UDEN et vindue, hvor app/ ikke findes.
+assert 'rm -rf app' not in _u, 'FEJL: update maa ikke slette app/ - flyt den til side i stedet'
+_foer('mv app .kokkeri-gammel', 'mv "$NY" app', 'den gamle app flyttes til side foer den nye sættes ind')
+assert 'find .kokkeri-ny' in _u and '$NY/server.js' in _u, (
+    'FEJL: update skal tjekke, at payloaden indeholder app/server.js, foer den bytter')
+# Genstart-beskeden er den eneste vagt mod, at app-update ikke genstarter serveren.
+assert 'GENSTART KOKKERI NU' in _u, 'FEJL: update mangler genstart-beskeden'
+assert _u.rstrip().endswith('============================================"'), (
+    'FEJL: genstart-beskeden skal staa SIDST - ellers drukner den i udpakningens output')
+# Redningen i startup skal kende de samme stier
+_s = g['startup']['command']
+for _n in ['.kokkeri-gammel', '.kokkeri-laas']:
+    assert _n in _s, f'FEJL: startup rydder ikke op efter {_n}'
+_um = re.search(r"\| tar x[^\n]*\n(.*?)\nYGG_PAYLOAD_EOF", _u, re.S)
 _utar = tarfile.open(fileobj=io.BytesIO(kør_dekoderen(_um.group(1))))
 for _p in FILES:
     assert _utar.extractfile(_p).read() == payload_filer[_p], f'update-payload afviger for {_p}'
 # update maa ALDRIG roere /data - det er hele pointen med knappen
 assert '/data' not in _u.replace('Databasen i /data er uroert.', '')
+assert '/tmp' not in _u, 'FEJL: update maa ikke bruge /tmp - mv paa tvaers af filsystemer er en kopi'
 assert g['docker']['image'] == '{{NODE_IMAGE}}' and g['install']['image'] == '{{NODE_IMAGE}}'
 print(f'trimning: {raa_i_alt} -> {trimmet_i_alt} b app-filer (sparet {raa_i_alt - trimmet_i_alt} b foer komprimering)')
 print(f'payload: tar {len(tar_bytes)} -> brotli {len(komprimeret)} -> base85 {len(payload)} tegn')

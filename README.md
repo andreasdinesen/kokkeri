@@ -66,6 +66,23 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v29** (september 2026): **»Opdatér Kokkeri« kan ikke længere gå galt i
+  stilhed.** En søsterapp lå nede i ti timer på grund af tre fejl i den samme
+  slags opdaterings-knap. Kokkeri havde to af dem – plus den vigtigste:
+  - **Knappen siger nu tydeligt, at du skal genstarte.** Panelets opdatering
+    skifter appens filer, men **genstarter ikke serveren** – den kører videre på
+    den gamle kode, indtil du trykker genstart. Det stod der ikke noget om før.
+  - **To tryk på knappen kan ikke længere støde sammen.** Trykker man to gange,
+    får den anden kørsel en klar besked i stedet for at rode i den førstes
+    filer.
+  - **Appen slettes ikke længere, før den nye er pakket ud.** Den gamle udgave
+    flyttes til side og ryddes først, når byttet er lykkedes – og går det galt
+    undervejs, ruller Kokkeri selv tilbage til den forrige udgave ved næste
+    start.
+  - Nyt: `tests/opdatering.test.mjs` – ti prøver, der kører opdaterings-scriptet
+    fra den udgivne rune, blandt andet to samtidige opdateringer og et
+    afbrudt bytte.
+
 - **v28** (august 2026): **Frokost – find de retter, du aldrig kunne finde.**
   - **Nyt 🥪 Frokost-filter** på Opskrifter. Kokkeri har ingen frokost-kategori,
     og det skal den heller ikke have: en opskrift kan kun have én kategori, og

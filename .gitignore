@@ -1,6 +1,5 @@
 CLAUDE.md
 HANDOVER.md
-tests/
 *.db
 *.db-wal
 *.db-shm
