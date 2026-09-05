@@ -44,6 +44,23 @@ SQLite. **Ingen npm-afhængigheder, ingen CDN – alt kører lokalt.**
 2. Opret en server på runen og start den – første bruger, der registrerer sig,
    bliver administrator.
 
+Runen **bærer ikke koden**. Install-scriptet henter den udgivne `vN`-tag fra
+GitHub, og `app/kilde.js` henter selv nyeste udgave, hver gang serveren starter.
+Feltet **Kodeversion** låser til en bestemt udgave (skriv fx `30`) – vejen
+tilbage, hvis en udgivelse er dårlig.
+
+### Ny udgave (for udvikleren)
+
+```sh
+# bump APP_VERSION i app/parts/p1_core.js, så:
+python3 build_rune.py && node tests/opdatering.test.mjs
+git commit -am "vN: …" && git push
+git tag vN && git push origin vN     # UDEN taggen kan koden ikke hentes
+```
+
+Derefter er en **genstart** opdateringen. Runen skal kun udgives igen, når
+selve runen ændrer sig.
+
 ## AI-funktionerne (valgfrit)
 
 Opret en API-nøgle på [console.anthropic.com](https://console.anthropic.com) og
@@ -65,6 +82,21 @@ Frontenden er delt op i `app/parts/p*.js`, som `build_rune.py` samler til
 genererede filer direkte.
 
 ## Versionshistorik
+
+- **v30** (september 2026): **Kokkeri henter selv sin kode.** Indtil nu bar
+  runen hele appen – 107 KB pakket ind i installations-scriptet – så hver
+  eneste ændring krævede, at runen blev opdateret i panelet. Nu henter appen
+  koden fra GitHub, og **en genstart er opdateringen**.
+  - Runen er faldet fra **225 KB til 7 KB**, og installations-scriptet fra
+    107.091 til 1.777 tegn. Der var kun 13.000 tegn tilbage til en hård grænse
+    i Linux – den grænse er nu væk som problem.
+  - Nyt felt **Kodeversion** i panelet: »seneste« henter nyeste udgivne
+    udgave, et tal låser til præcis den. Det er vejen tilbage, hvis en
+    udgivelse driller.
+  - **En fejl kan aldrig forhindre serveren i at starte.** Kan GitHub ikke
+    nås, kører den kode, der allerede ligger, og det skrives i loggen.
+  - Repoet er gjort **offentligt** – det er forudsætningen for at kunne hente
+    koden uden at lægge et adgangstoken i containeren.
 
 - **v29** (september 2026): **»Opdatér Kokkeri« kan ikke længere gå galt i
   stilhed.** En søsterapp lå nede i ti timer på grund af tre fejl i den samme

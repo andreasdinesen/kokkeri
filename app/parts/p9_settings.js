@@ -50,7 +50,7 @@ RENDER.settings = () => {
         fx LM Studio (<b>Developer → Start server</b>) eller Ollama. Alt kører så lokalt og gratis.</p>
       <div class="formgrid" style="grid-template-columns:2fr 1fr">
         <label class="fld"><span>Serverens adresse (inkl. /v1)</span>
-          <input id="aiUrl" placeholder="http://192.168.1.197:1234/v1" value="${esc(S.settings.aiUrl || '')}"></label>
+          <input id="aiUrl" placeholder="http://din-server:1234/v1" value="${esc(S.settings.aiUrl || '')}"></label>
         <label class="fld"><span>Model (tom = første på serveren)</span>
           <input id="aiModelLocal" placeholder="fx qwen/qwen3-27b" value="${esc(S.settings.aiModel || '')}"></label>
       </div>
