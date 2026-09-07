@@ -17,6 +17,146 @@ const slotOf = e => e.slot || 'dinner';
 const slotOrder = id => SLOTS.findIndex(s => s.id === id);
 const slotInfo = id => SLOTS.find(s => s.id === id) || SLOTS[2];
 
+/* ---------------- find en ret og laeg den paa en dag ----------------
+ * Med 12.000 opskrifter i biblioteket duer en rulleliste ikke - hverken her
+ * eller i madplan-modalen. Derfor soeges der overalt, hvor en opskrift skal
+ * vaelges, og der vises hoejst HITS_MAKS raekker ad gangen.
+ *
+ * To veje fra et soegeresultat ned paa en dag:
+ *   traek-og-slip  (mus)
+ *   vaelg-og-peg   (touch - iOS Safari kan slet ikke HTML5-drag)
+ * S.planArm holder den valgte ret, indtil man peger paa en dag. Den bliver
+ * haengende efter et drop, saa fx "Rester" kan lande paa flere dage i traek. */
+const HITS_MAKS = 40;
+/* "Rester" er den hyppigste linje i en madplan, der ikke er en opskrift -
+ * den skal kunne saettes paa en dag uden at aabne noget. */
+const HURTIG_TEKST = 'Rester';
+const planSlot = () => S.planSlot || 'dinner';
+const armEtiket = a => !a ? '' : (a.recipeId ? ((recipeById(a.recipeId) || {}).title || 'Opskriften') : a.text);
+
+function planSoeg(q, maks) {
+  const alle = K('recipe');
+  if (!q) return alle.slice().sort(nyestFoerst).slice(0, maks);
+  const traef = [];
+  for (const r of alle) {
+    const t = normName(r.title);
+    /* titlen vejer tungest, og dem der BEGYNDER med soegningen ligger oeverst:
+     * skriver man "pizza", vil man have "Pizza Margherita" foer "Rester af pizzadej" */
+    const rang = t.startsWith(q) ? 0 : t.includes(q) ? 1
+      : normName((r.tags || []).join(' ')).includes(q) ? 2
+      : normName(r.category).includes(q) ? 3 : -1;
+    if (rang >= 0) traef.push([rang, r]);
+  }
+  traef.sort((a, b) => a[0] - b[0] || cmpTekst(a[1].title, b[1].title));
+  return traef.slice(0, maks).map(x => x[1]);
+}
+
+/* én raekke i et soegeresultat - ens i panelet og i vaelgeren */
+function planHitHtml(r, kanTraekkes) {
+  const bil = imageSrcOrRemote(r);
+  const tid = recipeTotalMin(r);
+  const under = [r.category || '', tid ? fmtMin(tid) : ''].filter(Boolean).join(' · ');
+  return `<div class="findhit" data-hit="${r.id}"${kanTraekkes ? ' draggable="true"' : ''}>
+    ${bil ? `<img src="${esc(bil)}" alt="" loading="lazy">` : '<span class="noimg">🍽️</span>'}
+    <span class="grow"><b>${esc(r.title || '(uden titel)')}</b>
+      ${under ? `<span class="small muted">${esc(under)}</span>` : ''}</span>
+    ${r.rating ? starsHtml(r.rating) : ''}
+  </div>`;
+}
+function planHitsHtml(liste, kanTraekkes) {
+  return liste.length
+    ? liste.map(r => planHitHtml(r, kanTraekkes)).join('')
+    : '<p class="muted small" style="padding:10px 2px">Ingen opskrifter matcher.</p>';
+}
+function bindPlanHits(rod, vaelg, kanTraekkes) {
+  rod.querySelectorAll('[data-hit]').forEach(el => {
+    el.onclick = () => vaelg(el.dataset.hit);
+    if (!kanTraekkes) return;
+    el.ondragstart = ev => {
+      ev.dataTransfer.setData('text/plain', 'rec:' + el.dataset.hit);
+      ev.dataTransfer.effectAllowed = 'copy';
+      el.classList.add('dragging');
+    };
+    el.ondragend = () => el.classList.remove('dragging');
+  });
+}
+
+/* soegepanelet over ugegitteret */
+function planFindHtml() {
+  if (!S.planFind) return '';
+  const antal = K('recipe').length;
+  return `<div class="findpanel">
+    <div class="rowflex">
+      <input id="pfQ" class="grow" placeholder="Søg blandt ${antal} opskrifter – fx bønnegryde" value="${esc(S.planQ || '')}" autocomplete="off">
+      <select id="pfSlot" title="Hvilket måltid retten lægges på">
+        ${SLOTS.map(s => `<option value="${s.id}"${planSlot() === s.id ? ' selected' : ''}>${s.ico} ${s.label}</option>`).join('')}
+      </select>
+      <button class="btn" id="pfLuk">Luk</button>
+    </div>
+    <p class="small muted" style="margin:8px 2px 2px">Klik en ret for at vælge dagen – eller træk den ned på en dag.</p>
+    <div class="findhits" id="pfHits">${planHitsHtml(planSoeg(normName(S.planQ || ''), HITS_MAKS), true)}</div>
+  </div>`;
+}
+function planArmHtml() {
+  if (!S.planArm) return '';
+  return `<div class="armbar">
+    <span class="grow">Vælg dagen til <b>${esc(armEtiket(S.planArm))}</b> – tryk “Læg her”</span>
+    <select id="abSlot">${SLOTS.map(s => `<option value="${s.id}"${planSlot() === s.id ? ' selected' : ''}>${s.ico} ${s.label}</option>`).join('')}</select>
+    <button class="btn small" id="abStop">Færdig</button>
+  </div>`;
+}
+function planArm(spec) {
+  S.planArm = spec;
+  render();
+}
+const ugedagNr = d => (new Date(d + 'T00:00:00').getDay() + 6) % 7;
+async function laegPaaDag(date, spec, slot) {
+  if (!spec) return;
+  await saveItem({
+    id: uid(), kind: 'planEntry', date, slot: slot || 'dinner',
+    recipeId: spec.recipeId || '', text: spec.text || '', servings: null
+  }, true);
+  toast(`${armEtiket(spec)} lagt på ${WEEKDAYS_DA[ugedagNr(date)].toLowerCase()} ${fmtDate(date)}`);
+  render();
+}
+
+/* Fjern et maaltid med ét klik. Ingen bekraeftelse: linjen er sat paa plads
+ * med ét klik og kan saettes tilbage med ét, og navnet staar i kvitteringen. */
+async function fjernPlanEntry(id) {
+  const e = K('planEntry').find(x => x.id === id);
+  if (!e) return;
+  const navn = e.recipeId ? ((recipeById(e.recipeId) || {}).title || 'Måltidet') : (e.text || 'Måltidet');
+  e.deleted = true;
+  await saveItem(e, true);
+  toast(`${navn} fjernet fra ${WEEKDAYS_DA[ugedagNr(e.date)].toLowerCase()}`);
+  render();
+}
+
+/* Soegbar opskrift-vaelger. Afloeser rullelisten med alle opskrifter - den
+ * var baade tung at tegne og umulig at finde noget i. */
+function vaelgOpskriftModal(overskrift, onPick) {
+  openModal(`<h2>${esc(overskrift)}</h2>
+    <input id="voQ" placeholder="Søg blandt ${K('recipe').length} opskrifter…" autocomplete="off" style="width:100%">
+    <div class="findhits tall" id="voHits"></div>
+    <div class="actions"><button class="btn" id="voLuk">Annullér</button></div>`, m => {
+    const boks = m.querySelector('#voHits');
+    const inp = m.querySelector('#voQ');
+    const tegn = () => {
+      boks.innerHTML = planHitsHtml(planSoeg(normName(inp.value), HITS_MAKS), false);
+      bindPlanHits(boks, id => { closeModal(); onPick(id); });
+    };
+    inp.oninput = tegn;
+    inp.onkeydown = ev => {
+      if (ev.key !== 'Enter') return;
+      const f = boks.querySelector('[data-hit]');
+      if (f) f.click();
+    };
+    m.querySelector('#voLuk').onclick = closeModal;
+    tegn();
+    inp.focus();
+  });
+}
+
 RENDER.plan = () => {
   const monday = S.weekStart || mondayOf();
   const dates = weekDatesOf(monday);
@@ -30,6 +170,8 @@ RENDER.plan = () => {
         <button class="btn" id="wkPrev">←</button>
         <button class="btn" id="wkToday">I dag</button>
         <button class="btn" id="wkNext">→</button>
+        <button class="btn${S.planFind ? ' primary' : ''}" id="wkFind">🔍 Find ret</button>
+        <button class="btn" id="wkRester">🍲 Rester</button>
         <button class="btn" id="wkShop">🛒 Indkøbsliste for ugen</button>
         <button class="btn" id="wkPrint">🖨️ Print</button>
         <button class="btn" id="wkFill">📖 Udfyld fra biblioteket</button>
@@ -39,7 +181,7 @@ RENDER.plan = () => {
           title="Vis eller skjul billeder i ugeoversigten">🖼️ Billeder</button>
         <button class="btn danger" id="wkClear">🗑️ Ryd ugen</button>
         ${S.settings.aiKeySet ? '<button class="btn primary" id="wkAi">✨ Foreslå madplan (AI)</button>' : ''}
-      </div>`) + `
+      </div>`) + planFindHtml() + planArmHtml() + `
   <div class="weekgrid">
     ${dates.map((d, i) => `
       <div class="daycol${d === today ? ' today' : ''}" data-date="${d}">
@@ -49,12 +191,13 @@ RENDER.plan = () => {
           const si = slotInfo(slotOf(e));
           const slotTag = slotOf(e) !== 'dinner' ? `<span class="muted">${si.ico} ${si.label} · </span>` : '';
           return `<div class="planentry" data-entry="${e.id}" draggable="true">
+            <button class="pdel" data-del="${e.id}" title="Fjern fra madplanen" aria-label="Fjern fra madplanen">✕</button>
             ${visBilleder && r && imageSrcOrRemote(r) ? `<img class="planimg" src="${esc(imageSrcOrRemote(r))}" alt="" loading="lazy">` : ''}
             ${slotTag}${r ? esc(r.title) : esc(e.text || '')}
             ${r && recipeTotalMin(r) ? `<div class="pmeta">⏱ ${fmtMin(recipeTotalMin(r))}${e.servings ? ' · ' + e.servings + ' pers.' : ''}</div>` : (e.servings ? `<div class="pmeta">${e.servings} pers.</div>` : '')}
           </div>`;
         }).join('')}
-        <button class="dayadd" data-date="${d}">+ tilføj</button>
+        <button class="dayadd${S.planArm ? ' arm' : ''}" data-date="${d}">${S.planArm ? '⬇ Læg her' : '+ tilføj'}</button>
       </div>`).join('')}
   </div>
   <p class="small muted">Træk en ret til en anden dag for at flytte den – ligger der allerede noget, bytter de plads.
@@ -76,14 +219,46 @@ RENDER.plan_bind = () => {
   };
   const ai = $('#wkAi');
   if (ai) ai.onclick = aiSuggestWeek;
-  $$('.dayadd').forEach(b => b.onclick = () => planEntryModal(null, { date: b.dataset.date }));
+  $('#wkFind').onclick = () => {
+    S.planFind = !S.planFind;
+    S.planFokus = S.planFind;
+    render();
+  };
+  $('#wkRester').onclick = () => planArm({ text: HURTIG_TEKST });
+  const pfq = $('#pfQ');
+  if (pfq) {
+    pfq.oninput = () => {
+      S.planQ = pfq.value;
+      const boks = $('#pfHits');
+      boks.innerHTML = planHitsHtml(planSoeg(normName(S.planQ), HITS_MAKS), true);
+      bindPlanHits(boks, id => planArm({ recipeId: id }), true);
+    };
+    $('#pfLuk').onclick = () => { S.planFind = false; render(); };
+    $('#pfSlot').onchange = e => { S.planSlot = e.target.value; };
+    bindPlanHits($('#pfHits'), id => planArm({ recipeId: id }), true);
+    /* kun fokus naar panelet lige er aabnet - ellers stjaeler hver render
+     * tastaturet paa en telefon */
+    if (S.planFokus) { S.planFokus = false; pfq.focus(); }
+  }
+  if ($('#abStop')) {
+    $('#abStop').onclick = () => { S.planArm = null; render(); };
+    $('#abSlot').onchange = e => { S.planSlot = e.target.value; };
+  }
+  $$('.planentry [data-del]').forEach(b => b.onclick = ev => {
+    ev.stopPropagation();          // ellers aabner kortet bagved ogsaa
+    fjernPlanEntry(b.dataset.del);
+  });
+  $$('.dayadd').forEach(b => b.onclick = () => {
+    if (S.planArm) return laegPaaDag(b.dataset.date, S.planArm, planSlot());
+    planEntryModal(null, { date: b.dataset.date, slot: planSlot() });
+  });
   $$('.planentry[data-entry]').forEach(el => {
     el.onclick = () => {
       const e = K('planEntry').find(x => x.id === el.dataset.entry);
       if (e) planQuickView(e);
     };
     el.ondragstart = ev => {
-      ev.dataTransfer.setData('text/plain', el.dataset.entry);
+      ev.dataTransfer.setData('text/plain', 'entry:' + el.dataset.entry);
       ev.dataTransfer.effectAllowed = 'move';
       el.classList.add('dragging');
     };
@@ -95,7 +270,11 @@ RENDER.plan_bind = () => {
     col.ondrop = ev => {
       ev.preventDefault();
       col.classList.remove('dropover');
-      movePlanEntry(ev.dataTransfer.getData('text/plain'), col.dataset.date);
+      /* tre slags last: en linje der flyttes, en ny opskrift, eller en fritekst */
+      const last = ev.dataTransfer.getData('text/plain') || '';
+      if (last.startsWith('rec:')) laegPaaDag(col.dataset.date, { recipeId: last.slice(4) }, planSlot());
+      else if (last.startsWith('text:')) laegPaaDag(col.dataset.date, { text: last.slice(5) }, planSlot());
+      else if (last.startsWith('entry:')) movePlanEntry(last.slice(6), col.dataset.date);
     };
   });
 };
@@ -413,13 +592,23 @@ async function planQuickView(entry) {
     <h3 style="margin-bottom:2px">Ingredienser${factor !== 1 ? ' <span class="chip on small">skaleret</span>' : ''}</h3>
     <ul class="ings" style="max-height:230px;overflow:auto;margin-top:4px">${ings || '<li class="muted">Ingen ingredienser</li>'}</ul>
     <div class="actions" style="flex-wrap:wrap">
-      <button class="btn" id="qvEdit" style="margin-right:auto">✏️ Redigér</button>
+      <button class="btn" id="qvEdit">✏️ Redigér</button>
+      <button class="btn danger" id="qvDel" style="margin-right:auto">🗑️ Fjern fra dagen</button>
+      <button class="btn" id="qvSwap">🔄 Skift ret</button>
       <button class="btn" id="qvShop">🛒 Til indkøbsliste</button>
       <button class="btn" id="qvOpen">📖 Åbn opskrift</button>
       <button class="btn primary" id="qvClose">Luk</button>
     </div>`, m => {
     m.querySelector('#qvClose').onclick = closeModal;
     m.querySelector('#qvEdit').onclick = () => planEntryModal(entry);
+    m.querySelector('#qvDel').onclick = () => { closeModal(); fjernPlanEntry(entry.id); };
+    m.querySelector('#qvSwap').onclick = () => vaelgOpskriftModal('🔄 Skift ret – ' + WEEKDAYS_DA[ugedagNr(entry.date)].toLowerCase(), async id => {
+      entry.recipeId = id;
+      entry.text = '';                 // en opskrift afloeser fritekst-linjen
+      await saveItem(entry, true);
+      toast('Skiftet til ' + ((recipeById(id) || {}).title || 'ny ret'));
+      render();
+    });
     m.querySelector('#qvOpen').onclick = () => { closeModal(); goto('recipeDetail', r.id); };
     m.querySelector('#qvShop').onclick = async () => {
       closeModal();
@@ -428,13 +617,18 @@ async function planQuickView(entry) {
   }, true);
 }
 
+/* Modalen aabnes forfra hver gang (aabn()), fordi opskrift-vaelgeren
+ * overtager modalvinduet. Felterne laeses over i `d` foerst, saa dato,
+ * maaltid og personer overlever turen forbi soegningen. */
 function planEntryModal(entry, prefill) {
   const isNew = !entry;
   const d = entry || Object.assign({
     id: uid(), kind: 'planEntry', date: isoDate(), slot: 'dinner', recipeId: '', text: '', servings: null
   }, prefill || {});
 
-  openModal(`<h2>${isNew ? 'Tilføj til madplan' : 'Redigér madplan'}</h2>
+  const aabn = () => {
+    const valgt = d.recipeId ? recipeById(d.recipeId) : null;
+    openModal(`<h2>${isNew ? 'Tilføj til madplan' : 'Redigér madplan'}</h2>
     <div class="formgrid">
       <label class="fld"><span>Dato</span><input id="pmDate" type="date" value="${esc(d.date)}"></label>
       <label class="fld"><span>Måltid</span><select id="pmSlot">
@@ -442,34 +636,55 @@ function planEntryModal(entry, prefill) {
       </select></label>
       <label class="fld"><span>Personer (valgfrit)</span><input id="pmServ" type="number" min="1" value="${d.servings || ''}"></label>
     </div>
-    <label class="fld"><span>Opskrift fra biblioteket</span><select id="pmRec">${recipeOptions(d.recipeId)}</select></label>
+    <div class="fld"><span>Opskrift fra biblioteket</span>
+      <div class="rowflex pickrow">
+        <span class="grow${valgt ? '' : ' muted'}">${valgt ? esc(valgt.title) : 'Ingen valgt'}</span>
+        <button type="button" class="btn small" id="pmPick">🔍 Søg…</button>
+        ${d.recipeId ? '<button type="button" class="btn small" id="pmClear">Ryd</button>' : ''}
+      </div>
+    </div>
     <label class="fld"><span>… eller fritekst (fx "Rester" eller "Pizza ude i byen")</span>
       <input id="pmText" value="${esc(d.text || '')}"></label>
+    <div class="rowflex" style="margin-top:6px">
+      <button type="button" class="btn small" id="pmRester">🍲 Rester</button>
+    </div>
     <div class="actions">
       ${isNew ? '' : '<button class="btn danger" id="pmDelete" style="margin-right:auto">Fjern</button>'}
       <button class="btn" id="pmCancel">Annullér</button>
       <button class="btn primary" id="pmSave">Gem</button>
     </div>`, m => {
-    m.querySelector('#pmCancel').onclick = closeModal;
-    if (!isNew) m.querySelector('#pmDelete').onclick = async () => {
-      closeModal();
-      await deleteItem(d);
-      render();
-    };
-    m.querySelector('#pmSave').onclick = async () => {
-      d.date = m.querySelector('#pmDate').value;
-      if (!d.date) return toast('Vælg en dato', true);
-      d.slot = m.querySelector('#pmSlot').value;
-      d.recipeId = m.querySelector('#pmRec').value;
-      d.text = m.querySelector('#pmText').value.trim();
-      if (!d.recipeId && !d.text) return toast('Vælg en opskrift eller skriv en tekst', true);
-      d.servings = parseInt(m.querySelector('#pmServ').value, 10) || null;
-      closeModal();
-      await saveItem(d);
-      if (S.view !== 'plan') toast('Sat på madplanen ' + fmtDate(d.date));
-      render();
-    };
-  });
+      /* gem det indtastede i `d`, saa intet gaar tabt naar modalen tegnes igen */
+      const laes = () => {
+        d.date = m.querySelector('#pmDate').value || d.date;
+        d.slot = m.querySelector('#pmSlot').value;
+        d.text = m.querySelector('#pmText').value.trim();
+        d.servings = parseInt(m.querySelector('#pmServ').value, 10) || null;
+      };
+      m.querySelector('#pmCancel').onclick = closeModal;
+      m.querySelector('#pmPick').onclick = () => {
+        laes();
+        vaelgOpskriftModal('Vælg opskrift', id => { d.recipeId = id; aabn(); });
+      };
+      const ryd = m.querySelector('#pmClear');
+      if (ryd) ryd.onclick = () => { laes(); d.recipeId = ''; aabn(); };
+      m.querySelector('#pmRester').onclick = () => { m.querySelector('#pmText').value = HURTIG_TEKST; };
+      if (!isNew) m.querySelector('#pmDelete').onclick = async () => {
+        closeModal();
+        await deleteItem(d);
+        render();
+      };
+      m.querySelector('#pmSave').onclick = async () => {
+        laes();
+        if (!d.date) return toast('Vælg en dato', true);
+        if (!d.recipeId && !d.text) return toast('Vælg en opskrift eller skriv en tekst', true);
+        closeModal();
+        await saveItem(d);
+        if (S.view !== 'plan') toast('Sat på madplanen ' + fmtDate(d.date));
+        render();
+      };
+    });
+  };
+  aabn();
 }
 
 /* hele ugens opskrifter -> indkoebsliste (skaleret efter personer) */

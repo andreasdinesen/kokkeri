@@ -22,6 +22,9 @@ SQLite. **Ingen npm-afhængigheder, ingen CDN – alt kører lokalt.**
   piletaster/knapper, ingredienser i sidepanelet – og skærmen holdes tændt.
 - **Madplan**: uge-visning med opskrifter eller fritekst pr. dag,
   print, og iCal-abonnement så madplanen vises i Apple/Google Kalender.
+  Søg en bestemt ret frem og træk den ned på dagen (eller vælg den og peg på
+  dagen, hvis du sidder med en telefon), sæt »Rester« ind med to klik, fjern
+  et måltid med ét — og byt en ret ud uden at lægge den ind forfra.
   AI'en kan foreslå en hel uges madplan ud fra dine egne opskrifter.
 - **Indkøbsliste**: tilføj en hel opskrift (skaleret) eller hele ugens madplan
   med ét klik, grupperet pr. opskrift, afkrydsning, print.
@@ -82,6 +85,22 @@ Frontenden er delt op i `app/parts/p*.js`, som `build_rune.py` samler til
 genererede filer direkte.
 
 ## Versionshistorik
+
+- **v31** (september 2026): **Madplanen kan planlægges, ikke bare fyldes.**
+  Ved du, at søndag skal være bønnegryde, kunne du hidtil kun finde retten ved
+  at rulle gennem 12.000 titler i en dropdown.
+  - **Find ret**: et søgefelt over ugen. Træk et træf ned på en dag – eller
+    klik det og tryk »Læg her« på dagen. Den anden vej findes, fordi træk
+    ikke virker på en iPhone overhovedet.
+  - **Rester** med to klik: vælg knappen, peg på dagen. Valget bliver hængende,
+    så flere dage kan få den samme linje.
+  - **✕ på hvert måltid** fjerner det med ét klik – før skulle man ind i
+    »Redigér« og ned i bunden.
+  - **Skift ret** bytter retten på en dag ud med en anden uden at røre dato,
+    måltid eller antal personer.
+  - Rullelisten med alle opskrifter er væk overalt; den er erstattet af den
+    samme søgning. Med 12.000 opskrifter var den både tung at tegne og
+    umulig at finde noget i.
 
 - **v30** (september 2026): **Kokkeri henter selv sin kode.** Indtil nu bar
   runen hele appen – 107 KB pakket ind i installations-scriptet – så hver

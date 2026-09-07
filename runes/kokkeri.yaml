@@ -1,5 +1,5 @@
 # Kokkeri - opskrifts-bibliotek, madplan og indkoebsliste som Yggdrasil-rune
-# Runen BAERER IKKE koden: install-scriptet henter tag v30 fra GitHub, og
+# Runen BAERER IKKE koden: install-scriptet henter tag v31 fra GitHub, og
 # app/kilde.js henter selv nyeste udgave ved hver opstart. Runen skal derfor kun
 # udgives igen, naar selve runen aendrer sig - ikke ved hver app-udgave.
 gameskill:
@@ -8,7 +8,7 @@ gameskill:
   category: "Apps"
   description: "Opskrifts-bibliotek a la Paprika: importer opskrifter fra URL'er (siden laeses automatisk), uge-madplan med iCal-abonnement, indkoebslister fra opskrifter, koekkentimere, kogetilstand der holder skaermen taendt, MCP-connector til Claude og valgfri AI-assistent. Flere brugere, passkey-login. Egen SQLite-database - ingen eksterne afhaengigheder."
   author: "andreas"
-  version: 30
+  version: 31
   icon: "app"
 
   docker:
@@ -37,13 +37,13 @@ gameskill:
     image: "{{NODE_IMAGE}}"
     script: |
       set -eu
-      echo "Installerer Kokkeri (startsnor v30) ..."
+      echo "Installerer Kokkeri (startsnor v31) ..."
       echo "Node: $(node --version)"
 
-      echo "Henter app-koden fra GitHub (v30) ..."
+      echo "Henter app-koden fra GitHub (v31) ..."
       rm -rf .kokkeri-ny .kokkeri-gammel
       mkdir -p .kokkeri-ny
-      node -e 'const https=require("https"),zlib=require("zlib");const U="https://codeload.github.com/andreasdinesen/kokkeri/tar.gz/refs/tags/v30";function d(m){console.error("[fejl] "+m);console.error("Adresse: "+U);console.error("Repoet er offentligt, saa en 404 betyder, at adressen ikke findes - tjek at taggen er pushet.");process.exit(1);}function hent(u,n){const h={"user-agent":"kokkeri-installer"};https.get(u,{headers:h},(r)=>{if(r.statusCode>=300&&r.statusCode<400&&r.headers.location){if(n<=0)return d("for mange omdirigeringer");r.resume();return hent(new URL(r.headers.location,u).toString(),n-1);}if(r.statusCode!==200)return d("GitHub svarede "+r.statusCode);const g=zlib.createGunzip();g.on("error",(e)=>d("arkivet kunne ikke pakkes ud: "+e.message));r.pipe(g).pipe(process.stdout);}).on("error",(e)=>d("kunne ikke naa GitHub: "+e.message));}hent(U,3);' > .kokkeri-ny/app.tar
+      node -e 'const https=require("https"),zlib=require("zlib");const U="https://codeload.github.com/andreasdinesen/kokkeri/tar.gz/refs/tags/v31";function d(m){console.error("[fejl] "+m);console.error("Adresse: "+U);console.error("Repoet er offentligt, saa en 404 betyder, at adressen ikke findes - tjek at taggen er pushet.");process.exit(1);}function hent(u,n){const h={"user-agent":"kokkeri-installer"};https.get(u,{headers:h},(r)=>{if(r.statusCode>=300&&r.statusCode<400&&r.headers.location){if(n<=0)return d("for mange omdirigeringer");r.resume();return hent(new URL(r.headers.location,u).toString(),n-1);}if(r.statusCode!==200)return d("GitHub svarede "+r.statusCode);const g=zlib.createGunzip();g.on("error",(e)=>d("arkivet kunne ikke pakkes ud: "+e.message));r.pipe(g).pipe(process.stdout);}).on("error",(e)=>d("kunne ikke naa GitHub: "+e.message));}hent(U,3);' > .kokkeri-ny/app.tar
       tar x -C .kokkeri-ny -f .kokkeri-ny/app.tar
       rm -f .kokkeri-ny/app.tar
       # Mappenavnet i et GitHub-arkiv er <repo>-<ref uden v>, og arkivet begynder med
@@ -83,10 +83,10 @@ gameskill:
         echo "Appen henter selv sin kode - henter nyeste (eller KODE_VERSION) ..."
         node app/kilde.js
       else
-        echo "Henter app-koden fra GitHub (v30) ..."
+        echo "Henter app-koden fra GitHub (v31) ..."
         rm -rf .kokkeri-ny .kokkeri-gammel
         mkdir -p .kokkeri-ny
-        node -e 'const https=require("https"),zlib=require("zlib");const U="https://codeload.github.com/andreasdinesen/kokkeri/tar.gz/refs/tags/v30";function d(m){console.error("[fejl] "+m);console.error("Adresse: "+U);console.error("Repoet er offentligt, saa en 404 betyder, at adressen ikke findes - tjek at taggen er pushet.");process.exit(1);}function hent(u,n){const h={"user-agent":"kokkeri-installer"};https.get(u,{headers:h},(r)=>{if(r.statusCode>=300&&r.statusCode<400&&r.headers.location){if(n<=0)return d("for mange omdirigeringer");r.resume();return hent(new URL(r.headers.location,u).toString(),n-1);}if(r.statusCode!==200)return d("GitHub svarede "+r.statusCode);const g=zlib.createGunzip();g.on("error",(e)=>d("arkivet kunne ikke pakkes ud: "+e.message));r.pipe(g).pipe(process.stdout);}).on("error",(e)=>d("kunne ikke naa GitHub: "+e.message));}hent(U,3);' > .kokkeri-ny/app.tar
+        node -e 'const https=require("https"),zlib=require("zlib");const U="https://codeload.github.com/andreasdinesen/kokkeri/tar.gz/refs/tags/v31";function d(m){console.error("[fejl] "+m);console.error("Adresse: "+U);console.error("Repoet er offentligt, saa en 404 betyder, at adressen ikke findes - tjek at taggen er pushet.");process.exit(1);}function hent(u,n){const h={"user-agent":"kokkeri-installer"};https.get(u,{headers:h},(r)=>{if(r.statusCode>=300&&r.statusCode<400&&r.headers.location){if(n<=0)return d("for mange omdirigeringer");r.resume();return hent(new URL(r.headers.location,u).toString(),n-1);}if(r.statusCode!==200)return d("GitHub svarede "+r.statusCode);const g=zlib.createGunzip();g.on("error",(e)=>d("arkivet kunne ikke pakkes ud: "+e.message));r.pipe(g).pipe(process.stdout);}).on("error",(e)=>d("kunne ikke naa GitHub: "+e.message));}hent(U,3);' > .kokkeri-ny/app.tar
         tar x -C .kokkeri-ny -f .kokkeri-ny/app.tar
         rm -f .kokkeri-ny/app.tar
         # Mappenavnet i et GitHub-arkiv er <repo>-<ref uden v>, og arkivet begynder med

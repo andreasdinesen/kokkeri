@@ -102,13 +102,6 @@ function pageHead(title, sub, extraHtml) {
     ${extraHtml || ''}</div>`;
 }
 
-/* faelles: opskrift-dropdown */
-function recipeOptions(selectedId) {
-  const list = K('recipe').slice().sort((a, b) => String(a.title || '').localeCompare(String(b.title || ''), 'da'));
-  return '<option value="">– vælg opskrift –</option>' + list.map(r =>
-    `<option value="${r.id}"${r.id === selectedId ? ' selected' : ''}>${esc(r.title)}</option>`).join('');
-}
-
 /* ---------------- kommandopalet (Cmd/Ctrl+K) ---------------- */
 function paletteItems() {
   const items = VIEWS.map(v => ({ ico: v.ico, label: v.label, hint: 'side', run: () => goto(v.id) }));

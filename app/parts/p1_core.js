@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 30;
+const APP_VERSION = 31;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -22,6 +22,10 @@ const S = {
   view: 'dash',
   viewArg: null,        // fx opskrift-id på detaljesiden
   weekStart: null,      // mandag i den viste madplan-uge (YYYY-MM-DD)
+  planFind: false,      // madplanens soegepanel er foldet ud
+  planQ: '',            // soegeteksten i det panel
+  planSlot: 'dinner',   // hvilket maaltid en fundet ret lander paa
+  planArm: null,        // {recipeId} | {text} valgt og venter paa en dag
   recFilter: { q: '', category: '', fav: false, sort: lsGet('kk_recsort', 'nyeste'), minStars: +lsGet('kk_recminstars', 0) || 0, raavarer: [], kilde: '', frokost: false },
   /* undefined = ikke valgt endnu; filter-panelet starter da aabent paa en stor
    * skaerm og lukket paa en telefon */
