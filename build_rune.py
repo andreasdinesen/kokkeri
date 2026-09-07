@@ -10,6 +10,8 @@ Runen skal kun udgives, naar RUNEN aendrer sig. En ny app-udgave er:
     bump APP_VERSION -> python3 build_rune.py -> commit -> push -> git tag vN
 og derefter en genstart i panelet (eller »Opdater Kokkeri«).
 
+Derfor to tal - se RUNE_VERSION nedenfor.
+
 Samler ogsaa frontenden: app/parts/p*.js -> app/public/app.js.
 """
 import glob, re, subprocess, sys
@@ -20,6 +22,21 @@ def read(p):
         return f.read()
 
 EJER, REPO = 'andreasdinesen', 'kokkeri'
+
+# To tal, og de betyder ikke det samme (doda v84, Sagu v47/v49):
+#   APP_VERSION (i app/parts/p1_core.js) - koden. Bumpes ved hver udgivelse.
+#   RUNE_VERSION (her)                   - runen. Bumpes KUN naar YAML'en
+#                                          herunder aendrer sig.
+#
+# Bandt vi runens version til appens, ville panelet vise en rune-opdatering ved
+# hver eneste udgivelse - og saa er vi tilbage ved to trin, som er praecis det,
+# v30 fjernede. Kokkeri v31 gjorde netop det, fordi dette split manglede.
+#
+# RUNE_VERSION er ogsaa den tag, install-scriptet henter FOERSTE gang. Den
+# behoever ikke vaere den nyeste: foerste opstart henter alligevel det, der
+# staar i KODE_VERSION. Den skal bare vaere en udgave, der KAN starte - og
+# taggen SKAL vaere pushet, ellers kan runen ikke installeres forfra.
+RUNE_VERSION = 31
 
 # --- 1) Saml frontenden af delene ---
 parts = sorted(glob.glob('app/parts/p*.js'))
@@ -64,7 +81,7 @@ for name in ['app/server.js', 'app/oauth.js', 'app/mcp.js', 'app/kilde.js',
 # quoted' sh-streng.
 HENT_KROP = (
     'const https=require("https"),zlib=require("zlib");'
-    f'const U="https://codeload.github.com/{EJER}/{REPO}/tar.gz/refs/tags/v{app_version}";'
+    f'const U="https://codeload.github.com/{EJER}/{REPO}/tar.gz/refs/tags/v{RUNE_VERSION}";'
     'function d(m){console.error("[fejl] "+m);console.error("Adresse: "+U);'
     'console.error("Repoet er offentligt, saa en 404 betyder, at adressen ikke findes - '
     'tjek at taggen er pushet.");process.exit(1);}'
@@ -84,7 +101,7 @@ def startsnor(indryk=0):
     for samme filsystem. Den gamle app flyttes til side frem for at blive
     slettet, saa startup kan saette den tilbage, hvis vi doer mellem dem."""
     p = ' ' * indryk
-    return '\n'.join(p + l for l in f"""echo "Henter app-koden fra GitHub (v{app_version}) ..."
+    return '\n'.join(p + l for l in f"""echo "Henter app-koden fra GitHub (v{RUNE_VERSION}) ..."
 rm -rf .kokkeri-ny .kokkeri-gammel
 mkdir -p .kokkeri-ny
 node -e '{HENT_KROP}' > .kokkeri-ny/app.tar
@@ -102,7 +119,7 @@ mv "$NY" app
 rm -rf .kokkeri-ny .kokkeri-gammel""".split('\n'))
 
 install_script = f"""set -eu
-echo "Installerer Kokkeri (startsnor v{app_version}) ..."
+echo "Installerer Kokkeri (startsnor v{RUNE_VERSION}) ..."
 echo "Node: $(node --version)"
 
 {startsnor()}
@@ -169,7 +186,7 @@ def indent(text, spaces):
     return '\n'.join(pad + line if line.strip() else '' for line in text.split('\n'))
 
 rune = f"""# Kokkeri - opskrifts-bibliotek, madplan og indkoebsliste som Yggdrasil-rune
-# Runen BAERER IKKE koden: install-scriptet henter tag v{app_version} fra GitHub, og
+# Runen BAERER IKKE koden: install-scriptet henter tag v{RUNE_VERSION} fra GitHub, og
 # app/kilde.js henter selv nyeste udgave ved hver opstart. Runen skal derfor kun
 # udgives igen, naar selve runen aendrer sig - ikke ved hver app-udgave.
 gameskill:
@@ -178,7 +195,7 @@ gameskill:
   category: "Apps"
   description: "Opskrifts-bibliotek a la Paprika: importer opskrifter fra URL'er (siden laeses automatisk), uge-madplan med iCal-abonnement, indkoebslister fra opskrifter, koekkentimere, kogetilstand der holder skaermen taendt, MCP-connector til Claude og valgfri AI-assistent. Flere brugere, passkey-login. Egen SQLite-database - ingen eksterne afhaengigheder."
   author: "andreas"
-  version: {app_version}
+  version: {RUNE_VERSION}
   icon: "app"
 
   docker:
@@ -263,8 +280,12 @@ def _foer(tekst, a, b, hvorfor):
     assert ib >= 0, f'FEJL: mangler {b!r} - {hvorfor}'
     assert ia < ib, f'FEJL: {a!r} skal staa foer {b!r} - {hvorfor}'
 
-# Startsnoren peger paa DENNE version, og taggen skal findes efter push.
-assert f'refs/tags/v{app_version}' in _i, 'FEJL: install henter ikke denne version'
+# Startsnoren peger paa RUNENS version - ikke appens. Bandt vi de to sammen,
+# ville panelet kraeve en rune-opdatering ved hver udgivelse.
+assert f'refs/tags/v{RUNE_VERSION}' in _i, 'FEJL: install henter ikke startsnorens version'
+assert g['version'] == RUNE_VERSION, 'FEJL: runens version skal vaere RUNE_VERSION'
+assert f'v{app_version}' not in _i or app_version == str(RUNE_VERSION), (
+    'FEJL: install-scriptet naevner app-versionen - startsnoren skal foelge runen')
 # Hovedvejen FOERST. Laa startsnoren foerst, ville hvert tryk nedgradere (tovo).
 _foer(_u, '[ -f app/kilde.js ]', 'refs/tags/', 'kilde.js-grenen skal ligge foer startsnoren')
 # Laasen om HELE update-scriptet, foer noget kan aendres.
@@ -289,5 +310,21 @@ print(f'install-script: {len(_i)} tegn (var 107.091 med indlejret payload)')
 print(f'update-script:  {len(_u)} tegn')
 size = len(rune.encode())
 print(f'kokkeri.yaml OK - {size} bytes ({size/1024:.1f} KB, var 225 KB)')
-print(f'\nHUSK efter push:  git tag v{app_version} && git push origin v{app_version}')
+print(f'\nRune v{RUNE_VERSION} - app-koden er v{app_version}.')
+print(f'HUSK efter push:  git tag v{app_version} && git push origin v{app_version}')
 print('Uden taggen kan hverken install eller kilde.js hente koden.')
+
+# Hvilket af de to tal, der skal videre i panelet, er ikke en detalje. Sig det.
+if RUNE_VERSION == int(app_version):
+    print('\nRunen er AENDRET og skal udgives i panelet (Browse GitHub -> Reload,')
+    print('derefter Update). Ellers er commit + tag + push nok.')
+elif RUNE_VERSION < int(app_version):
+    print('\nRunen er UAENDRET og behoever IKKE udgives: commit + tag + push,')
+    print('saa henter en genstart den nye kode.')
+else:
+    print(f'\nOBS: startsnoren peger paa v{RUNE_VERSION}, men app-koden staar paa '
+          f'v{app_version}.')
+    print(f'Taggen v{RUNE_VERSION} findes altsaa ikke endnu - bump APP_VERSION til '
+          f'{RUNE_VERSION} ved udgivelsen,')
+    print('ellers kan runen ikke installeres forfra. Det ses ALDRIG paa en server,')
+    print('der allerede koerer - kun hos den naeste, der installerer.')

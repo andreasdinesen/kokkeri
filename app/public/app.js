@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 31;
+const APP_VERSION = 32;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -2692,6 +2692,21 @@ function planImages() {
   try { return localStorage.getItem('kk_planimg') === '1'; } catch (e) { return false; }
 }
 const slotOf = e => e.slot || 'dinner';
+/* Med billeder slaaet til staar en linje uden billede lavere end naboerne, og
+ * ugen ser i stykker ud. En fritekst-linje som "Rester" HAR intet billede og
+ * faar aldrig et, saa den skal have en plads i samme stoerrelse med et tegn i.
+ * Samme problem har en opskrift, hvor billedet mangler. */
+const RESTER_RE = /(^|\s)rester(\s|$)/i;
+function planBilledeIko(e, r) {
+  if (r) return '🍽️';
+  return RESTER_RE.test(e.text || '') ? '🍲' : '📝';
+}
+function planBilledeHtml(e, r) {
+  const bil = r ? imageSrcOrRemote(r) : '';
+  return bil
+    ? `<img class="planimg" src="${esc(bil)}" alt="" loading="lazy">`
+    : `<span class="planimg tom" aria-hidden="true">${planBilledeIko(e, r)}</span>`;
+}
 const slotOrder = id => SLOTS.findIndex(s => s.id === id);
 const slotInfo = id => SLOTS.find(s => s.id === id) || SLOTS[2];
 
@@ -2870,7 +2885,7 @@ RENDER.plan = () => {
           const slotTag = slotOf(e) !== 'dinner' ? `<span class="muted">${si.ico} ${si.label} · </span>` : '';
           return `<div class="planentry" data-entry="${e.id}" draggable="true">
             <button class="pdel" data-del="${e.id}" title="Fjern fra madplanen" aria-label="Fjern fra madplanen">✕</button>
-            ${visBilleder && r && imageSrcOrRemote(r) ? `<img class="planimg" src="${esc(imageSrcOrRemote(r))}" alt="" loading="lazy">` : ''}
+            ${visBilleder ? planBilledeHtml(e, r) : ''}
             ${slotTag}${r ? esc(r.title) : esc(e.text || '')}
             ${r && recipeTotalMin(r) ? `<div class="pmeta">⏱ ${fmtMin(recipeTotalMin(r))}${e.servings ? ' · ' + e.servings + ' pers.' : ''}</div>` : (e.servings ? `<div class="pmeta">${e.servings} pers.</div>` : '')}
           </div>`;

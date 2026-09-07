@@ -86,6 +86,18 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v32** (september 2026): **Runen står stille, mens appen bevæger sig.**
+  v30 gjorde Kokkeri selvhentende, men runens versionsnummer fulgte stadig
+  appens – så panelet bad om en rune-opdatering ved hver eneste udgivelse, og
+  det var netop de to trin, selvhentningen skulle fjerne. Nu er der to tal:
+  `APP_VERSION` (koden, bumpes hver gang) og `RUNE_VERSION` (runen, bumpes kun
+  når YAML'en selv ændrer sig). En udgivelse er igen: push kode + tag,
+  **genstart**. Build'et siger ved hver kørsel, hvilket af de to tal der skal
+  videre.
+  - Madplanen: en dag med **»Rester«** eller anden fritekst fik en tom plads,
+    hvor naboerne havde et billede, og rækken stod i stykker. Nu får den en
+    pladsholder i samme størrelse.
+
 - **v31** (september 2026): **Madplanen kan planlægges, ikke bare fyldes.**
   Ved du, at søndag skal være bønnegryde, kunne du hidtil kun finde retten ved
   at rulle gennem 12.000 titler i en dropdown.
