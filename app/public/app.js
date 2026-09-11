@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 32;
+const APP_VERSION = 33;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -40,7 +40,7 @@ const S = {
 /* standard-parametre – kan aendres under Indstillinger */
 const DEFAULT_APP = {
   appTitle: 'Kokkeri',
-  categories: ['Hovedret', 'Forret', 'Dessert', 'Kage & bagværk', 'Tilbehør', 'Salat', 'Suppe', 'Morgenmad', 'Drikkevarer'],
+  categories: ['Hovedret', 'Forret', 'Dessert', 'Kage & bagværk', 'Tilbehør', 'Salat', 'Suppe', 'Morgenmad', 'Frokost', 'Drikkevarer'],
   defaultServings: 4,
   timerPresets: [1, 3, 5, 10, 15, 20, 30, 45, 60]
 };
@@ -780,6 +780,10 @@ async function importPaprikaFile(file, onProgress) {
 const FROKOST_RE = /frokost|madpakke|madkasse|brunch|smørrebrød|sandwich|\bwrap\b|panini|\bpita\b|toast|croque|æggekage|omelet|frittata|tapas|\bbowl\b|quiche|let ret|letret|mellemmåltid/;
 function erFrokost(r) {
   if (!r) return false;
+  /* v33: "Frokost" kan nu ogsaa vaelges som kategori. Har man selv sat den,
+   * er det et staerkere signal end nogen ordliste - ellers ville filteret
+   * skjule netop de opskrifter, man udtrykkeligt har maerket som frokost. */
+  if (normName(r.category) === 'frokost') return true;
   return FROKOST_RE.test(normName([r.sourceCategory || '', (r.tags || []).join(' '), r.title || ''].join(' ')));
 }
 

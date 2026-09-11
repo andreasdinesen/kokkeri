@@ -493,6 +493,30 @@ const SETTING_MAX = { app: 200000, logo: 900000, allow_registration: 4, ai_key: 
   ai_provider: 20, ai_url: 300,
   ha_url: 300, ha_token: 2000, ha_entity: 200, todoist_token: 200, todoist_project: 120 };
 
+/* v33: "Frokost" kom til som standard-kategori. Frontenden fletter standarden
+ * med de GEMTE indstillinger, og den gemte liste vinder - saa en installation,
+ * der én gang har trykket Gem under Indstillinger, ville aldrig se den nye
+ * kategori. Derfor én gang her, hvor vi kan naa den uden en indlogget bruger.
+ * Markeret i settings, saa den ikke kommer igen, hvis man fjerner den igen med
+ * vilje: det er brugerens liste, ikke vores. */
+function migrateFrokostKategori() {
+  if (setting('cat_frokost', '') === '1') return;
+  let a = null;
+  try { a = JSON.parse(setting('app', '')); } catch (e) {}
+  if (a && Array.isArray(a.categories)) {
+    const har = a.categories.some(c => String(c || '').trim().toLowerCase() === 'frokost');
+    if (!har) {
+      /* samme plads som i standard-listen: lige efter Morgenmad, ellers sidst */
+      const i = a.categories.findIndex(c => String(c || '').trim().toLowerCase() === 'morgenmad');
+      a.categories.splice(i >= 0 ? i + 1 : a.categories.length, 0, 'Frokost');
+      q.setSetting.run('app', JSON.stringify(a).slice(0, SETTING_MAX.app));
+      console.log('Kokkeri: kategorien "Frokost" lagt til de gemte kategorier (engangs-migrering)');
+    }
+  }
+  q.setSetting.run('cat_frokost', '1');
+}
+migrateFrokostKategori();
+
 function sanitizeItem(it) {
   if (!it || typeof it !== 'object') return null;
   if (typeof it.id !== 'string' || !/^[0-9a-zA-Z-]{6,64}$/.test(it.id)) return null;

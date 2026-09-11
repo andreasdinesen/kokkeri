@@ -69,7 +69,8 @@ function opret(srv) {
     url: r.url || '', tags: r.tags || [], favorite: !!r.favorite,
     timesCooked: r.timesCooked || 0, lastCooked: r.lastCooked || null
   });
-  const erFrokost = r => FROKOST_RE.test(norm([r.sourceCategory || '', (r.tags || []).join(' '), r.title || ''].join(' ')));
+  const erFrokost = r => norm(r.category) === 'frokost' ||
+    FROKOST_RE.test(norm([r.sourceCategory || '', (r.tags || []).join(' '), r.title || ''].join(' ')));
   const linjer = r => (r.ingredients || []).filter(l => !/^##/.test(l)).map(norm);
   /* Findes der en gruppe for ordet, bruges dens regex ("svampe" skal ogsaa
    * finde champignon). Ellers delstreng - ikke praefiks, for paa dansk staar

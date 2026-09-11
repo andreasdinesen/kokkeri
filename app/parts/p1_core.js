@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 32;
+const APP_VERSION = 33;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -40,7 +40,7 @@ const S = {
 /* standard-parametre – kan aendres under Indstillinger */
 const DEFAULT_APP = {
   appTitle: 'Kokkeri',
-  categories: ['Hovedret', 'Forret', 'Dessert', 'Kage & bagværk', 'Tilbehør', 'Salat', 'Suppe', 'Morgenmad', 'Drikkevarer'],
+  categories: ['Hovedret', 'Forret', 'Dessert', 'Kage & bagværk', 'Tilbehør', 'Salat', 'Suppe', 'Morgenmad', 'Frokost', 'Drikkevarer'],
   defaultServings: 4,
   timerPresets: [1, 3, 5, 10, 15, 20, 30, 45, 60]
 };

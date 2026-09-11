@@ -315,6 +315,10 @@ async function importPaprikaFile(file, onProgress) {
 const FROKOST_RE = /frokost|madpakke|madkasse|brunch|smørrebrød|sandwich|\bwrap\b|panini|\bpita\b|toast|croque|æggekage|omelet|frittata|tapas|\bbowl\b|quiche|let ret|letret|mellemmåltid/;
 function erFrokost(r) {
   if (!r) return false;
+  /* v33: "Frokost" kan nu ogsaa vaelges som kategori. Har man selv sat den,
+   * er det et staerkere signal end nogen ordliste - ellers ville filteret
+   * skjule netop de opskrifter, man udtrykkeligt har maerket som frokost. */
+  if (normName(r.category) === 'frokost') return true;
   return FROKOST_RE.test(normName([r.sourceCategory || '', (r.tags || []).join(' '), r.title || ''].join(' ')));
 }
 

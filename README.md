@@ -86,6 +86,16 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v33** (september 2026): **Frokost er nu også en kategori.** Den fandtes kun
+  som filter på tværs af kategorier – det giver stadig mening, for
+  »Frokostsalat« er jo en salat – men man kunne ikke file en ret under Frokost,
+  når dét var rettens natur. Nu kan man begge dele, og de to slås ikke:
+  har du selv sat kategorien til Frokost, tæller retten som frokost uden at
+  skulle hedde noget bestemt.
+  - En ny standard-kategori når ikke frem til en installation, der allerede har
+    gemt sin egen liste. Derfor lægger serveren den ind én gang ved opstart –
+    og kun én gang: fjerner du den igen, bliver den væk.
+
 - **v32** (september 2026): **Runen står stille, mens appen bevæger sig.**
   v30 gjorde Kokkeri selvhentende, men runens versionsnummer fulgte stadig
   appens – så panelet bad om en rune-opdatering ved hver eneste udgivelse, og
