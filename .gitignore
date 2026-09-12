@@ -5,3 +5,4 @@ HANDOVER.md
 *.db-shm
 .DS_Store
 .claude/
+claude-noter/
