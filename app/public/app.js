@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 34;
+const APP_VERSION = 35;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -349,10 +349,18 @@ async function saveBulk(items) {
   /* Samme fælde som i saveItem, men vaerre: categorizeImported() bulk-gemmer
    * ALLE opskrifter uden kategori ved app-start. Var de delvise, ville
    * fremgangsmaade og ingredienser blive skrevet vaek paa én gang. Ét
-   * hydrate-kald fylder dem alle; ensureFull tager evt. efternoelere. */
-  if (items.some(x => x && x.kind === 'recipe' && x.partial)) {
+   * hydrate-kald fylder dem alle; ensureFull tager evt. efternoelere.
+   * Begge sluger deres fejl, saa tjek BAGEFTER, at det faktisk lykkedes -
+   * ét netvaerkshik under opstart maa ikke skrive noget vaek. Hellere
+   * gemme intet end gemme halve opskrifter (samme valg som saveItem). */
+  const delvis = x => x && x.kind === 'recipe' && x.partial;
+  if (items.some(delvis)) {
     await hydrateItems();
-    for (const x of items) if (x && x.kind === 'recipe' && x.partial) await ensureFull(x);
+    for (const x of items) if (delvis(x)) await ensureFull(x);
+    if (items.some(delvis)) {
+      toast('Kunne ikke gemme: opskrifterne kunne ikke hentes helt', true);
+      return 0;
+    }
   }
   for (const it of items) {
     /* billeder holdes ALDRIG i hukommelsen i browseren - de hentes via
@@ -1013,7 +1021,7 @@ function paletteItems() {
     { ico: '🛒', label: 'Tilføj til indkøbsliste', hint: 'handling', run: () => { goto('shopping'); setTimeout(() => { const el = $('#shopNew'); if (el) el.focus(); }, 50); } },
     { ico: '📱', label: S.wakeOn ? 'Slå skærmlås fra' : 'Hold skærmen tændt', hint: 'handling', run: () => setWakeLock(!S.wakeOn) },
     { ico: '🎲', label: 'Tilfældig opskrift', hint: 'handling', run: randomRecipe },
-    { ico: '🌶️', label: 'Importér Paprika-eksport', hint: 'handling', run: () => { goto('settings'); setTimeout(() => { const b = $('#papImport'); if (b) b.scrollIntoView({ block: 'center' }); }, 60); } },
+    { ico: '🌶️', label: 'Importér Paprika-eksport', hint: 'handling', run: () => { goto('settings'); visSettingsFane('data'); setTimeout(() => { const b = $('#papImport'); if (b) b.scrollIntoView({ block: 'center' }); }, 60); } },
     { ico: '🌗', label: 'Skift tema', hint: 'handling', run: () => $('#themeQuick').click() }
   );
   /* opskrifter kan findes direkte fra paletten */
@@ -3972,7 +3980,7 @@ RENDER.assistant = () => {
 };
 RENDER.assistant_bind = () => {
   const toSettings = $('#aiToSettings');
-  if (toSettings) { toSettings.onclick = () => goto('settings'); return; }
+  if (toSettings) { toSettings.onclick = () => { goto('settings'); visSettingsFane('integrationer'); }; return; }
 
   const log = $('#chatLog');
   log.scrollTop = log.scrollHeight;
@@ -4013,10 +4021,38 @@ async function sendChat(text) {
 }
 
 /* ---------------- Indstillinger ---------------- */
+/* Fanerne (RUNE-ERFARINGER 9f): siden var vokset til ti afsnit i én stribe,
+ * og man rullede forbi fire integrationer for at naa sin egen konto.
+ *
+ * ALT tegnes, ét vises. Fanerne skjuler med `hidden` - de udelader intet fra
+ * dokumentet. Grunden er BINDINGERNE: settings_bind() binder knap fyrre
+ * elementer op paa deres id. Tegnede vi kun den aabne fane, fandtes de
+ * fleste ikke, og hver binding skulle laves om til noget, der koerer igen
+ * ved hvert faneskift - den slags omskrivning taber en knap UDEN at noget
+ * fejler.
+ *
+ * Gem-knapperne: hvert afsnit har sin egen, og den laeser kun sine egne
+ * felter. Der er ingen samlet knap, der skal naa ind i en lukket fane.
+ *
+ * Tredje felt = kun for administratorer. */
+const SETTINGS_FANER = [
+  ['app', 'App'],
+  ['integrationer', 'Integrationer'],
+  ['data', 'Data'],
+  ['konto', 'Konto'],
+  ['brugere', 'Brugere', true]
+];
+
 RENDER.settings = () => {
   const A = app();
-  return pageHead('Indstillinger', 'App, AI, kalender, backup og brugere') + `
+  return pageHead('Indstillinger', 'App, integrationer, backup, konto og brugere') + `
 
+  <div class="faner" role="tablist">
+    ${SETTINGS_FANER.filter(([, , admin]) => !admin || S.me.isAdmin)
+      .map(([id, navn]) => `<button class="fanebtn" role="tab" data-fane="${id}">${navn}</button>`).join('')}
+  </div>
+
+  <div class="fane" data-fane="app">
   <div class="panelbox">
     <h2 style="margin-top:0">App</h2>
     <div class="formgrid">
@@ -4035,7 +4071,9 @@ RENDER.settings = () => {
       <button class="btn primary" id="setSave">Gem indstillinger</button>
     </div>
   </div>
+  </div>
 
+  <div class="fane" data-fane="integrationer">
   <div class="panelbox">
     <h2 style="margin-top:0">✨ AI-assistent</h2>
     <p class="small muted">Nøgle og adresse gemmes kun på serveren og sendes aldrig til browseren.
@@ -4120,6 +4158,17 @@ RENDER.settings = () => {
   </div>
 
   <div class="panelbox">
+    <h2 style="margin-top:0">Claude-adgang (MCP)</h2>
+    <p class="small muted">Lad Claude læse og skrive i dine opskrifter, din madplan og din
+      indkøbsliste. <b>claude.ai</b> forbinder du med knappen »Add custom connector« og
+      adressen herunder – du bliver sendt hertil for at godkende. <b>Claude Code</b> og
+      <b>Claude Desktop</b> bruger i stedet en nøgle, du laver her.</p>
+    <div id="accessBox" class="muted small">Henter …</div>
+  </div>
+  </div>
+
+  <div class="fane" data-fane="data">
+  <div class="panelbox">
     <h2 style="margin-top:0">Backup & import</h2>
     <div class="rowflex">
       <button class="btn" id="bakJson">⬇️ Download backup (JSON)</button>
@@ -4141,7 +4190,9 @@ RENDER.settings = () => {
       indstillinger bevares. Tag en backup først, hvis du er i tvivl.</p>
     <button class="btn danger" id="wipeOpen">Vælg hvad der skal slettes…</button>
   </div>` : ''}
+  </div>
 
+  <div class="fane" data-fane="konto">
   <div class="panelbox">
     <h2 style="margin-top:0">Min konto</h2>
     <p class="small muted">Logget ind som <b>${esc(S.me.username)}</b>${S.me.isAdmin ? ' (administrator)' : ''}</p>
@@ -4158,21 +4209,45 @@ RENDER.settings = () => {
       <label class="fld"><span>&nbsp;</span><button class="btn" id="pwSave">Skift kodeord</button></label>
     </div>
   </div>
-
-  <div class="panelbox">
-    <h2 style="margin-top:0">Claude-adgang (MCP)</h2>
-    <p class="small muted">Lad Claude læse og skrive i dine opskrifter, din madplan og din
-      indkøbsliste. <b>claude.ai</b> forbinder du med knappen »Add custom connector« og
-      adressen herunder – du bliver sendt hertil for at godkende. <b>Claude Code</b> og
-      <b>Claude Desktop</b> bruger i stedet en nøgle, du laver her.</p>
-    <div id="accessBox" class="muted small">Henter …</div>
   </div>
 
-  ${S.me.isAdmin ? `<div class="panelbox">
+  ${S.me.isAdmin ? `<div class="fane" data-fane="brugere">
+  <div class="panelbox">
     <h2 style="margin-top:0">Brugere (admin)</h2>
     <div id="adminUsers" class="muted small">Henter …</div>
+  </div>
   </div>` : ''}`;
 };
+
+/* Faneskiftet.
+ *
+ * Valget bor i localStorage, ikke i S: det afhaenger af, hvad man sidst var i
+ * gang med paa DENNE maskine, ikke af kontoen - samme begrundelse som temaet.
+ * Findes den oenskede fane ikke (»Brugere« for en, der ikke er admin), falder
+ * vi tilbage til den foerste; ellers aabner man indstillingerne og ser en tom
+ * side. Kaldes ogsaa udefra (kommandopaletten), naar et bestemt felt skal frem. */
+function visSettingsFane(id) {
+  const faner = $$('#app .fane').map(el => el.dataset.fane);
+  if (!faner.length) return;
+  const valgt = faner.includes(id) ? id : faner[0];
+  $$('#app .fane').forEach(el => { el.hidden = el.dataset.fane !== valgt; });
+  $$('#app .fanebtn').forEach(el => {
+    const paa = el.dataset.fane === valgt;
+    el.classList.toggle('on', paa);
+    el.setAttribute('aria-selected', paa ? 'true' : 'false');
+  });
+  try { localStorage.setItem('kk_settings_fane', valgt); } catch (e) {}
+}
+function bindSettingsFaner() {
+  let gemt = null;
+  try { gemt = localStorage.getItem('kk_settings_fane'); } catch (e) {}
+  visSettingsFane(gemt);
+  $$('#app .fanebtn').forEach(el => el.onclick = () => {
+    visSettingsFane(el.dataset.fane);
+    // en fane man skifter til, skal begynde ved sin foerste overskrift
+    window.scrollTo(0, 0);
+  });
+}
 
 /* ---------------- Claude-adgang: noegler og forbundne apps ---------------- */
 async function tegnAdgang() {
@@ -4234,6 +4309,7 @@ async function tegnAdgang() {
 }
 
 RENDER.settings_bind = () => {
+  bindSettingsFaner();
   let logoData = undefined; // undefined = uaendret, '' = fjern
   $('#logoPick').onclick = () => $('#logoFile').click();
   $('#logoFile').onchange = async e => {
@@ -4350,10 +4426,9 @@ RENDER.settings_bind = () => {
     navigator.clipboard.writeText($('#icalUrl').value).then(() => toast('Link kopieret'));
   };
 
-  $('#bakJson').onclick = async () => {
-    const b = await api('/api/backup');
-    downloadFile('kokkeri-backup-' + isoDate() + '.json', JSON.stringify(b, null, 1), 'application/json');
-  };
+  /* Serveren streamer backuppen og saetter selv filnavnet (Content-Disposition).
+   * Hentet med api() + JSON.stringify laa den i hukommelsen tre gange. */
+  $('#bakJson').onclick = () => { location.href = '/api/backup'; };
   const bdb = $('#bakDb');
   if (bdb) bdb.onclick = () => { location.href = '/api/backup.db'; };
   const brs = $('#bakRestore');
@@ -4507,10 +4582,7 @@ function wipeModal() {
     word.oninput = opdater;
     m.querySelector('#wipeAll').onclick = () => { bokse().forEach(b => b.checked = true); opdater(); };
     m.querySelector('#wipeNone').onclick = () => { bokse().forEach(b => b.checked = false); opdater(); };
-    m.querySelector('#wipeBackup').onclick = async () => {
-      const b = await api('/api/backup');
-      downloadFile('kokkeri-backup-' + isoDate() + '.json', JSON.stringify(b, null, 1), 'application/json');
-    };
+    m.querySelector('#wipeBackup').onclick = () => { location.href = '/api/backup'; };
     m.querySelector('#wipeCancel').onclick = closeModal;
     go.onclick = async () => {
       const kinds = valgte();

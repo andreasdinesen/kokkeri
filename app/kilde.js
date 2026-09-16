@@ -288,9 +288,9 @@ async function opdater(env = process.env) {
     return { version: maal, hentet: false };
   }
 
-  /* v82 er den foerste udgave, der kan hente sig selv. Laaser man laengere
-   * tilbage, forsvinder kilde.js sammen med resten - og saa opdaterer en
-   * genstart ikke mere. Vejen tilbage er panelets »Opdater kokkeri«, som falder
+  /* v30 (FOERSTE_SELVHENTENDE) er den foerste udgave, der kan hente sig
+   * selv. Laaser man laengere tilbage, forsvinder kilde.js sammen med resten
+   * - og saa opdaterer en genstart ikke mere. Vejen tilbage er panelets »Opdater kokkeri«, som falder
    * tilbage til runens startsnor. Det skal staa i loggen, FOER det sker. */
   if (maal < FOERSTE_SELVHENTENDE) {
     advar(`v${maal} er fra foer Kokkeri kunne hente sin egen kode.`);

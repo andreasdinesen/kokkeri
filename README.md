@@ -86,6 +86,15 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v35** (september 2026): **Indstillingerne er delt i faner** — App, Integrationer,
+  Data, Konto og Brugere (kun admin) — og appen husker den sidste. **Ingen tabte
+  opskrifter:** et netværkshik lige efter opstart kunne før skrive fremgangsmåde og
+  ingredienser væk; nu gemmer appen hellere intet og siger det. **Mere privat
+  offline-tilstand:** kun opskrifter, billeder og appens egne filer gemmes i browserens
+  cache — aldrig indstillinger, kalendertoken eller backup. **Backup** hentes nu direkte
+  fra serveren som `kokkeri-backup-<dato>.json` og fylder ikke browserens hukommelse,
+  heller ikke ved store biblioteker.
+
 - **v34** (september 2026): **Udskrevne opskrifter uden browserens eget
   sidehoved.** Dato, adresse og sidetal, som browseren selv satte øverst og nederst
   på siden, er væk — papirmargenen ligger nu i opskriften i stedet. Farver kommer

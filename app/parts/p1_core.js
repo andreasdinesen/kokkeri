@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 34;
+const APP_VERSION = 35;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -349,10 +349,18 @@ async function saveBulk(items) {
   /* Samme fælde som i saveItem, men vaerre: categorizeImported() bulk-gemmer
    * ALLE opskrifter uden kategori ved app-start. Var de delvise, ville
    * fremgangsmaade og ingredienser blive skrevet vaek paa én gang. Ét
-   * hydrate-kald fylder dem alle; ensureFull tager evt. efternoelere. */
-  if (items.some(x => x && x.kind === 'recipe' && x.partial)) {
+   * hydrate-kald fylder dem alle; ensureFull tager evt. efternoelere.
+   * Begge sluger deres fejl, saa tjek BAGEFTER, at det faktisk lykkedes -
+   * ét netvaerkshik under opstart maa ikke skrive noget vaek. Hellere
+   * gemme intet end gemme halve opskrifter (samme valg som saveItem). */
+  const delvis = x => x && x.kind === 'recipe' && x.partial;
+  if (items.some(delvis)) {
     await hydrateItems();
-    for (const x of items) if (x && x.kind === 'recipe' && x.partial) await ensureFull(x);
+    for (const x of items) if (delvis(x)) await ensureFull(x);
+    if (items.some(delvis)) {
+      toast('Kunne ikke gemme: opskrifterne kunne ikke hentes helt', true);
+      return 0;
+    }
   }
   for (const it of items) {
     /* billeder holdes ALDRIG i hukommelsen i browseren - de hentes via

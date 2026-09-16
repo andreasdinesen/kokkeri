@@ -65,7 +65,7 @@ RENDER.assistant = () => {
 };
 RENDER.assistant_bind = () => {
   const toSettings = $('#aiToSettings');
-  if (toSettings) { toSettings.onclick = () => goto('settings'); return; }
+  if (toSettings) { toSettings.onclick = () => { goto('settings'); visSettingsFane('integrationer'); }; return; }
 
   const log = $('#chatLog');
   log.scrollTop = log.scrollHeight;

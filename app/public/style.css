@@ -150,6 +150,27 @@ main { padding: 26px 30px 60px; max-width: 1280px; }
   padding: 16px 18px; box-shadow: var(--shadow); margin: 14px 0;
 }
 
+/* ---------- faner i indstillingerne ----------
+ * ALT tegnes, ét vises: fanerne skjuler med [hidden], saa bindingerne i
+ * settings_bind() finder hvert felt, ogsaa i de lukkede faner
+ * (RUNE-ERFARINGER 9f). Raekken RULLER vandret paa en smal skaerm frem for at
+ * ombryde - to linjer faner ligner to raekker knapper og skubber indholdet ned.
+ * Understregningen tegnes ALTID, gennemsigtig naar fanen ikke er valgt, ellers
+ * hopper raekken en pixel ved hvert skift. */
+.faner {
+  display: flex; gap: 4px; margin: 10px 0 2px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto; scrollbar-width: none;
+}
+.faner::-webkit-scrollbar { display: none; }
+.fanebtn {
+  flex: none; padding: 9px 14px; border: 0; background: none; cursor: pointer;
+  font: inherit; font-size: 14px; color: var(--muted); white-space: nowrap;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.fanebtn:hover { color: var(--text); }
+.fanebtn.on { color: var(--text); border-bottom-color: var(--accent); }
+
 /* "De naeste dage" paa Overblik. Dag og dato havde faste pixelbredder (90/78),
  * saa retten blev klemt ned i en smal rest paa en telefon. */
 .dashday {

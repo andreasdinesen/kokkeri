@@ -135,7 +135,6 @@ const q = {
    * saa JSON.parse -> JSON.stringify var ren spildtid og en hukommelsesspids. */
   rawExcept: db.prepare(`SELECT data FROM items WHERE deleted = 0 AND kind NOT IN ('recipeImage', 'crawlSeen')`),
   rawByKind: db.prepare('SELECT data FROM items WHERE kind = ? AND deleted = 0'),
-  rawAll: db.prepare('SELECT data FROM items WHERE deleted = 0'),
   imageById: db.prepare(`SELECT data, updated_at FROM items WHERE id = ? AND kind = 'recipeImage' AND deleted = 0`),
   recipeByShare: db.prepare(`SELECT data FROM items WHERE kind = 'recipe' AND deleted = 0
     AND json_extract(data, '$.shareToken') = ?`),
@@ -1964,22 +1963,52 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
     /* ---- backup / restore ---- */
     if (p === '/api/backup' && req.method === 'GET') {
       /* Backuppen indeholder ALT - ogsaa billederne. Den skrives i bidder;
-       * bygget som én streng ville den vaere en halv gigabyte i heapen. */
+       * bygget som én streng ville den vaere en halv gigabyte i heapen.
+       * Raekkerne hentes én ad gangen (.iterate), og der ventes paa 'drain',
+       * saa hverken raekke-arrayet eller socketens buffer holder det hele.
+       * Ventetiden betyder, at andre kald kan skrive imens - derfor laeses
+       * fra en SEPARAT forbindelse i én transaktion: WAL giver den et fast
+       * snapshot, saa en samtidig gendannelse ikke kan dukke op halvt i filen,
+       * og hovedforbindelsens BEGIN/COMMIT roeres ikke. */
       res.writeHead(200, {
         'Content-Type': 'application/json; charset=utf-8',
         'Cache-Control': 'no-store',
-        'Content-Disposition': `attachment; filename="kokkeri-${new Date().toISOString().slice(0, 10)}.json"`
+        'Content-Disposition': `attachment; filename="kokkeri-backup-${new Date().toISOString().slice(0, 10)}.json"`
       });
-      res.write('{"app":"kokkeri","exported":' + JSON.stringify(nowIso()) +
-        ',"settings":' + JSON.stringify(appSettingsJson()) + ',"items":[');
-      let bid = '', foerste = true;
-      for (const row of q.rawAll.all()) {
-        bid += (foerste ? '' : ',') + row.data;
-        foerste = false;
-        if (bid.length > 262144) { res.write(bid); bid = ''; }
+      const snap = new DatabaseSync(DB_PATH, { readOnly: true });
+      try {
+        snap.exec('BEGIN');
+        const stmt = snap.prepare('SELECT data FROM items WHERE deleted = 0');
+        /* .iterate() kom i Node 22.13/23.4. Startsnorens fallback koerer
+         * --experimental-sqlite paa aeldre Node (22.5-22.12), hvor den mangler -
+         * dér hentes raekkerne samlet som foer. */
+        const rows = typeof stmt.iterate === 'function' ? stmt.iterate() : stmt.all();
+        const skriv = t => res.write(t) ? null : new Promise(ok => {
+          const faerdig = () => { res.off('drain', faerdig); res.off('close', faerdig); ok(); };
+          res.on('drain', faerdig); res.on('close', faerdig);
+        });
+        res.write('{"app":"kokkeri","exported":' + JSON.stringify(nowIso()) +
+          ',"settings":' + JSON.stringify(appSettingsJson()) + ',"items":[');
+        let bid = '', foerste = true;
+        for (const row of rows) {
+          bid += (foerste ? '' : ',') + row.data;
+          foerste = false;
+          if (bid.length > 262144) {
+            const vent = skriv(bid);
+            bid = '';
+            if (vent) await vent;
+            if (res.destroyed) return;    // klienten gik - resten er spildt arbejde
+          }
+        }
+        res.write(bid + ']}');
+        return res.end();
+      } catch (e) {
+        /* headeren er sendt - en fejlside kan ikke laengere naa frem */
+        console.error('[backup] afbrudt:', e.message);
+        return res.destroy();
+      } finally {
+        try { snap.close(); } catch (e) {}
       }
-      res.write(bid + ']}');
-      return res.end();
     }
     if (p === '/api/backup.db' && req.method === 'GET') {
       if (!user.is_admin) return err(res, 403, 'Kræver administrator-rettigheder');
