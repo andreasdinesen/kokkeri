@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 33;
+const APP_VERSION = 34;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -447,12 +447,15 @@ document.addEventListener('visibilitychange', () => {
 
 /* ---------------- print ---------------- */
 /* document.title bliver browserens forslag til PDF-filnavn - saet et paent et
- * under print og gendan bagefter. */
+ * under print og gendan bagefter.
+ * Navnet renses med Unicode-klasserne \p{L}\p{N} og u-flaget - IKKE \w, der kun
+ * er ASCII: »Crème brûlée« ville blive til »Cr-me-br-l-e« (Beanledger v68). */
 function printSheet(html, filename) {
   $('#printHost').innerHTML = html;
   const orig = document.title;
   if (filename) {
-    document.title = String(filename).replace(/[\\/:*?"<>|]/g, '-').slice(0, 80) + '-' + isoDate();
+    document.title = String(filename)
+      .replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 80) + '-' + isoDate();
     const restore = () => { document.title = orig; window.removeEventListener('afterprint', restore); };
     window.addEventListener('afterprint', restore);
     setTimeout(restore, 60000); // sikkerhedsnet hvis afterprint aldrig fyrer

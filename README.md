@@ -86,6 +86,12 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v34** (september 2026): **Udskrevne opskrifter uden browserens eget
+  sidehoved.** Dato, adresse og sidetal, som browseren selv satte øverst og nederst
+  på siden, er væk — papirmargenen ligger nu i opskriften i stedet. Farver kommer
+  også med på papiret. Og en PDF af »Crème brûlée« hedder nu det, ikke noget
+  halvt: filnavnet bevarer accenter og alle andre bogstaver.
+
 - **v33** (september 2026): **Frokost er nu også en kategori.** Den fandtes kun
   som filter på tværs af kategorier – det giver stadig mening, for
   »Frokostsalat« er jo en salat – men man kunne ikke file en ret under Frokost,
