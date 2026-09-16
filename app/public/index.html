@@ -4,9 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Kokkeri</title>
-<link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" href="icon-192.png">
-<link rel="stylesheet" href="style.css?v=35">
+<!-- Absolutte adresser: paa /opskrift/<id> ville "style.css?v=36" blive slaaet op
+     som /opskrift/style.css?v=36 (RUNE-ERFARINGER 9g). -->
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon-192.png">
+<link rel="stylesheet" href="/style.css?v=36">
 <script data-theme-init>
 /* anvend gemt tema foer foerste paint */
 (function(){try{var t=localStorage.getItem('kk_theme');
@@ -61,7 +63,7 @@ else document.documentElement.dataset.theme='dark';}catch(e){}})();
 <div id="toast"></div>
 <div id="printHost" class="printsheet"></div>
 
-<script src="app.js?v=35"></script>
+<script src="/app.js?v=36"></script>
 <script>
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').then(function (reg) {

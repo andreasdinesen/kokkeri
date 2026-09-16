@@ -42,10 +42,17 @@ RUNE_VERSION = 31
 parts = sorted(glob.glob('app/parts/p*.js'))
 if not parts:
     sys.exit('FEJL: ingen filer i app/parts/')
-app_js = '\n'.join(read(p) for p in parts)
+# app/shared/*.js koerer BAADE her og paa serveren (og i sw.js): sidernes
+# adresser skal vaere én liste, ellers giver et genindlaes 404 paa en side,
+# der lige stod paa skaermen (RUNE-ERFARINGER 9g). De laegges forrest - og
+# 'use strict' foran dem, for et direktiv virker kun som filens foerste saetning,
+# og p1_core.js' eget ville ellers ikke laengere gaelde for appen.
+shared = sorted(glob.glob('app/shared/*.js'))
+app_js = ("'use strict';\n" if shared else '') + '\n'.join(f'/* ---- shared/{s.split("/")[-1]} ---- */\n' + read(s) for s in shared) \
+    + ('\n' if shared else '') + '\n'.join(read(p) for p in parts)
 with open('app/public/app.js', 'w', encoding='utf-8') as f:
     f.write(app_js)
-for f_ in ['app/public/app.js', 'app/server.js', 'app/oauth.js', 'app/mcp.js', 'app/kilde.js']:
+for f_ in ['app/public/app.js', 'app/server.js', 'app/oauth.js', 'app/mcp.js', 'app/kilde.js'] + shared:
     subprocess.run(['node', '--check', f_], check=True)
 
 m = re.search(r'const APP_VERSION = (\d+);', app_js)
@@ -69,7 +76,7 @@ if f"const APP_VER = '{app_version}';" not in sw_js:
 
 # --- sikkerhedstjek paa kilderne ---
 for name in ['app/server.js', 'app/oauth.js', 'app/mcp.js', 'app/kilde.js',
-             'app/public/index.html', 'app/public/app.js', 'app/public/style.css', 'app/public/sw.js']:
+             'app/public/index.html', 'app/public/app.js', 'app/public/style.css', 'app/public/sw.js'] + shared:
     txt = read(name)
     hits = set(re.findall(r'\{\{[A-Z_]+\}\}', txt))
     if hits:

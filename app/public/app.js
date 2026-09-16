@@ -1,8 +1,111 @@
 'use strict';
+/* ---- shared/ruter.js ---- */
+/* Adresser til siderne - én liste, tre brugere (RUNE-ERFARINGER 9g).
+ *
+ * Browseren skriver stien i adresselinjen, saa /opskrift/<id> kan deles og
+ * bogmaerkes. SERVEREN svarer med index.html paa praecis de samme stier, og
+ * SERVICE WORKEREN giver app-skallen paa dem, naar nettet er vaek. Tre lister
+ * ville skride fra hinanden ved den foerste nye side - saa den bor her.
+ *
+ * Kun de kendte stier peger paa appen. En catch-all ville ogsaa svare paa
+ * /app.jsx og /styl.css med HTML - og i service workeren ville den give
+ * app-skallen paa /del/<token> og /api/backup, naar nettet var vaek.
+ *
+ * Filen koerer tre steder: build_rune.py laegger den forrest i app.js,
+ * serveren require'r den, og sw.js henter den med importScripts. Den maa
+ * derfor ikke roere hverken window, document eller require.
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.kokkeriRuter = factory();
+}(typeof self !== 'undefined' ? self : this, function () {
+
+  /* [side-id, adresse, andre stavemaader der ogsaa skal virke] */
+  const SIDER = [
+    ['dash',      'overblik',      ['dash', 'forside', 'start']],
+    ['recipes',   'opskrifter',    ['recipes', 'opskrift']],
+    ['plan',      'madplan',       ['plan', 'mealplan', 'madplaner']],
+    ['shopping',  'indkoebsliste', ['shopping', 'indkoeb', 'forraad', 'spisekammer']],
+    ['timers',    'timere',        ['timers', 'timer']],
+    ['assistant', 'assistent',     ['assistant', 'ai', 'ai-assistent']],
+    ['settings',  'indstillinger', ['settings']]
+  ];
+
+  /* Undersider: /opskrift/<id> og /indstillinger/<fane>. Opskriften har sin
+   * egen adresse, fordi det er DEN, man deler med sig selv og bogmaerker.
+   * Fanerne staar ogsaa i SETTINGS_FANER (p9_settings.js) - tests/ruter
+   * holder de to lister i trit. */
+  const OPSKRIFT = 'opskrift';
+  const FANER = ['app', 'integrationer', 'data', 'konto', 'brugere'];
+  /* samme form som serverens item-id (server.js: cleanItem) */
+  const ID_RE = /^[0-9a-zA-Z-]{6,64}$/;
+
+  /* Stien skrives i haanden ved koekkenbordet, saa baade /Indkøbsliste og
+   * /indkoebsliste/ skal ramme. æøå foldes til ae/oe/aa - samme translit
+   * som adresserne selv er skrevet i. */
+  function afkod(s) {
+    try { return decodeURIComponent(s); } catch (e) { return s; /* ugyldig %-kode: brug raa */ }
+  }
+  function fold(s) {
+    return afkod(String(s || '')).toLowerCase()
+      .replace(/æ/g, 'ae').replace(/ø/g, 'oe').replace(/å/g, 'aa');
+  }
+
+  const OPSLAG = {};
+  for (const [id, sti, alias] of SIDER) {
+    OPSLAG[fold(sti)] = id;
+    for (const a of alias || []) OPSLAG[fold(a)] = id;
+  }
+
+  /* Sti -> { side, arg } eller null (serveren 404'er).
+   * Kun FOERSTE led foldes: et opskrift-id skelner store og smaa bogstaver. */
+  function ruteForSti(sti) {
+    const led = String(sti || '').split('/').filter(Boolean);
+    if (!led.length) return { side: 'dash', arg: null };
+    if (led.length === 1 && fold(led[0]) === 'index.html') return { side: 'dash', arg: null };
+    const foerste = fold(led[0]);
+    if (led.length === 1) {
+      const side = OPSLAG[foerste];
+      return side ? { side, arg: null } : null;
+    }
+    if (led.length !== 2) return null;
+    if (foerste === OPSKRIFT || foerste === 'recipe') {
+      const id = afkod(led[1]);
+      return ID_RE.test(id) ? { side: 'recipeDetail', arg: id } : null;
+    }
+    if (OPSLAG[foerste] === 'settings') {
+      const fane = fold(led[1]);
+      return FANER.includes(fane) ? { side: 'settings', arg: fane } : null;
+    }
+    return null;
+  }
+
+  function sideForSti(sti) {
+    const r = ruteForSti(sti);
+    return r ? r.side : null;
+  }
+
+  /* Side (+ opskrift-id eller fane) -> sti. Ukendt -> null. */
+  function stiForSide(side, arg) {
+    if (side === 'recipeDetail') {
+      return ID_RE.test(String(arg || '')) ? '/' + OPSKRIFT + '/' + encodeURIComponent(arg) : null;
+    }
+    for (const [id, sti] of SIDER) {
+      if (id !== side) continue;
+      if (side === 'settings' && FANER.includes(arg)) return '/' + sti + '/' + arg;
+      return '/' + sti;
+    }
+    return null;
+  }
+
+  return { SIDER, FANER, ruteForSti, sideForSti, stiForSide };
+}));
+
+'use strict';
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 35;
+const APP_VERSION = 36;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -986,6 +1089,52 @@ function renderNavTimers() {
   });
 }
 
+/* ---------------- adresser (RUNE-ERFARINGER 9g) ----------------
+ * Listen bor i app/shared/ruter.js - serveren bruger den samme til at afgoere,
+ * hvilke stier der svarer med index.html, og sw.js til offline-skallen. */
+const { ruteForSti, stiForSide } = kokkeriRuter;
+
+/* Adressen foelger siden. Én ting styrer det: hver optegning skriver den side,
+ * man ER paa, i adresselinjen - saa de mange steder, der kalder goto(), ikke
+ * behoever vide noget om historik. Der skrives kun, naar stien FAKTISK er en
+ * anden; ellers laver tilbage-knappens egen optegning en ny post, og man kan
+ * aldrig komme laengere tilbage end ét skridt.
+ * `erstat`: ret adressen uden en ny post - foerste optegning (/ -> /overblik
+ * maa ikke koste et klik paa tilbage for at komme ud af appen), et faneskift
+ * i indstillingerne, og en side, tilbage-knappen landede paa, men som ikke
+ * findes mere (en slettet opskrift -> /opskrifter). */
+function synkAdresse(erstat) {
+  const sti = stiForSide(S.view, S.viewArg);
+  if (!sti) return;
+  const r = S.view === 'recipeDetail' ? recipeById(S.viewArg) : null;
+  const side = VIEWS.find(v => v.id === S.view);
+  document.title = r ? (r.title || 'Opskrift') + ' · Kokkeri'
+    : side && side.id !== 'dash' ? side.label + ' · Kokkeri' : 'Kokkeri';
+  /* Genvejen paa hjemmeskaermen skal aabne DEN side - iOS laeser start_url
+   * fra manifestet, ikke adresselinjen. Serveren validerer stien. */
+  const man = document.querySelector('link[rel="manifest"]');
+  if (man) man.setAttribute('href', '/manifest.webmanifest?start=' + encodeURIComponent(sti));
+  if (location.pathname === sti) { S._urlKlar = true; return; }
+  history[S._urlKlar && !erstat ? 'pushState' : 'replaceState'](
+    { side: S.view, arg: S.viewArg }, '', sti + location.search + location.hash);
+  S._urlKlar = true;
+}
+
+/* Tilbage/frem. Kun S.view/S.viewArg skiftes - kogetilstanden (#cookMode) og
+ * timerne ligger uden for #app og roeres ikke af en optegning. */
+window.addEventListener('popstate', () => {
+  if (!S.me) return;
+  const rute = ruteForSti(location.pathname);
+  if (!rute) return;
+  if (rute.side === S.view && rute.arg === S.viewArg) return;
+  if (S.view === 'recipeDetail' && rute.side !== 'recipeDetail') S.detailServings = null;
+  S.view = rute.side;
+  S.viewArg = rute.arg;
+  S._urlErstat = true;
+  render();
+  window.scrollTo(0, 0);
+});
+
 /* render() gentegner KUN - den maa ikke scrolle. Baggrundsting (site-import,
  * billed-hentning, timere) kalder render() loebende, og et scrollTo her ville
  * kaste brugeren til toppen midt i en side. Sideskift scroller i goto(). */
@@ -995,6 +1144,10 @@ function render() {
   $('#app').innerHTML = fn();
   const binder = RENDER[S.view + '_bind'];
   if (binder) binder();
+  /* EFTER optegningen: en opskrift, der ikke findes, skifter selv S.view til
+   * listen, og det er den side, adressen skal vise. */
+  synkAdresse(S._urlErstat);
+  S._urlErstat = false;
   updateWakeBtn();
 }
 function goto(view, arg) {
@@ -1129,6 +1282,11 @@ async function boot() {
   };
   $('#wakeQuick').onclick = () => setWakeLock(!S.wakeOn);
   $('#logoutBtn').onclick = async () => { await api('/api/logout', { body: {} }); location.reload(); };
+
+  /* Adressen bestemmer startsiden - ogsaa naar man skal logge ind foerst:
+   * S.view saettes nu, og enterApp() tegner den bagefter. */
+  const start = ruteForSti(location.pathname);
+  if (start) { S.view = start.side; S.viewArg = start.arg; }
 
   try {
     const r = await api('/api/me');
@@ -1735,7 +1893,7 @@ function instructionsHtml(r) {
 
 RENDER.recipeDetail = () => {
   const r = recipeById(S.viewArg);
-  if (!r) { S.view = 'recipes'; return RENDER.recipes(); }
+  if (!r) { S.view = 'recipes'; S.viewArg = null; return RENDER.recipes(); }
   /* Listen har kun kort-felterne - hent resten, foer opskriften kan vises. */
   if (r.partial) { ensureFull(r).then(() => { if (S.view === 'recipeDetail') render(); }); return '<p class="muted">Henter opskriften …</p>'; }
   const base = r.servings || app().defaultServings;
@@ -1766,6 +1924,7 @@ RENDER.recipeDetail = () => {
   </div>
   <div class="rowflex" style="margin:0 0 14px">
     <button class="btn small" id="shareBtn">${r.shareToken ? '🔗 Deles – vis link' : '🔗 Del med et link'}</button>
+    <button class="btn small" id="copyRichBtn" title="Til en mail, Word, Pages eller OneNote – med billede. Apple Notes tager kun teksten.">📋 Kopiér opskriften</button>
     ${S.settings.aiKeySet ? `<button class="btn small" id="nutriBtn">🥗 ${r.nutrition ? 'Genberegn ernæring' : 'Estimér ernæring'} (AI)</button>` : ''}
     ${hasImperial(r) ? '<button class="btn small" id="metricBtn">🌍 Omregn til metrisk (cups → dl …)</button>' : ''}
   </div>
@@ -1808,6 +1967,7 @@ RENDER.recipeDetail_bind = () => {
   $('#servPlus').onclick = () => { S.detailServings = S.detailServings + 1; render(); };
   bindStarPickers();
   $('#shareBtn').onclick = () => shareRecipeModal(r);
+  $('#copyRichBtn').onclick = () => kopierOpskrift(r, S.detailServings / (r.servings || app().defaultServings));
   const nutri = $('#nutriBtn');
   if (nutri) nutri.onclick = () => aiEstimateNutrition(r, nutri);
   const metric = $('#metricBtn');
@@ -1908,6 +2068,135 @@ function printRecipe(r) {
     <h2>Fremgangsmåde</h2>
     <ol>${(r.instructions || []).map(s => /^##/.test(s) ? `</ol><h2>${esc(s.replace(/^##\s*/, ''))}</h2><ol>` : `<li>${esc(s)}</li>`).join('')}</ol>
     ${r.url ? `<p class="pdate">Kilde: ${esc(r.url)}</p>` : ''}`, r.title);
+}
+
+/* ---------------- kopiér som rig tekst (RUNE-ERFARINGER 9e) ----------------
+ * Opskriften som HTML + ren tekst paa udklipsholderen, saa den kan saettes ind
+ * i en mail, Word, Pages eller OneNote med billede, ingrediensliste og
+ * nummererede trin.
+ *
+ * Billedet: /api/image/<id> ligger bag login, og en adresse bag login viser
+ * INTET hos modtageren. Derfor hentes det og lægges ind som data:-adresse -
+ * KUN som attribut i HTML'en, aldrig i den rene tekst (en halv megabyte
+ * base64 i et tekstfelt er en mur, ikke en opskrift). Et billede, der endnu
+ * kun findes som ekstern https-adresse (masse-importen), bruges som det er.
+ * Grænsen, en webside ikke kan komme uden om: Apple Notes viser ikke
+ * data:-billeder (et blåt »?«). Tekst og formatering kommer med dér, billedet
+ * må ind for sig.
+ *
+ * Bygges af de strukturerede felter - ikke af markdown - saa der er intet
+ * renderer-loft paa adressens laengde at ramme. */
+function opskriftSomRigTekst(r, factor, billede) {
+  const f = factor || 1;
+  const portioner = Math.round((r.servings || app().defaultServings) * f * 10) / 10;
+  const meta = [r.category, portioner ? portioner + ' portioner' : '',
+    recipeTotalMin(r) ? fmtMin(recipeTotalMin(r)) : ''].filter(Boolean).join(' · ');
+  const kilde = /^https?:\/\//i.test(r.url || '') ? r.url : '';
+  const bil = /^(data:image\/|https:\/\/)/i.test(billede || '') ? billede : '';
+
+  /* "## Overskrift" deler begge lister i afsnit */
+  const afsnit = (linjer) => {
+    const ud = [{ navn: '', linjer: [] }];
+    for (const l of linjer || []) {
+      if (/^##\s*/.test(l)) ud.push({ navn: l.replace(/^##\s*/, ''), linjer: [] });
+      else if (String(l).trim()) ud[ud.length - 1].linjer.push(l);
+    }
+    return ud.filter(a => a.navn || a.linjer.length);
+  };
+  const ings = afsnit(r.ingredients).map(a => ({ navn: a.navn, linjer: a.linjer.map(l => scaleIngredient(l, f)) }));
+  const trin = afsnit(r.instructions);
+
+  const html = ['<meta charset="utf-8">',
+    `<h1>${esc(r.title || 'Opskrift')}</h1>`,
+    meta ? `<p><i>${esc(meta)}</i></p>` : '',
+    bil ? `<p><img src="${esc(bil)}" alt="${esc(r.title || '')}" style="max-width:480px;width:100%;height:auto"></p>` : '',
+    r.description ? `<p>${esc(r.description)}</p>` : '',
+    '<h2>Ingredienser</h2>',
+    ...ings.map(a => (a.navn ? `<h3>${esc(a.navn)}</h3>` : '') +
+      (a.linjer.length ? `<ul>${a.linjer.map(l => `<li>${esc(l)}</li>`).join('')}</ul>` : '')),
+    '<h2>Fremgangsmåde</h2>',
+    ...trin.map(a => (a.navn ? `<h3>${esc(a.navn)}</h3>` : '') +
+      (a.linjer.length ? `<ol>${a.linjer.map(l => `<li>${esc(l)}</li>`).join('')}</ol>` : '')),
+    kilde ? `<p>Kilde: <a href="${esc(kilde)}">${esc(kilde)}</a></p>` : ''
+  ].filter(Boolean).join('\n');
+
+  const tekst = [r.title || 'Opskrift', meta, '',
+    ...(r.description ? [r.description, ''] : []),
+    'INGREDIENSER',
+    ...ings.flatMap(a => [...(a.navn ? [a.navn + ':'] : []), ...a.linjer.map(l => '- ' + l)]),
+    '', 'FREMGANGSMÅDE',
+    ...trin.flatMap(a => [...(a.navn ? [a.navn + ':'] : []), ...a.linjer.map((l, i) => (i + 1) + '. ' + l)]),
+    ...(kilde ? ['', 'Kilde: ' + kilde] : [])
+  ].filter((l, i, a) => l !== '' || a[i - 1] !== '').join('\n').trim() + '\n';
+  return { html, tekst };
+}
+
+/* data:-adresse til HTML'en - eller '' (saa kommer opskriften uden billede) */
+async function opskriftBilledeTilKopi(r) {
+  const intern = imageSrc(r);
+  if (!intern) return /^(data:image\/|https:\/\/)/i.test(r.image || '') ? r.image : '';
+  try {
+    const res = await fetch(intern);
+    if (!res.ok) return '';
+    const blob = await res.blob();
+    return await new Promise((ok, nej) => {
+      const fr = new FileReader();
+      fr.onload = () => ok(String(fr.result || ''));
+      fr.onerror = () => nej(fr.error);
+      fr.readAsDataURL(blob);
+    });
+  } catch (e) { return ''; }
+}
+
+/* Kaldes DIREKTE fra klikket. Safari kraever, at ClipboardItem oprettes inde
+ * i klik-haendelsen (Sagu v24) - derfor faar den LOEFTER om blobs, og
+ * billedet hentes, mens den venter. Over ren http (panelets IP:port) findes
+ * navigator.clipboard slet ikke; saa bærer copy-haendelsen, som ogsaa tager
+ * over, hvis tilladelsen naegtes. */
+function kopierOpskrift(r, factor) {
+  const indhold = opskriftBilledeTilKopi(r).then(b => opskriftSomRigTekst(r, factor, b));
+  const faerdig = () => indhold.then(x => toast(/<img /.test(x.html)
+    ? 'Opskriften er kopieret. Apple Notes tager kun teksten – billedet må ind for sig'
+    : 'Opskriften er kopieret'));
+  const reserve = () => indhold.then(x => {
+    if (!kopierViaHaendelse(x.html, x.tekst)) throw new Error('afvist');
+  }).then(faerdig).catch(() => toast('Kunne ikke kopiere – browseren tillod det ikke', true));
+  let item = null;
+  if (navigator.clipboard && navigator.clipboard.write && typeof ClipboardItem !== 'undefined') {
+    try {
+      item = new ClipboardItem({
+        'text/html': indhold.then(x => new Blob([x.html], { type: 'text/html' })),
+        'text/plain': indhold.then(x => new Blob([x.tekst], { type: 'text/plain' }))
+      });
+    } catch (e) { item = null; }
+  }
+  if (!item) return reserve();
+  return navigator.clipboard.write([item]).then(faerdig, reserve);
+}
+
+/* copy-haendelsen kraever en markering, ellers fyrer den aldrig - derfor det
+ * tomme, skjulte tekstfelt. */
+function kopierViaHaendelse(html, tekst) {
+  const ta = document.createElement('textarea');
+  ta.setAttribute('readonly', '');
+  ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+  ta.value = ' ';
+  document.body.appendChild(ta);
+  let sat = false;
+  const lyt = e => {
+    e.preventDefault();
+    e.clipboardData.setData('text/html', html);
+    e.clipboardData.setData('text/plain', tekst);
+    sat = true;
+  };
+  document.addEventListener('copy', lyt);
+  try {
+    ta.select();
+    document.execCommand('copy');
+  } catch (e) { sat = false; }
+  document.removeEventListener('copy', lyt);
+  ta.remove();
+  return sat;
 }
 
 /* ---------------- redigerings-modal ---------------- */
@@ -2214,11 +2503,15 @@ async function addRecipeToShopping(r, factor) {
 }
 
 /* ---------------- kogetilstand ---------------- */
-const CM = { recipe: null, step: 0, wakeWasOn: false, checked: new Set() };
+const CM = { recipe: null, step: 0, wakeWasOn: false, checked: new Set(), factor: 1 };
 
 function openCookMode(r) {
   CM.recipe = r;
   CM.step = 0;
+  /* Skaleringen fastfryses: med direkte adresser kan man gaa tilbage til en
+   * ANDEN opskrift, mens kogetilstanden staar aaben, og S.detailServings
+   * foelger den side, der vises - ikke den, der koges. */
+  CM.factor = (S.detailServings || r.servings || 1) / (r.servings || S.detailServings || 1);
   CM.checked = new Set();
   CM.wakeWasOn = S.wakeOn;
   if (!S.wakeOn) setWakeLock(true); // skaermen skal ikke slukke midt i madlavningen
@@ -2266,7 +2559,7 @@ function bindCookTimers() {
 function drawCookMode() {
   const r = CM.recipe;
   const steps = (r.instructions || []).filter(s => !/^##/.test(s));
-  const factor = (S.detailServings || r.servings || 1) / (r.servings || S.detailServings || 1);
+  const factor = CM.factor;
   const step = steps[CM.step] || '';
   $('#cookMode').innerHTML = `
     <div class="cmhead">
@@ -4237,11 +4530,23 @@ function visSettingsFane(id) {
     el.setAttribute('aria-selected', paa ? 'true' : 'false');
   });
   try { localStorage.setItem('kk_settings_fane', valgt); } catch (e) {}
+  /* Fanen staar ogsaa i adressen (/indstillinger/data), saa et genindlaes
+   * lander paa den. Et faneskift RETTER adressen - det er ikke et sideskift,
+   * og tilbage-knappen skal foere ud af indstillingerne, ikke gennem fanerne.
+   * Staar adressen endnu ikke paa indstillingerne (vi er midt i goto), maa der
+   * IKKE rettes: det ville skrive over den forrige sides post i historikken.
+   * render() skriver selv den nye post lige bagefter. */
+  if (S.view === 'settings' && S.viewArg !== valgt) {
+    S.viewArg = valgt;
+    const her = ruteForSti(location.pathname);
+    if (her && her.side === 'settings') synkAdresse(true);
+  }
 }
 function bindSettingsFaner() {
   let gemt = null;
   try { gemt = localStorage.getItem('kk_settings_fane'); } catch (e) {}
-  visSettingsFane(gemt);
+  // adressens fane vinder over den gemte - det er den, der blev bedt om
+  visSettingsFane(S.viewArg || gemt);
   $$('#app .fanebtn').forEach(el => el.onclick = () => {
     visSettingsFane(el.dataset.fane);
     // en fane man skifter til, skal begynde ved sin foerste overskrift

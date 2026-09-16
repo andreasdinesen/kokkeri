@@ -17,6 +17,9 @@ import vm from 'node:vm';
 
 const ROD = path.resolve(import.meta.dirname, '..');
 const KILDE = fs.readFileSync(path.join(ROD, 'app/public/sw.js'), 'utf8');
+/* sw.js henter sidernes adresser med importScripts('/ruter.js?v=') - i
+ * attrappen er det den rigtige app/shared/ruter.js */
+const RUTER = fs.readFileSync(path.join(ROD, 'app/shared/ruter.js'), 'utf8');
 const ORIGIN = 'https://kokkeri.eksempel.invalid';
 let ok = 0, fejl = 0;
 const proev = async (navn, fn) => {
@@ -29,12 +32,16 @@ function verden() {
   const gemt = new Map();           // url -> Response (alle cache-navne under ét)
   let online = true;
   const cache = {
-    put: async (req, res) => { gemt.set(req.url, res); },
+    put: async (req, res) => { gemt.set(typeof req === 'string' ? ORIGIN + req : req.url, res); },
     addAll: async () => {},
     match: async (req) => gemt.get(typeof req === 'string' ? ORIGIN + req : req.url)
   };
   const ctx = {
     URL, Promise, console,
+    importScripts: (url) => {
+      if (!/^\/ruter\.js\?v=\d+$/.test(url)) throw new Error('ukendt importScripts: ' + url);
+      vm.runInContext(RUTER, ctx);
+    },
     location: new URL(ORIGIN + '/sw.js'),
     Response: { error: () => ({ fejl: true }) },
     self: { addEventListener: (t, f) => { lyttere[t] = f; }, skipWaiting() {}, clients: { claim() {} } },
@@ -105,6 +112,36 @@ await proev('en privat sti, der ALLEREDE ligger i cachen, serveres ikke offline'
   w.offline = true;
   const r = await w.hent('/api/settings');
   if (r.haandteret) throw new Error('/api/settings blev serveret fra cachen');
+});
+
+/* RUNE-ERFARINGER 9g: /opskrift/<id> og de andre sideadresser er app-skallen */
+const SIDER = ['/overblik', '/opskrifter', '/opskrift/rec-000001', '/indstillinger/data', '/Indk%C3%B8bsliste/'];
+
+await proev('sideadresser: app-skallen offline (fra \'/\'), og INGEN kopi pr. sti', async () => {
+  const w = verden();
+  for (const sti of SIDER) {
+    const r = await w.hent(sti, { mode: 'navigate' });
+    if (!r.haandteret) throw new Error(sti + ' blev ikke haandteret');
+  }
+  const noegler = [...w.gemt.keys()];
+  if (noegler.join() !== ORIGIN + '/') throw new Error('i cachen: ' + noegler.join(', '));
+  w.gemt.set(ORIGIN + '/', { skal: 'app-skallen' });
+  w.offline = true;
+  for (const sti of SIDER) {
+    const r = await w.hent(sti, { mode: 'navigate' });
+    if (!r.svar || r.svar.skal !== 'app-skallen') throw new Error(sti + ' fik ikke app-skallen offline');
+  }
+});
+
+await proev('sideadresser: kun navigationer - og aldrig private stier som navigation', async () => {
+  const w = verden();
+  if ((await w.hent('/opskrifter')).haandteret) throw new Error('et fetch() til /opskrifter blev haandteret');
+  w.gemt.set(ORIGIN + '/', { skal: 'app-skallen' });
+  w.offline = true;
+  for (const sti of MAA_IKKE.concat(['/opskrift/kort', '/indstillinger/hemmelig', '/styl.css'])) {
+    const r = await w.hent(sti, { mode: 'navigate' });
+    if (r.haandteret) throw new Error(sti + ' blev haandteret som side');
+  }
 });
 
 await proev('kun GET og kun egen origin', async () => {

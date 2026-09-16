@@ -86,6 +86,13 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v36** (september 2026): **Hver side og hver opskrift har sin egen adresse**
+  (`/opskrift/…`), så en opskrift kan bogmærkes og lægges på hjemmeskærmen. Tilbage/frem
+  virker, et genindlæs lander samme sted — også offline — og kogetilstand og timere bliver
+  stående. Indstillingernes fane står i adressen. **»📋 Kopiér opskriften«** lægger den på
+  udklipsholderen med billede, ingrediensliste og nummererede trin, klar til en mail, Word,
+  Pages eller OneNote (Apple Notes tager tekst og formatering; billedet må ind for sig).
+
 - **v35** (september 2026): **Indstillingerne er delt i faner** — App, Integrationer,
   Data, Konto og Brugere (kun admin) — og appen husker den sidste. **Ingen tabte
   opskrifter:** et netværkshik lige efter opstart kunne før skrive fremgangsmåde og

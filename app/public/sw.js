@@ -6,8 +6,11 @@
 
 /* APP_VER stemples af build_rune.py - roer den ikke i haanden.
  * Ny version => nyt cache-navn => de gamle filer ryddes ved aktivering. */
-const APP_VER = '35';
+const APP_VER = '36';
 const CACHE = 'kokkeri-v' + APP_VER;
+/* Sidernes adresser (/opskrift/<id> ...) - SAMME liste som serveren og
+ * frontenden bruger (app/shared/ruter.js). En egen liste her ville skride. */
+importScripts('/ruter.js?v=' + APP_VER);
 const CORE = ['/', '/app.js?v=' + APP_VER, '/style.css?v=' + APP_VER,
   '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'];
 
@@ -37,11 +40,33 @@ function maaCaches(sti) {
     sti.startsWith('/api/image/');
 }
 
+/* En sideadresse (/opskrifter, /opskrift/<id>, /indstillinger/data ...) er
+ * den samme app-skal som '/'. Den gemmes under '/' - ikke under sin egen sti,
+ * ellers laa der en kopi af index.html pr. opskrift, man har aabnet - og
+ * serveres derfra, naar nettet er vaek. Kun navigationer og kun kendte stier:
+ * /del/<token>, /oauth/authorize og /api/backup er ikke sider og roeres ikke. */
+function erSide(req, url) {
+  return req.mode === 'navigate' && url.pathname !== '/' && url.pathname !== '/index.html' &&
+    !!self.kokkeriRuter.ruteForSti(url.pathname);
+}
+
 self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== location.origin) return;
+  if (erSide(req, url)) {
+    e.respondWith(
+      fetch(req).then(res => {
+        if (res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE).then(c => c.put('/', copy)).catch(() => {});
+        }
+        return res;
+      }).catch(() => caches.match('/').then(hit => hit || Response.error()))
+    );
+    return;
+  }
   /* alt uden for hvidlisten gaar direkte til nettet - ingen kopi, intet fallback */
   if (!maaCaches(url.pathname)) return;
 

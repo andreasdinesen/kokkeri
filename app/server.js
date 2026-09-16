@@ -17,6 +17,8 @@ const BIND_PORT = parseInt(process.env.BIND_PORT || '3000', 10);
 const DATA_DIR = process.env.DATA_DIR || process.cwd();
 const APP_DIR = __dirname;
 const PUBLIC_DIR = path.join(APP_DIR, 'public');
+/* Sidernes adresser deles med frontenden og sw.js - se app/shared/ruter.js. */
+const ruter = require('./shared/ruter.js');
 const APP_NAME = process.env.APP_NAME || 'Kokkeri';
 const SESSION_DAYS = 90;
 const DB_PATH = path.join(DATA_DIR, 'kokkeri.db');
@@ -462,9 +464,9 @@ const MIME = {
   '.png': 'image/png', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json',
   '.ico': 'image/x-icon', '.woff2': 'font/woff2'
 };
-function serveStatic(res, relPath) {
-  const full = path.normalize(path.join(PUBLIC_DIR, relPath));
-  if (!full.startsWith(PUBLIC_DIR)) return err(res, 404, 'Ikke fundet');
+function serveStatic(res, relPath, dir = PUBLIC_DIR) {
+  const full = path.normalize(path.join(dir, relPath));
+  if (!full.startsWith(dir)) return err(res, 404, 'Ikke fundet');
   fs.readFile(full, (e, data) => {
     if (e) return err(res, 404, 'Ikke fundet');
     // no-store paa HTML: Cloudflare edge-cacher .js/.css i timevis (den ignorerer
@@ -1185,18 +1187,31 @@ const server = http.createServer(async (req, res) => {
   try {
     /* --- static --- */
     if (req.method === 'GET' && (p === '/' || p === '/index.html')) return serveStatic(res, 'index.html');
+    /* Direkte adresser (/opskrifter, /opskrift/<id> ...) - ogsaa ved et
+     * genindlaes eller et bogmaerke. KUN de kendte stier, jf. app/shared/ruter.js:
+     * en catch-all ville svare 200 med HTML paa en stavefejl i et filnavn. */
+    if (req.method === 'GET' && ruter.ruteForSti(p)) return serveStatic(res, 'index.html');
     if (req.method === 'GET' && p === '/manifest.webmanifest') {
-      res.writeHead(200, { 'Content-Type': 'application/manifest+json' });
+      /* Genvejen paa hjemmeskaermen skal aabne DEN side, man stod paa, da man
+       * lavede den - iOS laeser start_url fra manifestet, ikke adresselinjen.
+       * Stien slaas op i ruteren og bygges forfra: et manifest maa ikke pege
+       * paa hvad som helst, nogen skriver i adressen. */
+      const raa = String(u.searchParams.get('start') || '').split('?')[0];
+      const oensket = raa ? ruter.ruteForSti(raa) : null;
+      const start = (oensket && ruter.stiForSide(oensket.side, oensket.arg)) || '/';
+      res.writeHead(200, { 'Content-Type': 'application/manifest+json', 'Cache-Control': 'no-cache' });
       return res.end(JSON.stringify({
-        name: APP_NAME, short_name: 'Kokkeri', start_url: '.', display: 'standalone',
+        name: APP_NAME, short_name: 'Kokkeri', start_url: start, scope: '/', display: 'standalone',
         background_color: '#0b0f14', theme_color: '#e0703c', lang: 'da',
-        icons: [{ src: 'icon-192.png', sizes: '192x192', type: 'image/png' },
-                { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' }]
+        icons: [{ src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+                { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' }]
       }));
     }
     if (req.method === 'GET' && /^\/(app\.js|style\.css|sw\.js|icon-\d+\.png|favicon\.ico)$/.test(p)) {
       return serveStatic(res, p === '/favicon.ico' ? 'icon-192.png' : p.slice(1));
     }
+    /* sw.js henter ruterne med importScripts - samme fil som serveren bruger */
+    if (req.method === 'GET' && p === '/ruter.js') return serveStatic(res, 'ruter.js', path.join(APP_DIR, 'shared'));
 
     /* offentlig delt opskrift (ingen session - beskyttet af unikt token pr. opskrift) */
     if (p.startsWith('/del/') && req.method === 'GET') {

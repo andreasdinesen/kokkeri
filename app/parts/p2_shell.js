@@ -79,6 +79,52 @@ function renderNavTimers() {
   });
 }
 
+/* ---------------- adresser (RUNE-ERFARINGER 9g) ----------------
+ * Listen bor i app/shared/ruter.js - serveren bruger den samme til at afgoere,
+ * hvilke stier der svarer med index.html, og sw.js til offline-skallen. */
+const { ruteForSti, stiForSide } = kokkeriRuter;
+
+/* Adressen foelger siden. Én ting styrer det: hver optegning skriver den side,
+ * man ER paa, i adresselinjen - saa de mange steder, der kalder goto(), ikke
+ * behoever vide noget om historik. Der skrives kun, naar stien FAKTISK er en
+ * anden; ellers laver tilbage-knappens egen optegning en ny post, og man kan
+ * aldrig komme laengere tilbage end ét skridt.
+ * `erstat`: ret adressen uden en ny post - foerste optegning (/ -> /overblik
+ * maa ikke koste et klik paa tilbage for at komme ud af appen), et faneskift
+ * i indstillingerne, og en side, tilbage-knappen landede paa, men som ikke
+ * findes mere (en slettet opskrift -> /opskrifter). */
+function synkAdresse(erstat) {
+  const sti = stiForSide(S.view, S.viewArg);
+  if (!sti) return;
+  const r = S.view === 'recipeDetail' ? recipeById(S.viewArg) : null;
+  const side = VIEWS.find(v => v.id === S.view);
+  document.title = r ? (r.title || 'Opskrift') + ' · Kokkeri'
+    : side && side.id !== 'dash' ? side.label + ' · Kokkeri' : 'Kokkeri';
+  /* Genvejen paa hjemmeskaermen skal aabne DEN side - iOS laeser start_url
+   * fra manifestet, ikke adresselinjen. Serveren validerer stien. */
+  const man = document.querySelector('link[rel="manifest"]');
+  if (man) man.setAttribute('href', '/manifest.webmanifest?start=' + encodeURIComponent(sti));
+  if (location.pathname === sti) { S._urlKlar = true; return; }
+  history[S._urlKlar && !erstat ? 'pushState' : 'replaceState'](
+    { side: S.view, arg: S.viewArg }, '', sti + location.search + location.hash);
+  S._urlKlar = true;
+}
+
+/* Tilbage/frem. Kun S.view/S.viewArg skiftes - kogetilstanden (#cookMode) og
+ * timerne ligger uden for #app og roeres ikke af en optegning. */
+window.addEventListener('popstate', () => {
+  if (!S.me) return;
+  const rute = ruteForSti(location.pathname);
+  if (!rute) return;
+  if (rute.side === S.view && rute.arg === S.viewArg) return;
+  if (S.view === 'recipeDetail' && rute.side !== 'recipeDetail') S.detailServings = null;
+  S.view = rute.side;
+  S.viewArg = rute.arg;
+  S._urlErstat = true;
+  render();
+  window.scrollTo(0, 0);
+});
+
 /* render() gentegner KUN - den maa ikke scrolle. Baggrundsting (site-import,
  * billed-hentning, timere) kalder render() loebende, og et scrollTo her ville
  * kaste brugeren til toppen midt i en side. Sideskift scroller i goto(). */
@@ -88,6 +134,10 @@ function render() {
   $('#app').innerHTML = fn();
   const binder = RENDER[S.view + '_bind'];
   if (binder) binder();
+  /* EFTER optegningen: en opskrift, der ikke findes, skifter selv S.view til
+   * listen, og det er den side, adressen skal vise. */
+  synkAdresse(S._urlErstat);
+  S._urlErstat = false;
   updateWakeBtn();
 }
 function goto(view, arg) {
@@ -222,6 +272,11 @@ async function boot() {
   };
   $('#wakeQuick').onclick = () => setWakeLock(!S.wakeOn);
   $('#logoutBtn').onclick = async () => { await api('/api/logout', { body: {} }); location.reload(); };
+
+  /* Adressen bestemmer startsiden - ogsaa naar man skal logge ind foerst:
+   * S.view saettes nu, og enterApp() tegner den bagefter. */
+  const start = ruteForSti(location.pathname);
+  if (start) { S.view = start.side; S.viewArg = start.arg; }
 
   try {
     const r = await api('/api/me');

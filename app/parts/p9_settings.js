@@ -215,11 +215,23 @@ function visSettingsFane(id) {
     el.setAttribute('aria-selected', paa ? 'true' : 'false');
   });
   try { localStorage.setItem('kk_settings_fane', valgt); } catch (e) {}
+  /* Fanen staar ogsaa i adressen (/indstillinger/data), saa et genindlaes
+   * lander paa den. Et faneskift RETTER adressen - det er ikke et sideskift,
+   * og tilbage-knappen skal foere ud af indstillingerne, ikke gennem fanerne.
+   * Staar adressen endnu ikke paa indstillingerne (vi er midt i goto), maa der
+   * IKKE rettes: det ville skrive over den forrige sides post i historikken.
+   * render() skriver selv den nye post lige bagefter. */
+  if (S.view === 'settings' && S.viewArg !== valgt) {
+    S.viewArg = valgt;
+    const her = ruteForSti(location.pathname);
+    if (her && her.side === 'settings') synkAdresse(true);
+  }
 }
 function bindSettingsFaner() {
   let gemt = null;
   try { gemt = localStorage.getItem('kk_settings_fane'); } catch (e) {}
-  visSettingsFane(gemt);
+  // adressens fane vinder over den gemte - det er den, der blev bedt om
+  visSettingsFane(S.viewArg || gemt);
   $$('#app .fanebtn').forEach(el => el.onclick = () => {
     visSettingsFane(el.dataset.fane);
     // en fane man skifter til, skal begynde ved sin foerste overskrift
