@@ -4,7 +4,7 @@ function assistantSystemPrompt() {
   const recipes = K('recipe').map(r => ({
     id: r.id, titel: r.title, kategori: r.category || '',
     min: recipeTotalMin(r),
-    vurdering: r.rating || null, favorit: !!r.favorite
+    vurdering: r.rating || null, favorit: !!r.favorite, vilProeve: !!r.toTry
   }));
   const monday = mondayOf();
   const plan = K('planEntry')

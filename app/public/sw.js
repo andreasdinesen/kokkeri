@@ -6,7 +6,7 @@
 
 /* APP_VER stemples af build_rune.py - roer den ikke i haanden.
  * Ny version => nyt cache-navn => de gamle filer ryddes ved aktivering. */
-const APP_VER = '36';
+const APP_VER = '37';
 const CACHE = 'kokkeri-v' + APP_VER;
 /* Sidernes adresser (/opskrift/<id> ...) - SAMME liste som serveren og
  * frontenden bruger (app/shared/ruter.js). En egen liste her ville skride. */

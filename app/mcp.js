@@ -67,6 +67,7 @@ function opret(srv) {
     description: r.description || '', ingredients: r.ingredients || [],
     instructions: r.instructions || [], notes: r.notes || '',
     url: r.url || '', tags: r.tags || [], favorite: !!r.favorite,
+    want_to_try: !!r.toTry,
     timesCooked: r.timesCooked || 0, lastCooked: r.lastCooked || null
   });
   const erFrokost = r => norm(r.category) === 'frokost' ||
@@ -104,6 +105,8 @@ function opret(srv) {
           category: { type: 'string' },
           source: { type: 'string', description: 'Base domain, e.g. valdemarsro.dk' },
           min_rating: { type: 'number', description: '0-5' },
+          want_to_try: { type: 'boolean', description: 'Set to true to only get recipes the user has '
+            + 'bookmarked as "want to try one day".' },
           meal: { type: 'string', description: 'Set to "lunch" to only get recipes suited for lunch '
             + '(lunch, packed lunch, sandwiches, brunch, light dishes). The library has no lunch '
             + 'category - this matches how the source sites tagged them.' },
@@ -117,6 +120,7 @@ function opret(srv) {
         if (a.category) liste = liste.filter(r => norm(r.category) === norm(a.category));
         if (a.source) liste = liste.filter(r => srv.host(r) === String(a.source).replace(/^www\./, ''));
         if (a.min_rating) liste = liste.filter(r => (r.rating || 0) >= +a.min_rating);
+        if (a.want_to_try) liste = liste.filter(r => r.toTry);
         if (/lunch|frokost/i.test(String(a.meal || ''))) liste = liste.filter(erFrokost);
         if (q) {
           liste = liste.filter(r => norm(r.title).includes(q)
@@ -336,7 +340,7 @@ function opret(srv) {
           ingredients: ing, instructions: linjeliste(a.instructions),
           category: String(a.category || ''), servings: +a.servings || null,
           prepMin: +a.prep_minutes || null, cookMin: +a.cook_minutes || null, totalMin: null,
-          yieldText: '', tags: linjeliste(a.tags).slice(0, 8), rating: 0, favorite: false,
+          yieldText: '', tags: linjeliste(a.tags).slice(0, 8), rating: 0, favorite: false, toTry: false,
           notes: String(a.notes || '').slice(0, 4000), url: String(a.url || '').slice(0, 500),
           createdAt: new Date().toISOString()
         };
@@ -358,6 +362,7 @@ function opret(srv) {
           instructions: { type: 'array', items: { type: 'string' } },
           category: { type: 'string' }, servings: { type: 'number' },
           rating: { type: 'number' }, favorite: { type: 'boolean' },
+          want_to_try: { type: 'boolean', description: 'Bookmark it as "want to try one day".' },
           notes: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } }
         },
         required: ['id']
@@ -374,6 +379,7 @@ function opret(srv) {
         if (a.servings !== undefined) r.servings = +a.servings || null;
         if (a.rating !== undefined) r.rating = Math.max(0, Math.min(5, Math.round(+a.rating) || 0));
         if (a.favorite !== undefined) r.favorite = !!a.favorite;
+        if (a.want_to_try !== undefined) r.toTry = !!a.want_to_try;
         if (a.notes !== undefined) r.notes = String(a.notes).slice(0, 4000);
         if (a.tags !== undefined) r.tags = linjeliste(a.tags).slice(0, 8);
         r.updatedAt = new Date().toISOString();

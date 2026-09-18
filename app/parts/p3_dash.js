@@ -2,6 +2,7 @@
 RENDER.dash = () => {
   const recipes = K('recipe');
   const favs = recipes.filter(r => r.favorite);
+  const vilProeve = recipes.filter(r => r.toTry);
   const today = isoDate();
   const monday = mondayOf();
   const weekDates = [...Array(7)].map((_, i) => addDays(monday, i));
@@ -26,7 +27,8 @@ RENDER.dash = () => {
 
   <div class="cards">
     <div class="card"><div class="lbl">Opskrifter</div><div class="big">${recipes.length}</div>
-      <div class="note">${favs.length} favoritter</div></div>
+      <div class="note">${favs.length} favoritter${vilProeve.length
+        ? ` · <a href="#" id="dashTry">🔖 ${vilProeve.length} vil prøve</a>` : ''}</div></div>
     <div class="card"><div class="lbl">Madplan (uge ${isoWeekNo(monday)})</div><div class="big">${planned.length}</div>
       <div class="note">planlagte måltider</div></div>
     <div class="card"><div class="lbl">Indkøbsliste</div><div class="big">${shopOpen}</div>
@@ -67,6 +69,8 @@ RENDER.dash_bind = () => {
   const i2 = $('#dashImport2');
   if (i2) i2.onclick = importUrlModal;
   $('#dashToPlan').onclick = () => goto('plan');
+  const tryLink = $('#dashTry');
+  if (tryLink) tryLink.onclick = e => { e.preventDefault(); visVilProeve(); };
   $$('.planlink').forEach(a => a.onclick = e => { e.preventDefault(); goto('recipeDetail', a.dataset.rec); });
   bindRecipeCards();
 };

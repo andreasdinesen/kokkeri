@@ -257,6 +257,7 @@ async function paprikaToRecipe(j) {
     tags: pCats.filter(c => normName(c) !== normName(category)).slice(0, 8),
     rating: Math.min(5, Math.max(0, parseInt(j.rating, 10) || 0)),
     favorite: false,
+    toTry: false,
     notes: [j.notes, j.nutritional_info ? 'Ernæring (fra Paprika): ' + j.nutritional_info : '']
       .filter(Boolean).join('\n\n').trim(),
     createdAt: j.created ? new Date(j.created).toISOString() : new Date().toISOString()

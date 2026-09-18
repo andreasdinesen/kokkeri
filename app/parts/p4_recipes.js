@@ -46,7 +46,7 @@ function recipeCardHtml(r, medKatVaelger) {
   return `<div class="reccard" data-rec="${r.id}">
     <div class="recimg">${src ? `<img src="${esc(src)}" alt="" loading="lazy">` : '🍽️'}</div>
     <div class="recbody">
-      <div class="rectitle">${r.favorite ? '⭐ ' : ''}${esc(r.title || '(uden titel)')}</div>
+      <div class="rectitle">${r.favorite ? '⭐ ' : ''}${r.toTry ? '🔖 ' : ''}${esc(r.title || '(uden titel)')}</div>
       <div class="recmeta">
         ${r.category ? `<span>${esc(r.category)}</span>` : ''}
         ${time ? `<span>⏱ ${fmtMin(time)}</span>` : ''}
@@ -72,6 +72,7 @@ function bindRecipeCards() {
 function aktiveFiltre(f) {
   const ud = [];
   if (f.fav) ud.push('⭐ Favoritter');
+  if (f.vilProeve) ud.push('🔖 Vil prøve');
   if (f.frokost) ud.push('🥪 Frokost');
   if (f.noCat) ud.push('🏷️ Uden kategori');
   else if (f.category) ud.push(f.category);
@@ -106,6 +107,8 @@ function filterPanelHtml(f, cats, udenKat) {
     </div>
     <div class="rowflex" style="margin-top:10px">
       <span class="chip chipbtn${f.fav ? ' sel' : ''}" id="recFav">⭐ Favoritter</span>
+      <span class="chip chipbtn${f.vilProeve ? ' sel' : ''}" id="recTry"
+        title="Opskrifter du har sat til side for at prøve en dag">🔖 Vil prøve (${vilProeveAntal()})</span>
       <span class="chip chipbtn${f.frokost ? ' sel' : ''}" id="recFrokost"
         title="Frokost, madpakker, sandwich, brunch og lette retter - paa tvaers af kategorier">🥪 Frokost (${frokostAntal()})</span>
       ${cats.map(c => `<span class="chip chipbtn${!f.noCat && f.category === c ? ' sel' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}
@@ -115,6 +118,11 @@ function filterPanelHtml(f, cats, udenKat) {
   </details>`;
 }
 
+/* Antal "vil prøve"-opskrifter til chippen. Et rent boolsk opslag - behoever
+ * ikke cache som frokost-tallet, der koerer regexper over hele biblioteket. */
+function vilProeveAntal() {
+  return K('recipe').reduce((a, r) => a + (r.toTry ? 1 : 0), 0);
+}
 /* Antal frokost-opskrifter. Caches som kilderne - erFrokost koerer over hele
  * biblioteket, og chippen tegnes ved hvert tastetryk i soegefeltet. */
 function frokostAntal() {
@@ -209,6 +217,7 @@ RENDER.recipes = () => {
   const cats = app().categories || [];
   let list = K('recipe').slice();
   if (f.fav) list = list.filter(r => r.favorite);
+  if (f.vilProeve) list = list.filter(r => r.toTry);
   /* noCat er sit eget flag - tom streng kan ikke bruges, da den betyder "intet filter" */
   if (f.noCat) list = list.filter(r => !r.category);
   else if (f.category) list = list.filter(r => r.category === f.category);
@@ -278,11 +287,12 @@ RENDER.recipes_bind = () => {
   if (fbox) fbox.ontoggle = () => { S.filterOpen = fbox.open; lsSet('kk_filteropen', fbox.open ? '1' : '0'); };
   const ryd = $('#recFilterClear');
   if (ryd) ryd.onclick = () => {
-    Object.assign(S.recFilter, { category: '', noCat: false, fav: false, minStars: 0, kilde: '', frokost: false });
+    Object.assign(S.recFilter, { category: '', noCat: false, fav: false, vilProeve: false, minStars: 0, kilde: '', frokost: false });
     lsSet('kk_recminstars', 0);
     omTegn();
   };
   $('#recFav').onclick = () => { S.recFilter.fav = !S.recFilter.fav; omTegn(); };
+  $('#recTry').onclick = () => { S.recFilter.vilProeve = !S.recFilter.vilProeve; omTegn(); };
   const frok = $('#recFrokost');
   if (frok) frok.onclick = () => { S.recFilter.frokost = !S.recFilter.frokost; omTegn(); };
   $$('[data-cat]').forEach(c => c.onclick = () => {
@@ -394,6 +404,8 @@ RENDER.recipeDetail = () => {
     </div>
     <div class="rowflex">
       <button class="iconbtn" id="favBtn" title="Favorit" style="font-size:22px">${r.favorite ? '⭐' : '☆'}</button>
+      <button class="iconbtn" id="tryBtn" title="${r.toTry ? 'Står på “Vil prøve” – klik for at tage den af' : 'Gem på “Vil prøve”'}"
+        style="font-size:22px${r.toTry ? '' : ';opacity:.35'}">🔖</button>
       <button class="btn" id="cookBtn">👨‍🍳 Kogetilstand</button>
       <button class="btn" id="shopBtn">🛒 Til indkøbsliste</button>
       <button class="btn" id="planBtn">📅 Til madplan</button>
@@ -447,6 +459,12 @@ RENDER.recipeDetail_bind = () => {
   $('#cookBtn').onclick = () => openCookMode(r);
   $('#printBtn').onclick = () => printRecipe(r);
   $('#favBtn').onclick = async () => { r.favorite = !r.favorite; await saveItem(r, true); render(); };
+  $('#tryBtn').onclick = async () => {
+    r.toTry = !r.toTry;
+    await saveItem(r, true);
+    toast(r.toTry ? '🔖 Gemt på “Vil prøve”' : 'Taget af “Vil prøve”');
+    render();
+  };
   $('#shopBtn').onclick = () => addRecipeToShopping(r, S.detailServings / (r.servings || app().defaultServings));
   $('#planBtn').onclick = () => planEntryModal(null, { recipeId: r.id });
   $('#servMinus').onclick = () => { S.detailServings = Math.max(1, S.detailServings - 1); render(); };
@@ -692,7 +710,7 @@ function recipeModal(r, prefill) {
     id: uid(), kind: 'recipe', title: '', description: '', image: '', url: '',
     ingredients: [], instructions: [], prepMin: null, cookMin: null, totalMin: null,
     servings: app().defaultServings, yieldText: '', category: '', tags: [], rating: 0,
-    favorite: false, notes: '', createdAt: new Date().toISOString()
+    favorite: false, toTry: false, notes: '', createdAt: new Date().toISOString()
   }, prefill || {});
   const cats = app().categories || [];
 
@@ -1094,9 +1112,12 @@ function drawCookMode() {
   if (done) done.onclick = async () => {
     CM.recipe.timesCooked = (CM.recipe.timesCooked || 0) + 1;
     CM.recipe.lastCooked = isoDate();
+    /* nu ER den proevet - saa skal den ikke blive staaende paa oenskelisten */
+    const varPaaListen = !!CM.recipe.toTry;
+    CM.recipe.toTry = false;
     await saveItem(CM.recipe, true);
     closeCookMode();
-    toast('Velbekomme! 🍽️');
+    toast(varPaaListen ? 'Velbekomme! 🍽️ Taget af “Vil prøve”' : 'Velbekomme! 🍽️');
     render();
   };
   bindInlineTimers(r.title);

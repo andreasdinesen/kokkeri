@@ -164,6 +164,7 @@ function paletteItems() {
     { ico: '🛒', label: 'Tilføj til indkøbsliste', hint: 'handling', run: () => { goto('shopping'); setTimeout(() => { const el = $('#shopNew'); if (el) el.focus(); }, 50); } },
     { ico: '📱', label: S.wakeOn ? 'Slå skærmlås fra' : 'Hold skærmen tændt', hint: 'handling', run: () => setWakeLock(!S.wakeOn) },
     { ico: '🎲', label: 'Tilfældig opskrift', hint: 'handling', run: randomRecipe },
+    { ico: '🔖', label: 'Vil prøve – opskrifter jeg har gemt', hint: 'handling', run: visVilProeve },
     { ico: '🌶️', label: 'Importér Paprika-eksport', hint: 'handling', run: () => { goto('settings'); visSettingsFane('data'); setTimeout(() => { const b = $('#papImport'); if (b) b.scrollIntoView({ block: 'center' }); }, 60); } },
     { ico: '🌗', label: 'Skift tema', hint: 'handling', run: () => $('#themeQuick').click() }
   );
@@ -172,6 +173,14 @@ function paletteItems() {
     items.push({ ico: '🍽️', label: r.title || '(uden titel)', hint: 'opskrift', run: () => goto('recipeDetail', r.id) });
   }
   return items;
+}
+
+/* Aabner opskriftslisten med kun "vil prøve"-opskrifterne. Ligger her, fordi
+ * baade paletten og overblikket bruger den. */
+function visVilProeve() {
+  Object.assign(S.recFilter, { q: '', category: '', noCat: false, fav: false, vilProeve: true });
+  S.recLimit = REC_SIDE;
+  goto('recipes');
 }
 
 function randomRecipe() {

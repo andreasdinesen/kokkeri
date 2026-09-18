@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 36;
+const APP_VERSION = 37;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -26,7 +26,7 @@ const S = {
   planQ: '',            // soegeteksten i det panel
   planSlot: 'dinner',   // hvilket maaltid en fundet ret lander paa
   planArm: null,        // {recipeId} | {text} valgt og venter paa en dag
-  recFilter: { q: '', category: '', fav: false, sort: lsGet('kk_recsort', 'nyeste'), minStars: +lsGet('kk_recminstars', 0) || 0, raavarer: [], kilde: '', frokost: false },
+  recFilter: { q: '', category: '', fav: false, vilProeve: false, sort: lsGet('kk_recsort', 'nyeste'), minStars: +lsGet('kk_recminstars', 0) || 0, raavarer: [], kilde: '', frokost: false },
   /* undefined = ikke valgt endnu; filter-panelet starter da aabent paa en stor
    * skaerm og lukket paa en telefon */
   filterOpen: lsGet('kk_filteropen', '') === '' ? undefined : lsGet('kk_filteropen', '') === '1',

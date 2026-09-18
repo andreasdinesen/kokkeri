@@ -9,6 +9,10 @@ SQLite. **Ingen npm-afhængigheder, ingen CDN – alt kører lokalt.**
 
 - **Opskrifter**: bibliotek med billeder, kategorier, tags, favoritter og
   1-5-stjerners vurdering. Søgning i titel, ingredienser og tags.
+- **»Vil prøve«**: sæt bogmærket 🔖 på en opskrift, du en dag vil give et forsøg.
+  Listen hentes frem igen med chippen *🔖 Vil prøve* i filtrene, fra tallet på
+  overblikket eller med ⌘K. Når du er kommet igennem kogetilstanden, ryger den
+  af listen af sig selv — den er jo prøvet nu.
 - **Import fra URL**: indsæt et link til en opskrift (Valdemarsro, Arla,
   Madens Verden m.fl.) – Kokkeri læser selv siden (schema.org/Recipe som
   JSON-LD *og* microdata), trækker titel, ingredienser, fremgangsmåde, tider og
@@ -85,6 +89,13 @@ Frontenden er delt op i `app/parts/p*.js`, som `build_rune.py` samler til
 genererede filer direkte.
 
 ## Versionshistorik
+
+- **v37** (september 2026): **»Vil prøve«-listen.** Bogmærket 🔖 ved siden af
+  favoritstjernen på opskriften markerer den som en, du gerne vil prøve en dag,
+  og chippen *🔖 Vil prøve (n)* i filterpanelet henter hele listen frem igen.
+  Tallet står også på overblikket som en genvej, og paletten (⌘K) kan det samme.
+  Afslutter du kogetilstanden, tages opskriften af listen. MCP-værktøjerne kender
+  feltet: `search_recipes` har `want_to_try`, og `update_recipe` kan sætte det.
 
 - **v36** (september 2026): **Hver side og hver opskrift har sin egen adresse**
   (`/opskrift/…`), så en opskrift kan bogmærkes og lægges på hjemmeskærmen. Tilbage/frem

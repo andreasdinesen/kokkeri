@@ -406,7 +406,7 @@ const err = (res, code, message) => send(res, code, { error: message });
  * opskriften (fremgangsmaade, noter, ernaering ...) hentes foerst naar man
  * aabner den - se GET /api/items/<id>. */
 const KORT_FELTER = ['id', 'kind', 'title', 'category', 'sourceCategory', 'catChecked',
-  'tags', 'rating', 'favorite', 'servings', 'yieldText', 'prepMin', 'cookMin', 'totalMin',
+  'tags', 'rating', 'favorite', 'toTry', 'servings', 'yieldText', 'prepMin', 'cookMin', 'totalMin',
   'timesCooked', 'lastCooked', 'createdAt', 'updatedAt', 'imageVer', 'url'];
 
 /* Skriver {"items":[...]} ud i bidder. Raekkerne ER allerede JSON-tekst i
@@ -886,7 +886,7 @@ Findes der ingen opskrift, svar {"error":"ingen"}. Oversæt intet.`,
              * kategori raat, saa frontenden kan mappe den (guessCategory) */
             category: '', sourceCategory: rec.category || '',
             tags: rec.keywords ? String(rec.keywords).split(',').map(t => t.trim()).filter(Boolean).slice(0, 6) : [],
-            rating: 0, favorite: false, notes: '', imageRemote: !!rec.image,
+            rating: 0, favorite: false, toTry: false, notes: '', imageRemote: !!rec.image,
             createdAt: new Date().toISOString()
           };
           q.upsertItem.run(id, 'recipe', JSON.stringify(item), nowIso(), 0);
