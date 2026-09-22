@@ -105,7 +105,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 37;
+const APP_VERSION = 38;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -129,7 +129,7 @@ const S = {
   planQ: '',            // soegeteksten i det panel
   planSlot: 'dinner',   // hvilket maaltid en fundet ret lander paa
   planArm: null,        // {recipeId} | {text} valgt og venter paa en dag
-  recFilter: { q: '', category: '', fav: false, vilProeve: false, sort: lsGet('kk_recsort', 'nyeste'), minStars: +lsGet('kk_recminstars', 0) || 0, raavarer: [], kilde: '', frokost: false },
+  recFilter: { q: '', category: '', fav: false, vilProeve: false, delte: false, sort: lsGet('kk_recsort', 'nyeste'), minStars: +lsGet('kk_recminstars', 0) || 0, raavarer: [], kilde: '', frokost: false },
   /* undefined = ikke valgt endnu; filter-panelet starter da aabent paa en stor
    * skaerm og lukket paa en telefon */
   filterOpen: lsGet('kk_filteropen', '') === '' ? undefined : lsGet('kk_filteropen', '') === '1',
@@ -1175,7 +1175,7 @@ function paletteItems() {
     { ico: '🛒', label: 'Tilføj til indkøbsliste', hint: 'handling', run: () => { goto('shopping'); setTimeout(() => { const el = $('#shopNew'); if (el) el.focus(); }, 50); } },
     { ico: '📱', label: S.wakeOn ? 'Slå skærmlås fra' : 'Hold skærmen tændt', hint: 'handling', run: () => setWakeLock(!S.wakeOn) },
     { ico: '🎲', label: 'Tilfældig opskrift', hint: 'handling', run: randomRecipe },
-    { ico: '🔖', label: 'Vil prøve – opskrifter jeg har gemt', hint: 'handling', run: visVilProeve },
+    { ico: '🔖', label: 'Skal prøves – opskrifter jeg vil prøve en dag', hint: 'handling', run: visVilProeve },
     { ico: '🌶️', label: 'Importér Paprika-eksport', hint: 'handling', run: () => { goto('settings'); visSettingsFane('data'); setTimeout(() => { const b = $('#papImport'); if (b) b.scrollIntoView({ block: 'center' }); }, 60); } },
     { ico: '🌗', label: 'Skift tema', hint: 'handling', run: () => $('#themeQuick').click() }
   );
@@ -1186,7 +1186,7 @@ function paletteItems() {
   return items;
 }
 
-/* Aabner opskriftslisten med kun "vil prøve"-opskrifterne. Ligger her, fordi
+/* Aabner opskriftslisten med kun "skal prøves"-opskrifterne. Ligger her, fordi
  * baade paletten og overblikket bruger den. */
 function visVilProeve() {
   Object.assign(S.recFilter, { q: '', category: '', noCat: false, fav: false, vilProeve: true });
@@ -1479,7 +1479,7 @@ RENDER.dash = () => {
   <div class="cards">
     <div class="card"><div class="lbl">Opskrifter</div><div class="big">${recipes.length}</div>
       <div class="note">${favs.length} favoritter${vilProeve.length
-        ? ` · <a href="#" id="dashTry">🔖 ${vilProeve.length} vil prøve</a>` : ''}</div></div>
+        ? ` · <a href="#" id="dashTry">🔖 ${vilProeve.length} skal prøves</a>` : ''}</div></div>
     <div class="card"><div class="lbl">Madplan (uge ${isoWeekNo(monday)})</div><div class="big">${planned.length}</div>
       <div class="note">planlagte måltider</div></div>
     <div class="card"><div class="lbl">Indkøbsliste</div><div class="big">${shopOpen}</div>
@@ -1574,7 +1574,7 @@ function recipeCardHtml(r, medKatVaelger) {
   return `<div class="reccard" data-rec="${r.id}">
     <div class="recimg">${src ? `<img src="${esc(src)}" alt="" loading="lazy">` : '🍽️'}</div>
     <div class="recbody">
-      <div class="rectitle">${r.favorite ? '⭐ ' : ''}${r.toTry ? '🔖 ' : ''}${esc(r.title || '(uden titel)')}</div>
+      <div class="rectitle">${r.favorite ? '⭐ ' : ''}${r.toTry ? '🔖 ' : ''}${r.shareToken ? '🔗 ' : ''}${esc(r.title || '(uden titel)')}</div>
       <div class="recmeta">
         ${r.category ? `<span>${esc(r.category)}</span>` : ''}
         ${time ? `<span>⏱ ${fmtMin(time)}</span>` : ''}
@@ -1600,7 +1600,8 @@ function bindRecipeCards() {
 function aktiveFiltre(f) {
   const ud = [];
   if (f.fav) ud.push('⭐ Favoritter');
-  if (f.vilProeve) ud.push('🔖 Vil prøve');
+  if (f.vilProeve) ud.push('🔖 Skal prøves');
+  if (f.delte) ud.push('🔗 Delte');
   if (f.frokost) ud.push('🥪 Frokost');
   if (f.noCat) ud.push('🏷️ Uden kategori');
   else if (f.category) ud.push(f.category);
@@ -1636,7 +1637,9 @@ function filterPanelHtml(f, cats, udenKat) {
     <div class="rowflex" style="margin-top:10px">
       <span class="chip chipbtn${f.fav ? ' sel' : ''}" id="recFav">⭐ Favoritter</span>
       <span class="chip chipbtn${f.vilProeve ? ' sel' : ''}" id="recTry"
-        title="Opskrifter du har sat til side for at prøve en dag">🔖 Vil prøve (${vilProeveAntal()})</span>
+        title="Opskrifter du har sat til side for at prøve en dag">🔖 Skal prøves (${vilProeveAntal()})</span>
+      ${delteAntal() || f.delte ? `<span class="chip chipbtn${f.delte ? ' sel' : ''}" id="recShared"
+        title="Opskrifter der har et offentligt link">🔗 Delte (${delteAntal()})</span>` : ''}
       <span class="chip chipbtn${f.frokost ? ' sel' : ''}" id="recFrokost"
         title="Frokost, madpakker, sandwich, brunch og lette retter - paa tvaers af kategorier">🥪 Frokost (${frokostAntal()})</span>
       ${cats.map(c => `<span class="chip chipbtn${!f.noCat && f.category === c ? ' sel' : ''}" data-cat="${esc(c)}">${esc(c)}</span>`).join('')}
@@ -1646,7 +1649,11 @@ function filterPanelHtml(f, cats, udenKat) {
   </details>`;
 }
 
-/* Antal "vil prøve"-opskrifter til chippen. Et rent boolsk opslag - behoever
+/* Antal opskrifter med et offentligt delings-link. */
+function delteAntal() {
+  return K('recipe').reduce((a, r) => a + (r.shareToken ? 1 : 0), 0);
+}
+/* Antal "skal prøves"-opskrifter til chippen. Et rent boolsk opslag - behoever
  * ikke cache som frokost-tallet, der koerer regexper over hele biblioteket. */
 function vilProeveAntal() {
   return K('recipe').reduce((a, r) => a + (r.toTry ? 1 : 0), 0);
@@ -1746,6 +1753,7 @@ RENDER.recipes = () => {
   let list = K('recipe').slice();
   if (f.fav) list = list.filter(r => r.favorite);
   if (f.vilProeve) list = list.filter(r => r.toTry);
+  if (f.delte) list = list.filter(r => r.shareToken);
   /* noCat er sit eget flag - tom streng kan ikke bruges, da den betyder "intet filter" */
   if (f.noCat) list = list.filter(r => !r.category);
   else if (f.category) list = list.filter(r => r.category === f.category);
@@ -1815,12 +1823,14 @@ RENDER.recipes_bind = () => {
   if (fbox) fbox.ontoggle = () => { S.filterOpen = fbox.open; lsSet('kk_filteropen', fbox.open ? '1' : '0'); };
   const ryd = $('#recFilterClear');
   if (ryd) ryd.onclick = () => {
-    Object.assign(S.recFilter, { category: '', noCat: false, fav: false, vilProeve: false, minStars: 0, kilde: '', frokost: false });
+    Object.assign(S.recFilter, { category: '', noCat: false, fav: false, vilProeve: false, delte: false, minStars: 0, kilde: '', frokost: false });
     lsSet('kk_recminstars', 0);
     omTegn();
   };
   $('#recFav').onclick = () => { S.recFilter.fav = !S.recFilter.fav; omTegn(); };
   $('#recTry').onclick = () => { S.recFilter.vilProeve = !S.recFilter.vilProeve; omTegn(); };
+  const delte = $('#recShared');
+  if (delte) delte.onclick = () => { S.recFilter.delte = !S.recFilter.delte; omTegn(); };
   const frok = $('#recFrokost');
   if (frok) frok.onclick = () => { S.recFilter.frokost = !S.recFilter.frokost; omTegn(); };
   $$('[data-cat]').forEach(c => c.onclick = () => {
@@ -1932,7 +1942,7 @@ RENDER.recipeDetail = () => {
     </div>
     <div class="rowflex">
       <button class="iconbtn" id="favBtn" title="Favorit" style="font-size:22px">${r.favorite ? '⭐' : '☆'}</button>
-      <button class="iconbtn" id="tryBtn" title="${r.toTry ? 'Står på “Vil prøve” – klik for at tage den af' : 'Gem på “Vil prøve”'}"
+      <button class="iconbtn" id="tryBtn" title="${r.toTry ? 'Står på “Skal prøves” – klik for at tage den af' : 'Sæt på “Skal prøves”'}"
         style="font-size:22px${r.toTry ? '' : ';opacity:.35'}">🔖</button>
       <button class="btn" id="cookBtn">👨‍🍳 Kogetilstand</button>
       <button class="btn" id="shopBtn">🛒 Til indkøbsliste</button>
@@ -1990,7 +2000,7 @@ RENDER.recipeDetail_bind = () => {
   $('#tryBtn').onclick = async () => {
     r.toTry = !r.toTry;
     await saveItem(r, true);
-    toast(r.toTry ? '🔖 Gemt på “Vil prøve”' : 'Taget af “Vil prøve”');
+    toast(r.toTry ? '🔖 Sat på “Skal prøves”' : 'Taget af “Skal prøves”');
     render();
   };
   $('#shopBtn').onclick = () => addRecipeToShopping(r, S.detailServings / (r.servings || app().defaultServings));
@@ -2645,7 +2655,7 @@ function drawCookMode() {
     CM.recipe.toTry = false;
     await saveItem(CM.recipe, true);
     closeCookMode();
-    toast(varPaaListen ? 'Velbekomme! 🍽️ Taget af “Vil prøve”' : 'Velbekomme! 🍽️');
+    toast(varPaaListen ? 'Velbekomme! 🍽️ Taget af “Skal prøves”' : 'Velbekomme! 🍽️');
     render();
   };
   bindInlineTimers(r.title);

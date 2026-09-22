@@ -406,7 +406,7 @@ const err = (res, code, message) => send(res, code, { error: message });
  * opskriften (fremgangsmaade, noter, ernaering ...) hentes foerst naar man
  * aabner den - se GET /api/items/<id>. */
 const KORT_FELTER = ['id', 'kind', 'title', 'category', 'sourceCategory', 'catChecked',
-  'tags', 'rating', 'favorite', 'toTry', 'servings', 'yieldText', 'prepMin', 'cookMin', 'totalMin',
+  'tags', 'rating', 'favorite', 'toTry', 'shareToken', 'servings', 'yieldText', 'prepMin', 'cookMin', 'totalMin',
   'timesCooked', 'lastCooked', 'createdAt', 'updatedAt', 'imageVer', 'url'];
 
 /* Skriver {"items":[...]} ud i bidder. Raekkerne ER allerede JSON-tekst i

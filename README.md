@@ -9,8 +9,8 @@ SQLite. **Ingen npm-afhængigheder, ingen CDN – alt kører lokalt.**
 
 - **Opskrifter**: bibliotek med billeder, kategorier, tags, favoritter og
   1-5-stjerners vurdering. Søgning i titel, ingredienser og tags.
-- **»Vil prøve«**: sæt bogmærket 🔖 på en opskrift, du en dag vil give et forsøg.
-  Listen hentes frem igen med chippen *🔖 Vil prøve* i filtrene, fra tallet på
+- **»Skal prøves«**: sæt bogmærket 🔖 på en opskrift, du en dag vil give et forsøg.
+  Listen hentes frem igen med chippen *🔖 Skal prøves* i filtrene, fra tallet på
   overblikket eller med ⌘K. Når du er kommet igennem kogetilstanden, ryger den
   af listen af sig selv — den er jo prøvet nu.
 - **Import fra URL**: indsæt et link til en opskrift (Valdemarsro, Arla,
@@ -89,6 +89,12 @@ Frontenden er delt op i `app/parts/p*.js`, som `build_rune.py` samler til
 genererede filer direkte.
 
 ## Versionshistorik
+
+- **v38** (september 2026): »Vil prøve« hedder nu **»Skal prøves«** — på chippen,
+  overblikket, knappen, paletten og i beskederne. Data er uændret (feltet hedder
+  stadig `toTry`), så intet skal flyttes. **Oversigt over delte opskrifter:** chippen
+  *🔗 Delte (n)* i filterpanelet viser alle opskrifter med et offentligt link, og
+  kortene har 🔗 foran titlen. Delingen slås fra inde på opskriften som før.
 
 - **v37** (september 2026): **»Vil prøve«-listen.** Bogmærket 🔖 ved siden af
   favoritstjernen på opskriften markerer den som en, du gerne vil prøve en dag,

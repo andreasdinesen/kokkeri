@@ -28,7 +28,7 @@ RENDER.dash = () => {
   <div class="cards">
     <div class="card"><div class="lbl">Opskrifter</div><div class="big">${recipes.length}</div>
       <div class="note">${favs.length} favoritter${vilProeve.length
-        ? ` · <a href="#" id="dashTry">🔖 ${vilProeve.length} vil prøve</a>` : ''}</div></div>
+        ? ` · <a href="#" id="dashTry">🔖 ${vilProeve.length} skal prøves</a>` : ''}</div></div>
     <div class="card"><div class="lbl">Madplan (uge ${isoWeekNo(monday)})</div><div class="big">${planned.length}</div>
       <div class="note">planlagte måltider</div></div>
     <div class="card"><div class="lbl">Indkøbsliste</div><div class="big">${shopOpen}</div>
