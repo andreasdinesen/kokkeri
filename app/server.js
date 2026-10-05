@@ -950,9 +950,36 @@ function aiSanitizeMessages(body) {
   return messages;
 }
 
+/* Billeder til AI'en (scan af en kogebogsside). Frontenden sender dem som
+ * {mediaType, data} i body.images - data er ren base64 uden "data:"-praefiks.
+ * De haenges paa den SIDSTE brugerbesked i udbyderens eget format. */
+const AI_IMG_TYPER = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+function aiSanitizeImages(body) {
+  if (!Array.isArray(body.images)) return [];
+  const ud = [];
+  for (const b of body.images.slice(0, 6)) {
+    if (!b || !AI_IMG_TYPER.has(b.mediaType) || typeof b.data !== 'string') continue;
+    if (b.data.length > 6e6 || !/^[A-Za-z0-9+/=]+$/.test(b.data.slice(0, 200))) continue;
+    ud.push({ mediaType: b.mediaType, data: b.data });
+  }
+  return ud;
+}
+function aiMedBilleder(messages, images, provider) {
+  if (!images.length) return messages;
+  const i = messages.map(m => m.role).lastIndexOf('user');
+  if (i < 0) return messages;
+  const tekst = messages[i].content;
+  const indhold = provider === 'openai'
+    ? images.map(b => ({ type: 'image_url', image_url: { url: 'data:' + b.mediaType + ';base64,' + b.data } }))
+        .concat([{ type: 'text', text: tekst }])
+    : images.map(b => ({ type: 'image', source: { type: 'base64', media_type: b.mediaType, data: b.data } }))
+        .concat([{ type: 'text', text: tekst }]);
+  return messages.map((m, j) => j === i ? { role: m.role, content: indhold } : m);
+}
+
 async function aiMessage(body) {
   const provider = setting('ai_provider', 'claude');
-  const messages = aiSanitizeMessages(body);
+  const messages = aiMedBilleder(aiSanitizeMessages(body), aiSanitizeImages(body), provider);
   const maxTokens = Math.min(Math.max(parseInt(body.maxTokens, 10) || 2048, 256), 8192);
   const system = typeof body.system === 'string' && body.system ? String(body.system).slice(0, 60000) : '';
 

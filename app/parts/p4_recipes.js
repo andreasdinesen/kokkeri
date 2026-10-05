@@ -260,6 +260,7 @@ RENDER.recipes = () => {
   return pageHead('Opskrifter', `${K('recipe').length} opskrifter i biblioteket`,
       `<button class="btn" id="recNew">➕ Ny opskrift</button>
        <button class="btn" id="recSiteImport">📚 Masse-import</button>
+       <button class="btn" id="recScan">📷 Scan</button>
        <button class="btn primary" id="recImport">🌐 Importér fra URL</button>`) + `
   <div class="rowflex">
     <input id="recSearch" placeholder="🔍 Søg i titel, ingredienser og tags…" value="${esc(f.q)}" style="min-width:0;flex:1;max-width:380px">
@@ -277,6 +278,7 @@ RENDER.recipes = () => {
 RENDER.recipes_bind = () => {
   $('#recNew').onclick = () => recipeModal(null);
   $('#recImport').onclick = importUrlModal;
+  $('#recScan').onclick = scanRecipeModal;
   $('#recSiteImport').onclick = siteImportModal;
   bindCrawlBanner();
   /* et nyt filter betyder en ny liste - start vinduet forfra */
@@ -865,6 +867,8 @@ function importUrlModal() {
       </p>
       <textarea id="impPaste" rows="7" style="width:100%" placeholder="Indsæt HTML eller opskrift-tekst her …"></textarea>
     </details>
+    <p class="small muted" style="margin:10px 0 0">📷 Står opskriften i en kogebog eller på et stykke papir?
+      <a href="#" id="impScan">Scan den med kameraet</a>.</p>
     <p class="small muted" id="impStatus" style="min-height:18px"></p>
     <div class="actions">
       <button class="btn" id="impCancel">Annullér</button>
@@ -875,6 +879,7 @@ function importUrlModal() {
     const paste = m.querySelector('#impPaste');
     input.focus();
     m.querySelector('#impCancel').onclick = closeModal;
+    m.querySelector('#impScan').onclick = e => { e.preventDefault(); closeModal(); scanRecipeModal(); };
 
     /* faelles afslutning: recipe-objekt eller AI-fallback paa raa tekst */
     const finish = async (res, url) => {
@@ -960,9 +965,155 @@ function openImportedRecipe(rec, image) {
     servings: rec.servings || app().defaultServings,
     yieldText: rec.yieldText || '',
     category: catGuess,
+    notes: rec.notes || '',
     tags: (rec.keywords ? String(rec.keywords).split(',').map(t => t.trim()).filter(Boolean).slice(0, 6) : [])
   });
   toast('Opskriften er hentet – tjek den igennem og tryk Gem');
+}
+
+/* ---------------- scan en opskrift fra foto (kogebog, papir, skaerm) ----------------
+ * Billederne skaleres i browseren og sendes til /api/ai, som haenger dem paa
+ * beskeden i udbyderens format. Kraever en AI-model, der kan se billeder
+ * (Claude kan; paa egen server skal modellen vaere en vision-model). */
+const SCAN_MAKS = 4;
+
+/* Til tekstlaesning skal der vaere oploesning nok - 1600 px paa den lange led
+ * (Claude skalerer selv ned til ~1568). Ikke det lille 160 KB-loft fra
+ * blobToScaledDataUrl: smaa bogstaver bliver graat mos ved q=0.4. */
+function blobToScanJpeg(blob) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+      const cv = document.createElement('canvas');
+      cv.width = Math.round(img.width * scale);
+      cv.height = Math.round(img.height * scale);
+      const ctx = cv.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, cv.width, cv.height);
+      ctx.drawImage(img, 0, 0, cv.width, cv.height);
+      URL.revokeObjectURL(img.src);
+      resolve(cv.toDataURL('image/jpeg', 0.85));
+    };
+    img.onerror = () => { URL.revokeObjectURL(img.src); reject(new Error('Kunne ikke læse billedet (' + (blob.name || 'ukendt format') + ')')); };
+    img.src = URL.createObjectURL(blob);
+  });
+}
+
+function scanRecipeModal() {
+  const fotos = []; // { full: dataURL til AI'en, blob: originalen }
+  let retBillede = -1; // indeks paa det foto, der skal vaere opskriftens billede
+  openModal(`<h2>📷 Scan opskrift</h2>
+    <p class="muted small">Tag et billede af opskriften – fra en kogebog, et udklip eller en håndskrevet seddel.
+    Fylder den to sider, så tag et billede af hver (op til ${SCAN_MAKS}). AI'en læser titel, ingredienser
+    og fremgangsmåde, og du kan rette det hele, før du gemmer.</p>
+    ${S.settings.aiKeySet ? '' : `<p class="small" style="color:var(--red)">Scanning kræver AI – sæt en Claude-nøgle
+      (eller en egen AI-server med en vision-model) op under <b>Indstillinger</b>.</p>`}
+    <div class="rowflex" style="gap:8px;flex-wrap:wrap">
+      <label class="btn primary">📷 Tag billede
+        <input type="file" id="scanCam" accept="image/*" capture="environment" hidden></label>
+      <label class="btn">🖼️ Vælg billeder
+        <input type="file" id="scanFiles" accept="image/*" multiple hidden></label>
+    </div>
+    <div id="scanThumbs" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px"></div>
+    <p class="small muted" id="scanHint" style="margin:6px 0 0"></p>
+    <p class="small muted" id="scanStatus" style="min-height:18px"></p>
+    <div class="actions">
+      <button class="btn" id="scanCancel">Annullér</button>
+      <button class="btn primary" id="scanGo" disabled>Læs opskriften</button>
+    </div>`, m => {
+    const status = m.querySelector('#scanStatus');
+    const btn = m.querySelector('#scanGo');
+    m.querySelector('#scanCancel').onclick = closeModal;
+
+    const tegn = () => {
+      m.querySelector('#scanThumbs').innerHTML = fotos.map((f, i) => `
+        <div style="position:relative;width:96px">
+          <img src="${f.full}" alt="" style="width:96px;height:120px;object-fit:cover;border-radius:8px;
+            outline:${i === retBillede ? '3px solid var(--accent)' : '1px solid var(--border)'}">
+          <button class="btn small" data-scandel="${i}" title="Fjern" style="position:absolute;top:4px;right:4px;padding:0 6px">✕</button>
+          <label class="small" style="display:flex;gap:4px;align-items:center;margin-top:4px;cursor:pointer">
+            <input type="radio" name="scanRet" data-scanret="${i}" ${i === retBillede ? 'checked' : ''}> Rettens billede</label>
+        </div>`).join('');
+      m.querySelector('#scanHint').textContent = fotos.length
+        ? 'Viser et af billederne den færdige ret, så markér det som "Rettens billede" – ellers får opskriften intet billede.'
+        : '';
+      m.querySelectorAll('[data-scandel]').forEach(b => b.onclick = () => {
+        const i = +b.dataset.scandel;
+        fotos.splice(i, 1);
+        if (retBillede === i) retBillede = -1; else if (retBillede > i) retBillede--;
+        tegn();
+      });
+      m.querySelectorAll('[data-scanret]').forEach(r => r.onchange = () => { retBillede = +r.dataset.scanret; tegn(); });
+      btn.disabled = !fotos.length || !S.settings.aiKeySet;
+    };
+
+    const tilfoej = async input => {
+      const filer = Array.from(input.files || []);
+      input.value = ''; // samme fil kan vaelges igen
+      for (const f of filer) {
+        if (fotos.length >= SCAN_MAKS) { toast('Højst ' + SCAN_MAKS + ' billeder ad gangen', true); break; }
+        try { fotos.push({ full: await blobToScanJpeg(f), blob: f }); }
+        catch (e) { toast(e.message, true); }
+      }
+      tegn();
+    };
+    m.querySelector('#scanCam').onchange = e => tilfoej(e.target);
+    m.querySelector('#scanFiles').onchange = e => tilfoej(e.target);
+
+    btn.onclick = async () => {
+      btn.disabled = true;
+      status.textContent = 'AI\'en læser opskriften (kan tage 20–40 sek.) …';
+      try {
+        const rec = await aiExtractRecipeFromImages(fotos.map(f => f.full));
+        let image = '';
+        const valgt = retBillede >= 0 ? retBillede : rec.dishPhoto;
+        if (valgt != null && fotos[valgt]) image = await blobToScaledDataUrl(fotos[valgt].blob);
+        closeModal();
+        openImportedRecipe(rec, image);
+      } catch (e) {
+        status.textContent = 'Fejl: ' + e.message;
+        btn.disabled = false;
+      }
+    };
+    tegn();
+  });
+}
+
+async function aiExtractRecipeFromImages(dataUrls) {
+  const sys = `Du læser madopskrifter fra fotos (kogebogssider, udklip, håndskrevne sedler). Svar KUN med ét JSON-objekt, ingen forklaring, ingen markdown-hegn.
+Format: {"title": str, "description": str, "servings": tal|null, "prepMin": tal|null, "cookMin": tal|null,
+"ingredients": [str, ...], "instructions": [str, ...], "category": str, "notes": str, "dishPhoto": tal|null}
+Gengiv teksten trofast - opfind ikke mængder, trin eller ingredienser, der ikke står der. Har titlen en undertitel ("med krebs"), så tag den med i titlen.
+Ingredienser: én pr. linje med mængde først (fx "2 dl hvedemel"). Er de delt i grupper (fx "Pandekager", "Tilbehør"), så indled hver gruppe med en linje "## Gruppenavn".
+Fremgangsmåde: ét trin pr. afsnit, uden numre.
+notes: andet nyttigt fra siden, som ikke er ingredienser - fx "Udstyr: lille pande, gryde" og sidetal ("Side 310"). Tom streng hvis intet.
+dishPhoto: billederne er nummereret fra 0. Er et af dem (helt eller overvejende) et foto af den færdige ret, så angiv dets nummer - ellers null.
+Behold sproget (oversæt IKKE). Er der ingen opskrift på billederne, svar {"error": "ingen opskrift fundet på billedet"}.`;
+  const r = await api('/api/ai', {
+    body: {
+      system: sys,
+      messages: [{ role: 'user', content: dataUrls.length > 1
+        ? `Her er ${dataUrls.length} billeder af samme opskrift (i rækkefølge). Læs opskriften.`
+        : 'Læs opskriften på billedet.' }],
+      images: dataUrls.map(u => {
+        const m = /^data:([^;]+);base64,(.*)$/.exec(u);
+        return { mediaType: m[1], data: m[2] };
+      }),
+      maxTokens: 4096
+    }
+  });
+  const j = parseAiJson(r.text, false);
+  if (!j) throw new Error('AI-svaret kunne ikke læses som en opskrift.' + aiSvarUddrag(r.text));
+  if (j.error) throw new Error(j.error);
+  if (!j.title || !Array.isArray(j.ingredients)) throw new Error('AI\'en fandt ingen opskrift på billedet');
+  const n = Number.isInteger(j.dishPhoto) && j.dishPhoto >= 0 && j.dishPhoto < dataUrls.length ? j.dishPhoto : null;
+  return {
+    title: j.title, description: j.description || '', servings: j.servings || null,
+    prepMin: j.prepMin || null, cookMin: j.cookMin || null,
+    ingredients: j.ingredients.map(String), instructions: (j.instructions || []).map(String),
+    category: j.category || '', notes: j.notes ? String(j.notes) : '', dishPhoto: n, url: ''
+  };
 }
 
 /* AI-fallback: udtraek opskrift af raa sidetekst (eller chat-svar) */

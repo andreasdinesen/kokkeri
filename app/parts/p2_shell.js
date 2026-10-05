@@ -159,6 +159,7 @@ function paletteItems() {
     { ico: '📖', label: 'Ny opskrift', hint: 'handling', run: () => { goto('recipes'); recipeModal(null); } },
     { ico: '🌐', label: 'Importér opskrift fra URL', hint: 'handling', run: () => { goto('recipes'); importUrlModal(); } },
     { ico: '📋', label: 'Importér fra indsat HTML/noter', hint: 'handling', run: () => { goto('recipes'); importUrlModal(); setTimeout(() => { const d = $('#impPasteBox'); if (d) { d.open = true; $('#impPaste').focus(); } }, 60); } },
+    { ico: '📷', label: 'Scan opskrift fra foto/kogebog', hint: 'handling', run: () => { goto('recipes'); scanRecipeModal(); } },
     { ico: '📚', label: 'Masse-import fra et site (bag login)', hint: 'handling', run: () => { goto('recipes'); siteImportModal(); } },
     { ico: '⏱️', label: 'Ny timer', hint: 'handling', run: () => { goto('timers'); newTimerModal(); } },
     { ico: '🛒', label: 'Tilføj til indkøbsliste', hint: 'handling', run: () => { goto('shopping'); setTimeout(() => { const el = $('#shopNew'); if (el) el.focus(); }, 50); } },

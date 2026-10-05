@@ -18,6 +18,12 @@ SQLite. **Ingen npm-afhængigheder, ingen CDN – alt kører lokalt.**
   JSON-LD *og* microdata), trækker titel, ingredienser, fremgangsmåde, tider og
   billede ud og gemmer kilde-linket, så du altid kan gå tilbage til originalen.
   Billeder skaleres og gemmes lokalt i databasen.
+- **Scan fra foto** 📷: tag et billede af en opskrift i en kogebog, et udklip
+  eller en håndskrevet seddel (op til fire billeder, hvis den fylder flere
+  sider). AI'en læser titel, ingrediensgrupper, fremgangsmåde og noter som
+  udstyr og sidetal, og du retter til, før du gemmer. Viser et af billederne
+  den færdige ret, kan det blive opskriftens billede. Kræver Claude-nøgle —
+  eller en egen AI-server med en model, der kan se billeder.
 - **AI-fallback ved import**: har siden ingen maskinlæsbare data, kan AI'en
   læse sideteksten og bygge opskriften (kræver Claude API-nøgle).
 - **Portions-skalering**: skru op/ned for portioner – mængderne regnes om
@@ -89,6 +95,14 @@ Frontenden er delt op i `app/parts/p*.js`, som `build_rune.py` samler til
 genererede filer direkte.
 
 ## Versionshistorik
+
+- **v39** (oktober 2026): **Scan en opskrift fra et foto.** Knappen *📷 Scan* på
+  Opskrifter (også i import-dialogen og paletten ⌘K) tager et billede med
+  kameraet eller henter op til fire billeder. AI'en læser siden og udfylder
+  opskriften — titel med undertitel, ingrediensgrupper (`## Tilbehør`),
+  fremgangsmåde og noter som udstyr og sidetal. Et foto af den færdige ret kan
+  markeres som opskriftens billede. `/api/ai` kan nu tage billeder med og sender
+  dem i både Claudes og det OpenAI-kompatible format.
 
 - **v38** (september 2026): »Vil prøve« hedder nu **»Skal prøves«** — på chippen,
   overblikket, knappen, paletten og i beskederne. Data er uændret (feltet hedder

@@ -203,16 +203,17 @@ table.data tr.clickable { cursor: pointer; }
 table.data tfoot td { font-weight: 600; border-top: 2px solid var(--border); }
 
 /* ---------- knapper og felter ---------- */
-button.btn {
+button.btn, label.btn {
   background: var(--card2); color: var(--text); border: 1px solid var(--border);
   padding: 8px 14px; border-radius: 8px; font: inherit; cursor: pointer;
 }
-button.btn:hover { border-color: var(--muted); }
-button.btn.primary { background: var(--accent-dim); border-color: var(--accent-dim); color: #fff; font-weight: 600; }
-button.btn.primary:hover { background: var(--accent); }
+button.btn:hover, label.btn:hover { border-color: var(--muted); }
+button.btn.primary, label.btn.primary { background: var(--accent-dim); border-color: var(--accent-dim); color: #fff; font-weight: 600; }
+button.btn.primary:hover, label.btn.primary:hover { background: var(--accent); }
 button.btn.danger { color: var(--red); }
 button.btn.small { padding: 4px 10px; font-size: 13px; border-radius: 6px; }
 button.btn:disabled { opacity: .5; cursor: default; }
+label.btn { display: inline-block; }
 .iconbtn { background: none; border: 0; cursor: pointer; font-size: 15px; color: var(--muted); padding: 2px 6px; }
 .iconbtn:hover { color: var(--text); }
 
