@@ -407,7 +407,8 @@ const err = (res, code, message) => send(res, code, { error: message });
  * aabner den - se GET /api/items/<id>. */
 const KORT_FELTER = ['id', 'kind', 'title', 'category', 'sourceCategory', 'catChecked',
   'tags', 'rating', 'favorite', 'toTry', 'shareToken', 'servings', 'yieldText', 'prepMin', 'cookMin', 'totalMin',
-  'timesCooked', 'lastCooked', 'createdAt', 'updatedAt', 'imageVer', 'url'];
+  'timesCooked', 'lastCooked', 'createdAt', 'updatedAt', 'imageVer', 'url',
+  'book', 'bookAuthor', 'bookPage'];
 
 /* Skriver {"items":[...]} ud i bidder. Raekkerne ER allerede JSON-tekst i
  * data-kolonnen, saa de konkateneres direkte: ingen JSON.parse -> JSON.stringify
@@ -1285,6 +1286,7 @@ ${rec.image ? `<img src="${rec.image}" alt="">` : ''}
 ${rec.description ? `<p>${H(rec.description)}</p>` : ''}
 <h2>Ingredienser</h2><ul>${ings}</ul>
 <h2>Fremgangsmåde</h2><ol>${steps}</ol>
+${rec.book ? `<p class="foot">Fra ${H(rec.book)}${rec.bookPage ? ', s. ' + H(rec.bookPage) : ''}${rec.bookAuthor ? ' · ' + H(rec.bookAuthor) : ''}</p>` : ''}
 ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${H(rec.url)}</a></p>` : ''}
 <p class="foot">Delt fra ${H(APP_NAME)} 🍳</p>
 </div></body></html>`);

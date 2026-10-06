@@ -18,6 +18,9 @@ SQLite. **Ingen npm-afhængigheder, ingen CDN – alt kører lokalt.**
   JSON-LD *og* microdata), trækker titel, ingredienser, fremgangsmåde, tider og
   billede ud og gemmer kilde-linket, så du altid kan gå tilbage til originalen.
   Billeder skaleres og gemmes lokalt i databasen.
+- **Kogebøger** 📚: opskrifter fra en bog får kogebog, forfatter og sidetal.
+  Sortér og filtrér på bog eller forfatter, og klik på bogen for at se resten
+  af dens opskrifter.
 - **Scan fra foto** 📷: tag et billede af en opskrift i en kogebog, et udklip
   eller en håndskrevet seddel (op til fire billeder, hvis den fylder flere
   sider). AI'en læser titel, ingrediensgrupper, fremgangsmåde og noter som
@@ -95,6 +98,16 @@ Frontenden er delt op i `app/parts/p*.js`, som `build_rune.py` samler til
 genererede filer direkte.
 
 ## Versionshistorik
+
+- **v40** (oktober 2026): **Kogebøger.** En opskrift kan nu have en kogebog,
+  en forfatter og et sidetal ved siden af kilde-linket. Bogen vælges fra en liste
+  over dem, du allerede har brugt (eller skrives ind), og en kendt bog udfylder
+  selv forfatteren. Opskrifter kan **sorteres** efter *📚 Kogebog A–Å* (og
+  sidetal) eller *✍️ Forfatter A–Å* og **filtreres** på én bog eller forfatter.
+  Søgefeltet finder også bog og forfatter. Klik på bogen på en opskrift viser
+  resten af bogens opskrifter. Scan-dialogen har de samme felter, husker sidste
+  bog og lader AI'en læse sidetallet. Bogen kommer med på print, kopi, delesiden
+  og i MCP (`book`/`author`/`page` på søg, opret og ret).
 
 - **v39** (oktober 2026): **Scan en opskrift fra et foto.** Knappen *📷 Scan* på
   Opskrifter (også i import-dialogen og paletten ⌘K) tager et billede med

@@ -105,7 +105,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 39;
+const APP_VERSION = 40;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -129,7 +129,7 @@ const S = {
   planQ: '',            // soegeteksten i det panel
   planSlot: 'dinner',   // hvilket maaltid en fundet ret lander paa
   planArm: null,        // {recipeId} | {text} valgt og venter paa en dag
-  recFilter: { q: '', category: '', fav: false, vilProeve: false, delte: false, sort: lsGet('kk_recsort', 'nyeste'), minStars: +lsGet('kk_recminstars', 0) || 0, raavarer: [], kilde: '', frokost: false },
+  recFilter: { q: '', category: '', fav: false, vilProeve: false, delte: false, sort: lsGet('kk_recsort', 'nyeste'), minStars: +lsGet('kk_recminstars', 0) || 0, raavarer: [], kilde: '', bog: '', frokost: false },
   /* undefined = ikke valgt endnu; filter-panelet starter da aabent paa en stor
    * skaerm og lukket paa en telefon */
   filterOpen: lsGet('kk_filteropen', '') === '' ? undefined : lsGet('kk_filteropen', '') === '1',
@@ -1540,7 +1540,10 @@ const SORTERINGER = {
   stjerner:{ navn: '★ Flest stjerner', fn: (a, b) => (b.rating || 0) - (a.rating || 0) || nyestFoerst(a, b) },
   faerrest:{ navn: '☆ Færrest stjerner', fn: (a, b) => (a.rating || 0) - (b.rating || 0) || nyestFoerst(a, b) },
   titel:   { navn: '🔤 Titel A–Å', fn: (a, b) => cmpTekst(a.title, b.title) },
-  tid:     { navn: '⏱ Korteste tid', fn: (a, b) => (recipeTotalMin(a) || 1e9) - (recipeTotalMin(b) || 1e9) || nyestFoerst(a, b) }
+  tid:     { navn: '⏱ Korteste tid', fn: (a, b) => (recipeTotalMin(a) || 1e9) - (recipeTotalMin(b) || 1e9) || nyestFoerst(a, b) },
+  /* Opskrifter uden kogebog/forfatter havner sidst - ikke foerst, som tom streng ville */
+  bog:     { navn: '📚 Kogebog A–Å', fn: (a, b) => (!a.book - !b.book) || cmpTekst(a.book, b.book) || bogSideTal(a) - bogSideTal(b) || cmpTekst(a.title, b.title) },
+  forfatter:{ navn: '✍️ Forfatter A–Å', fn: (a, b) => (!a.bookAuthor - !b.bookAuthor) || cmpTekst(a.bookAuthor, b.bookAuthor) || cmpTekst(a.book, b.book) || bogSideTal(a) - bogSideTal(b) || cmpTekst(a.title, b.title) }
 };
 
 function starsHtml(rating) {
@@ -1570,6 +1573,10 @@ async function bindStarPickers() {
 
 function recipeCardHtml(r, medKatVaelger) {
   const time = recipeTotalMin(r);
+  /* Bogen vises kun, naar man sorterer eller filtrerer paa den - ellers fylder
+   * den paa hvert eneste kort */
+  const f = S.recFilter || {};
+  const visBog = r.book && (f.sort === 'bog' || f.sort === 'forfatter' || f.bog);
   const cats = app().categories || [];
   const src = imageSrcOrRemote(r);
   return `<div class="reccard" data-rec="${r.id}">
@@ -1581,6 +1588,7 @@ function recipeCardHtml(r, medKatVaelger) {
         ${time ? `<span>⏱ ${fmtMin(time)}</span>` : ''}
         ${starsPickHtml(r)}
       </div>
+      ${visBog ? `<div class="recmeta small muted">📚 ${esc(bogTekst(r, f.sort === 'forfatter'))}</div>` : ''}
       ${medKatVaelger ? `<select class="katpick" data-katfor="${r.id}" title="Sæt kategori">
         <option value="">Vælg kategori …</option>
         ${cats.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}
@@ -1608,12 +1616,14 @@ function aktiveFiltre(f) {
   else if (f.category) ud.push(f.category);
   if (f.minStars) ud.push('★'.repeat(f.minStars) + ' og op');
   if (f.kilde) ud.push(f.kilde);
+  if (f.bog) ud.push((f.bog.startsWith('forf:') ? '✍️ ' : '📚 ') + f.bog.slice(f.bog.indexOf(':') + 1));
   return ud;
 }
 function filterPanelHtml(f, cats, udenKat) {
   const aktive = aktiveFiltre(f);
   const aaben = S.filterOpen === undefined ? !smalSkaerm() : S.filterOpen;
   const kilder = kildeListeCached();
+  const boeger = bogListeCached();
   return `<details class="panelbox filterbox" id="filterBox"${aaben ? ' open' : ''}>
     <summary><span class="ftitel">⚙️ Filtre</span>
       ${aktive.length
@@ -1632,6 +1642,15 @@ function filterPanelHtml(f, cats, udenKat) {
       ${kilder.length ? `<select id="recSource" title="Vis kun opskrifter fra ét site">
         <option value="">🌐 Alle kilder</option>
         ${kilder.map(k => `<option value="${esc(k.vaert)}"${f.kilde === k.vaert ? ' selected' : ''}>${esc(k.vaert)} (${k.n})</option>`).join('')}
+      </select>` : ''}
+      ${boeger.boeger.length ? `<select id="recBook" title="Vis kun opskrifter fra én kogebog eller forfatter">
+        <option value="">📚 Alle kogebøger</option>
+        <optgroup label="Kogebøger">
+          ${boeger.boeger.map(b => `<option value="bog:${esc(b.bog)}"${f.bog === 'bog:' + b.bog ? ' selected' : ''}>${esc(b.bog)} (${b.n})</option>`).join('')}
+        </optgroup>
+        ${boeger.forfattere.length ? `<optgroup label="Forfattere">
+          ${boeger.forfattere.map(a => `<option value="forf:${esc(a.navn)}"${f.bog === 'forf:' + a.navn ? ' selected' : ''}>${esc(a.navn)} (${a.n})</option>`).join('')}
+        </optgroup>` : ''}
       </select>` : ''}
       ${aktive.length ? '<button class="btn small" id="recFilterClear">Ryd filtre</button>' : ''}
     </div>
@@ -1668,6 +1687,17 @@ function frokostAntal() {
     S._frokostNoegle = noegle;
   }
   return S._frokostAntal;
+}
+/* Boeger og forfattere - caches paa antal opskrifter OG antal med en bog,
+ * saa en netop tilfoejet kogebog dukker op uden at antallet af opskrifter
+ * aendrer sig (redigering af en eksisterende opskrift). */
+function bogListeCached() {
+  const noegle = K('recipe').length + ':' + K('recipe').reduce((a, r) => a + (r.book ? 1 : 0) + (r.bookAuthor ? 1 : 0), 0);
+  if (!S._boeger || S._boegerNoegle !== noegle) {
+    S._boeger = { boeger: bogListe(), forfattere: forfatterListe() };
+    S._boegerNoegle = noegle;
+  }
+  return S._boeger;
 }
 /* Kilde-listen gaar gennem hele biblioteket - caches som frokost-tallet. */
 function kildeListeCached() {
@@ -1763,10 +1793,17 @@ RENDER.recipes = () => {
     list = list.filter(r =>
       normName(r.title).includes(q) ||
       normName((r.tags || []).join(' ')).includes(q) ||
+      normName((r.book || '') + ' ' + (r.bookAuthor || '')).includes(q) ||
       normName((r.ingredients || []).join(' ')).includes(q));
   }
   if (f.minStars) list = list.filter(r => (r.rating || 0) >= f.minStars);
   if (f.kilde) list = list.filter(r => recipeHost(r) === f.kilde);
+  if (f.bog) {
+    const navn = f.bog.slice(f.bog.indexOf(':') + 1);
+    list = f.bog.startsWith('forf:')
+      ? list.filter(r => String(r.bookAuthor || '').trim() === navn)
+      : list.filter(r => String(r.book || '').trim() === navn);
+  }
   if (f.frokost) list = list.filter(erFrokost);
   /* "Hvad kan jeg lave?": behold opskrifter med mindst én af raavarerne, og
    * laeg dem med FLEST traef oeverst - den valgte sortering afgoer inden for
@@ -1822,11 +1859,13 @@ RENDER.recipes_bind = () => {
   $('#recMinStars').onchange = e => { S.recFilter.minStars = +e.target.value || 0; lsSet('kk_recminstars', S.recFilter.minStars); omTegn(); };
   const kilde = $('#recSource');
   if (kilde) kilde.onchange = e => { S.recFilter.kilde = e.target.value; omTegn(); };
+  const bog = $('#recBook');
+  if (bog) bog.onchange = e => { S.recFilter.bog = e.target.value; omTegn(); };
   const fbox = $('#filterBox');
   if (fbox) fbox.ontoggle = () => { S.filterOpen = fbox.open; lsSet('kk_filteropen', fbox.open ? '1' : '0'); };
   const ryd = $('#recFilterClear');
   if (ryd) ryd.onclick = () => {
-    Object.assign(S.recFilter, { category: '', noCat: false, fav: false, vilProeve: false, delte: false, minStars: 0, kilde: '', frokost: false });
+    Object.assign(S.recFilter, { category: '', noCat: false, fav: false, vilProeve: false, delte: false, minStars: 0, kilde: '', bog: '', frokost: false });
     lsSet('kk_recminstars', 0);
     omTegn();
   };
@@ -1982,6 +2021,7 @@ RENDER.recipeDetail = () => {
         ${factor !== 1 ? '<span class="chip on">skaleret</span>' : ''}
       </div>
       <ul class="ings">${ingredientsHtml(r, factor)}</ul>
+      ${r.book ? `<p class="small">📚 <a href="#" id="detBook" title="Vis alle opskrifter fra bogen">${esc(r.book)}</a>${r.bookPage ? ', s. ' + esc(r.bookPage) : ''}${r.bookAuthor ? ' · ' + esc(r.bookAuthor) : ''}</p>` : ''}
       ${r.url ? `<p class="small">Kilde: <a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(new URL(r.url).hostname)} ↗</a></p>` : ''}
     </div>
     <div>
@@ -1999,6 +2039,14 @@ RENDER.recipeDetail_bind = () => {
   $('#editBtn').onclick = () => recipeModal(r);
   $('#cookBtn').onclick = () => openCookMode(r);
   $('#printBtn').onclick = () => printRecipe(r);
+  const detBook = $('#detBook');
+  if (detBook) detBook.onclick = e => {
+    e.preventDefault();
+    S.recFilter.bog = 'bog:' + String(r.book).trim();
+    S.recFilter.sort = 'bog';
+    S.detailServings = null;
+    goto('recipes');
+  };
   $('#favBtn').onclick = async () => { r.favorite = !r.favorite; await saveItem(r, true); render(); };
   $('#tryBtn').onclick = async () => {
     r.toTry = !r.toTry;
@@ -2112,6 +2160,7 @@ function printRecipe(r) {
     <ul>${(r.ingredients || []).map(l => `<li>${esc(scaleIngredient(l, factor))}</li>`).join('')}</ul>
     <h2>Fremgangsmåde</h2>
     <ol>${(r.instructions || []).map(s => /^##/.test(s) ? `</ol><h2>${esc(s.replace(/^##\s*/, ''))}</h2><ol>` : `<li>${esc(s)}</li>`).join('')}</ol>
+    ${r.book ? `<p class="pdate">Fra ${esc(bogTekst(r))}</p>` : ''}
     ${r.url ? `<p class="pdate">Kilde: ${esc(r.url)}</p>` : ''}`, r.title);
 }
 
@@ -2137,6 +2186,7 @@ function opskriftSomRigTekst(r, factor, billede) {
   const meta = [r.category, portioner ? portioner + ' portioner' : '',
     recipeTotalMin(r) ? fmtMin(recipeTotalMin(r)) : ''].filter(Boolean).join(' · ');
   const kilde = /^https?:\/\//i.test(r.url || '') ? r.url : '';
+  const bog = bogTekst(r);
   const bil = /^(data:image\/|https:\/\/)/i.test(billede || '') ? billede : '';
 
   /* "## Overskrift" deler begge lister i afsnit */
@@ -2162,6 +2212,7 @@ function opskriftSomRigTekst(r, factor, billede) {
     '<h2>Fremgangsmåde</h2>',
     ...trin.map(a => (a.navn ? `<h3>${esc(a.navn)}</h3>` : '') +
       (a.linjer.length ? `<ol>${a.linjer.map(l => `<li>${esc(l)}</li>`).join('')}</ol>` : '')),
+    bog ? `<p>Fra ${esc(bog)}</p>` : '',
     kilde ? `<p>Kilde: <a href="${esc(kilde)}">${esc(kilde)}</a></p>` : ''
   ].filter(Boolean).join('\n');
 
@@ -2171,6 +2222,7 @@ function opskriftSomRigTekst(r, factor, billede) {
     ...ings.flatMap(a => [...(a.navn ? [a.navn + ':'] : []), ...a.linjer.map(l => '- ' + l)]),
     '', 'FREMGANGSMÅDE',
     ...trin.flatMap(a => [...(a.navn ? [a.navn + ':'] : []), ...a.linjer.map((l, i) => (i + 1) + '. ' + l)]),
+    ...(bog ? ['', 'Fra ' + bog] : []),
     ...(kilde ? ['', 'Kilde: ' + kilde] : [])
   ].filter((l, i, a) => l !== '' || a[i - 1] !== '').join('\n').trim() + '\n';
   return { html, tekst };
@@ -2244,6 +2296,81 @@ function kopierViaHaendelse(html, tekst) {
   return sat;
 }
 
+/* ---------------- kogebog (book / bookAuthor / bookPage) ----------------
+ * Ingen egen kind: listen over boeger og forfattere udledes af opskrifterne
+ * selv - samme tanke som kildeListe(). Saa kan den aldrig komme ud af trit
+ * med biblioteket (slettede opskrifter, gendannet backup). */
+function bogSideTal(r) {
+  const m = /\d+/.exec(String((r && r.bookPage) || ''));
+  return m ? +m[0] : 1e9;
+}
+/* "Det Vilde Køkken, s. 310 · Forfatter" - til detalje, print og kopi */
+function bogTekst(r, medForfatter) {
+  if (!r || !r.book) return '';
+  return r.book + (r.bookPage ? ', s. ' + r.bookPage : '') +
+    (medForfatter !== false && r.bookAuthor ? ' · ' + r.bookAuthor : '');
+}
+/* Boeger med forfatter (den hyppigste) og antal, flest opskrifter foerst */
+function bogListe() {
+  const pr = new Map();
+  for (const r of K('recipe')) {
+    const b = String(r.book || '').trim();
+    if (!b) continue;
+    const x = pr.get(b) || { bog: b, n: 0, forf: new Map() };
+    x.n++;
+    const a = String(r.bookAuthor || '').trim();
+    if (a) x.forf.set(a, (x.forf.get(a) || 0) + 1);
+    pr.set(b, x);
+  }
+  return [...pr.values()].map(x => ({
+    bog: x.bog, n: x.n,
+    forfatter: [...x.forf.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0])[0] || ''
+  })).sort((a, b) => b.n - a.n || cmpTekst(a.bog, b.bog));
+}
+function forfatterListe() {
+  const pr = new Map();
+  for (const r of K('recipe')) {
+    const a = String(r.bookAuthor || '').trim();
+    if (a) pr.set(a, (pr.get(a) || 0) + 1);
+  }
+  return [...pr.entries()].map(([navn, n]) => ({ navn, n })).sort((a, b) => cmpTekst(a.navn, b.navn));
+}
+
+/* ---------------- kogebog-felterne ----------------
+ * Bruges baade i opskrifts-modalen og i scan-dialogen. Bogen vaelges fra en
+ * datalist over de boeger, der allerede er i biblioteket - eller skrives ind.
+ * Vaelger man en kendt bog, og forfatterfeltet er tomt, udfyldes forfatteren. */
+function bogFelterHtml(px, d) {
+  const b = bogListeCached();
+  return `<div class="formgrid" style="grid-template-columns:2fr 2fr 1fr">
+      <label class="fld"><span>📚 Kogebog</span><input id="${px}Book" list="${px}BookList" autocomplete="off"
+        placeholder="Vælg eller skriv bogens titel" value="${esc(d.book || '')}"></label>
+      <label class="fld"><span>Forfatter</span><input id="${px}Author" list="${px}AuthorList" autocomplete="off"
+        value="${esc(d.bookAuthor || '')}"></label>
+      <label class="fld"><span>Side</span><input id="${px}Page" inputmode="numeric" autocomplete="off"
+        value="${esc(d.bookPage || '')}"></label>
+    </div>
+    <datalist id="${px}BookList">${b.boeger.map(x => `<option value="${esc(x.bog)}">${x.forfatter ? esc(x.forfatter) : ''}</option>`).join('')}</datalist>
+    <datalist id="${px}AuthorList">${b.forfattere.map(x => `<option value="${esc(x.navn)}">`).join('')}</datalist>`;
+}
+function bindBogFelter(m, px) {
+  const bog = m.querySelector('#' + px + 'Book');
+  const forf = m.querySelector('#' + px + 'Author');
+  const udfyld = () => {
+    const kendt = bogListeCached().boeger.find(x => x.bog === bog.value.trim());
+    if (kendt && kendt.forfatter && !forf.value.trim()) forf.value = kendt.forfatter;
+  };
+  bog.addEventListener('change', udfyld);
+  bog.addEventListener('input', udfyld);
+}
+function laesBogFelter(m, px) {
+  return {
+    book: m.querySelector('#' + px + 'Book').value.trim().slice(0, 200),
+    bookAuthor: m.querySelector('#' + px + 'Author').value.trim().slice(0, 200),
+    bookPage: m.querySelector('#' + px + 'Page').value.trim().slice(0, 20)
+  };
+}
+
 /* ---------------- redigerings-modal ---------------- */
 function recipeModal(r, prefill) {
   const isNew = !r;
@@ -2274,6 +2401,7 @@ function recipeModal(r, prefill) {
     <label class="fld"><span>Fremgangsmåde – ét trin pr. linje ("## Overskrift" laver en sektion)</span>
       <textarea id="rmSteps" rows="8">${esc((d.instructions || []).join('\n'))}</textarea></label>
     <label class="fld"><span>Noter (kun til dig selv)</span><textarea id="rmNotes" rows="2">${esc(d.notes || '')}</textarea></label>
+    ${bogFelterHtml('rm', d)}
     <div class="formgrid" style="grid-template-columns:2fr 1fr">
       <label class="fld"><span>Kilde-URL</span><input id="rmUrl" value="${esc(d.url || '')}"></label>
       <label class="fld"><span>Billede</span>
@@ -2302,6 +2430,7 @@ function recipeModal(r, prefill) {
     const del = m.querySelector('#rmImgDel');
     if (del) del.onclick = () => { nytBillede = ''; del.disabled = true; m.querySelector('#rmImgPick').textContent = 'Vælg…'; };
     m.querySelector('#rmCancel').onclick = closeModal;
+    bindBogFelter(m, 'rm');
     if (!isNew) m.querySelector('#rmDelete').onclick = async () => {
       if (!await confirmBox(`Slet opskriften "${d.title}"?`)) return;
       closeModal();
@@ -2322,6 +2451,7 @@ function recipeModal(r, prefill) {
       d.instructions = m.querySelector('#rmSteps').value.split('\n').map(l => l.trim()).filter(Boolean);
       d.notes = m.querySelector('#rmNotes').value.trim();
       d.url = m.querySelector('#rmUrl').value.trim();
+      Object.assign(d, laesBogFelter(m, 'rm'));
       closeModal();
       /* billedet gemmes som sit eget item - saa opskriften selv bliver ved med
        * at vaere et par kilobyte og kan sendes med i listen */
@@ -2495,6 +2625,7 @@ function openImportedRecipe(rec, image) {
     yieldText: rec.yieldText || '',
     category: catGuess,
     notes: rec.notes || '',
+    book: rec.book || '', bookAuthor: rec.bookAuthor || '', bookPage: rec.bookPage || '',
     tags: (rec.keywords ? String(rec.keywords).split(',').map(t => t.trim()).filter(Boolean).slice(0, 6) : [])
   });
   toast('Opskriften er hentet – tjek den igennem og tryk Gem');
@@ -2529,6 +2660,12 @@ function blobToScanJpeg(blob) {
   });
 }
 
+/* Den kogebog, der sidst blev scannet fra - man scanner tit flere sider i traek */
+function scanSidsteBog() {
+  try { const j = JSON.parse(lsGet('kk_scanbog') || '{}'); return { book: j.book || '', bookAuthor: j.bookAuthor || '' }; }
+  catch (e) { return {}; }
+}
+
 function scanRecipeModal() {
   const fotos = []; // { full: dataURL til AI'en, blob: originalen }
   let retBillede = -1; // indeks paa det foto, der skal vaere opskriftens billede
@@ -2545,6 +2682,8 @@ function scanRecipeModal() {
         <input type="file" id="scanFiles" accept="image/*" multiple hidden></label>
     </div>
     <div id="scanThumbs" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px"></div>
+    <div style="margin-top:12px">${bogFelterHtml('scan', scanSidsteBog())}</div>
+    <p class="small muted" style="margin:-4px 0 0">Bogen huskes til næste scanning. Lader du siden stå tom, prøver AI'en at læse sidetallet.</p>
     <p class="small muted" id="scanHint" style="margin:6px 0 0"></p>
     <p class="small muted" id="scanStatus" style="min-height:18px"></p>
     <div class="actions">
@@ -2554,6 +2693,7 @@ function scanRecipeModal() {
     const status = m.querySelector('#scanStatus');
     const btn = m.querySelector('#scanGo');
     m.querySelector('#scanCancel').onclick = closeModal;
+    bindBogFelter(m, 'scan');
 
     const tegn = () => {
       m.querySelector('#scanThumbs').innerHTML = fotos.map((f, i) => `
@@ -2595,6 +2735,9 @@ function scanRecipeModal() {
       status.textContent = 'AI\'en læser opskriften (kan tage 20–40 sek.) …';
       try {
         const rec = await aiExtractRecipeFromImages(fotos.map(f => f.full));
+        const bog = laesBogFelter(m, 'scan');
+        lsSet('kk_scanbog', JSON.stringify({ book: bog.book, bookAuthor: bog.bookAuthor }));
+        Object.assign(rec, { book: bog.book, bookAuthor: bog.bookAuthor, bookPage: bog.bookPage || rec.page || '' });
         let image = '';
         const valgt = retBillede >= 0 ? retBillede : rec.dishPhoto;
         if (valgt != null && fotos[valgt]) image = await blobToScaledDataUrl(fotos[valgt].blob);
@@ -2612,11 +2755,12 @@ function scanRecipeModal() {
 async function aiExtractRecipeFromImages(dataUrls) {
   const sys = `Du læser madopskrifter fra fotos (kogebogssider, udklip, håndskrevne sedler). Svar KUN med ét JSON-objekt, ingen forklaring, ingen markdown-hegn.
 Format: {"title": str, "description": str, "servings": tal|null, "prepMin": tal|null, "cookMin": tal|null,
-"ingredients": [str, ...], "instructions": [str, ...], "category": str, "notes": str, "dishPhoto": tal|null}
+"ingredients": [str, ...], "instructions": [str, ...], "category": str, "notes": str, "page": str, "dishPhoto": tal|null}
 Gengiv teksten trofast - opfind ikke mængder, trin eller ingredienser, der ikke står der. Har titlen en undertitel ("med krebs"), så tag den med i titlen.
 Ingredienser: én pr. linje med mængde først (fx "2 dl hvedemel"). Er de delt i grupper (fx "Pandekager", "Tilbehør"), så indled hver gruppe med en linje "## Gruppenavn".
 Fremgangsmåde: ét trin pr. afsnit, uden numre.
-notes: andet nyttigt fra siden, som ikke er ingredienser - fx "Udstyr: lille pande, gryde" og sidetal ("Side 310"). Tom streng hvis intet.
+notes: andet nyttigt fra siden, som ikke er ingredienser - fx "Udstyr: lille pande, gryde". Tom streng hvis intet. Sidetallet skal IKKE i notes.
+page: sidetallet trykt på siden (fx "310"; to sider: "310-311"). Tom streng hvis det ikke kan ses.
 dishPhoto: billederne er nummereret fra 0. Er et af dem (helt eller overvejende) et foto af den færdige ret, så angiv dets nummer - ellers null.
 Behold sproget (oversæt IKKE). Er der ingen opskrift på billederne, svar {"error": "ingen opskrift fundet på billedet"}.`;
   const r = await api('/api/ai', {
@@ -2641,7 +2785,8 @@ Behold sproget (oversæt IKKE). Er der ingen opskrift på billederne, svar {"err
     title: j.title, description: j.description || '', servings: j.servings || null,
     prepMin: j.prepMin || null, cookMin: j.cookMin || null,
     ingredients: j.ingredients.map(String), instructions: (j.instructions || []).map(String),
-    category: j.category || '', notes: j.notes ? String(j.notes) : '', dishPhoto: n, url: ''
+    category: j.category || '', notes: j.notes ? String(j.notes) : '',
+    page: j.page ? String(j.page).replace(/^s(ide)?\.?\s*/i, '').slice(0, 20) : '', dishPhoto: n, url: ''
   };
 }
 

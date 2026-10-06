@@ -76,6 +76,7 @@ function verden({ clipboard = true, skrivAfvises = false, billede = STORT } = {}
   }
   vm.createContext(ctx);
   vm.runInContext(CORE + '\n' +
+    udsnit('function bogTekst(') + '\n' +
     udsnit('function opskriftSomRigTekst(') + '\n' +
     udsnit('async function opskriftBilledeTilKopi(') + '\n' +
     udsnit('function kopierOpskrift(') + '\n' +

@@ -61,7 +61,8 @@ function opret(srv) {
   const kort = r => ({
     id: r.id, title: r.title, category: r.category || null,
     rating: r.rating || 0, minutes: srv.totalMin(r), source: srv.host(r) || null,
-    servings: r.servings || null
+    servings: r.servings || null,
+    book: r.book || null, author: r.bookAuthor || null, page: r.bookPage || null
   });
   const fuld = r => Object.assign(kort(r), {
     description: r.description || '', ingredients: r.ingredients || [],
@@ -104,6 +105,8 @@ function opret(srv) {
           query: { type: 'string', description: 'Free text. Leave empty to list everything.' },
           category: { type: 'string' },
           source: { type: 'string', description: 'Base domain, e.g. valdemarsro.dk' },
+          book: { type: 'string', description: 'Cookbook title (part of it is enough).' },
+          author: { type: 'string', description: 'Cookbook author (part of the name is enough).' },
           min_rating: { type: 'number', description: '0-5' },
           want_to_try: { type: 'boolean', description: 'Set to true to only get recipes the user has '
             + 'bookmarked as "want to try one day".' },
@@ -119,6 +122,10 @@ function opret(srv) {
         let liste = opskrifter();
         if (a.category) liste = liste.filter(r => norm(r.category) === norm(a.category));
         if (a.source) liste = liste.filter(r => srv.host(r) === String(a.source).replace(/^www\./, ''));
+        if (a.book) liste = liste.filter(r => norm(r.book).includes(norm(a.book)));
+        if (a.author) liste = liste.filter(r => norm(r.bookAuthor).includes(norm(a.author)));
+        if (a.book || a.author) liste.sort((x, y) => String(x.book || '').localeCompare(String(y.book || ''), 'da')
+          || (parseInt(x.bookPage, 10) || 1e9) - (parseInt(y.bookPage, 10) || 1e9));
         if (a.min_rating) liste = liste.filter(r => (r.rating || 0) >= +a.min_rating);
         if (a.want_to_try) liste = liste.filter(r => r.toTry);
         if (/lunch|frokost/i.test(String(a.meal || ''))) liste = liste.filter(erFrokost);
@@ -131,6 +138,7 @@ function opret(srv) {
         return {
           tekst: tekstliste(`${liste.length} ${liste.length === 1 ? 'opskrift matcher' : 'opskrifter matcher'} (viser ${valgt.length}):`,
             valgt.map(r => `- ${r.title} [${r.id}]${r.category ? ' · ' + r.category : ''}`
+              + `${r.book ? ' · 📚 ' + r.book + (r.page ? ' s. ' + r.page : '') : ''}`
               + `${r.rating ? ' · ' + '★'.repeat(r.rating) : ''}${r.minutes ? ' · ' + r.minutes + ' min' : ''}`)),
           data: { total: liste.length, recipes: valgt }
         };
@@ -150,7 +158,9 @@ function opret(srv) {
             + `${d.servings ? ' · ' + d.servings + ' portioner' : ''}\n\n`
             + `Ingredienser:\n${(d.ingredients || []).map(l => '- ' + l).join('\n')}\n\n`
             + `Fremgangsmåde:\n${(d.instructions || []).map((l, i) => `${i + 1}. ${l}`).join('\n')}`
-            + (d.notes ? `\n\nNoter:\n${d.notes}` : '') + (d.url ? `\n\nKilde: ${d.url}` : ''),
+            + (d.notes ? `\n\nNoter:\n${d.notes}` : '')
+            + (d.book ? `\n\nFra: ${d.book}${d.page ? ', s. ' + d.page : ''}${d.author ? ' · ' + d.author : ''}` : '')
+            + (d.url ? `\n\nKilde: ${d.url}` : ''),
           data: d
         };
       }
@@ -324,7 +334,9 @@ function opret(srv) {
           description: { type: 'string' }, category: { type: 'string' },
           servings: { type: 'number' }, prep_minutes: { type: 'number' },
           cook_minutes: { type: 'number' }, tags: { type: 'array', items: { type: 'string' } },
-          notes: { type: 'string' }, url: { type: 'string' }
+          notes: { type: 'string' }, url: { type: 'string' },
+          book: { type: 'string', description: 'Cookbook title, if the recipe is from a book.' },
+          author: { type: 'string' }, page: { type: 'string' }
         },
         required: ['title', 'ingredients']
       },
@@ -342,6 +354,8 @@ function opret(srv) {
           prepMin: +a.prep_minutes || null, cookMin: +a.cook_minutes || null, totalMin: null,
           yieldText: '', tags: linjeliste(a.tags).slice(0, 8), rating: 0, favorite: false, toTry: false,
           notes: String(a.notes || '').slice(0, 4000), url: String(a.url || '').slice(0, 500),
+          book: String(a.book || '').trim().slice(0, 200), bookAuthor: String(a.author || '').trim().slice(0, 200),
+          bookPage: String(a.page || '').trim().slice(0, 20),
           createdAt: new Date().toISOString()
         };
         if (!srv.gemItem(r)) return { fejl: 'Kunne ikke gemme opskriften (for stor?).' };
@@ -363,7 +377,9 @@ function opret(srv) {
           category: { type: 'string' }, servings: { type: 'number' },
           rating: { type: 'number' }, favorite: { type: 'boolean' },
           want_to_try: { type: 'boolean', description: 'Bookmark it as "want to try one day".' },
-          notes: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } }
+          notes: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } },
+          book: { type: 'string', description: 'Cookbook title. Empty string removes it.' },
+          author: { type: 'string' }, page: { type: 'string' }
         },
         required: ['id']
       },
@@ -382,6 +398,9 @@ function opret(srv) {
         if (a.want_to_try !== undefined) r.toTry = !!a.want_to_try;
         if (a.notes !== undefined) r.notes = String(a.notes).slice(0, 4000);
         if (a.tags !== undefined) r.tags = linjeliste(a.tags).slice(0, 8);
+        if (a.book !== undefined) r.book = String(a.book).trim().slice(0, 200);
+        if (a.author !== undefined) r.bookAuthor = String(a.author).trim().slice(0, 200);
+        if (a.page !== undefined) r.bookPage = String(a.page).trim().slice(0, 20);
         r.updatedAt = new Date().toISOString();
         if (!srv.gemItem(r)) return { fejl: 'Kunne ikke gemme ændringen.' };
         return { tekst: `Opdateret "${r.title}" [${r.id}]`, data: kort(r) };
