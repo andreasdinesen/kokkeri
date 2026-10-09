@@ -68,6 +68,14 @@ const noegle = o => JSON.stringify(ORIGINAL_FELTER.map(k => {
   return Array.isArray(v) ? v.map(l => String(l).trim()) : String(v == null ? '' : v).trim();
 }));
 
+/* Faerdigvarer, der naevner en raavare uden at VAERE den: "oksekoedssuppe" er
+ * ikke oksekoed, "kyllingeleverpostej" ikke kylling. Kun i recipes_on_offer -
+ * soeger man selv paa "leverpostej" i get_offers, skal den findes. */
+const FAERDIGVARE = /suppe|postej|pålæg|paalæg|dressing|chips|snack|sauce|\bdip\b|pizza|færdigret|sandwich|spegepølse|salami|bouillon|fond|smørepålæg|spread|nuggets|toast|kebab|gyros|(^| )is( |$)|kage|kiks|knækbrød|chokolade|slik|drik|juice|smoothie/;
+
+/* Raavaregrupper, som tilbuddene flytter mest - vejer tungest i recipes_on_offer. */
+const HOVEDRAAVARER = new Set(['kylling', 'hakket kød', 'oksekød', 'svinekød', 'lam', 'kalkun', 'fisk', 'skaldyr']);
+
 const norm = s => String(s || '').toLowerCase().replace(/[^a-zæøå0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 
 function opret(srv) {
@@ -103,6 +111,10 @@ function opret(srv) {
     return t.length > 0 && !t.every(l => SMAGSORD.test(l));
   };
   const dato = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || '')) ? String(s) : null;
+  const kr = v => (v == null ? '?' : String(v).replace('.', ',')) + ' kr';
+  const tilbudKort = o => `${o.butik}: ${o.titel} ${kr(o.pris)}`;
+  const tilbudLinje = o => `- ${o.butik}: ${o.titel} · ${kr(o.pris)}${o.foerpris ? ' (før ' + kr(o.foerpris) + ')' : ''}`
+    + `${o.maengde ? ' · ' + o.maengde : ''}${o.til ? ' · til ' + o.til : ''}${o.beskrivelse ? ' – ' + o.beskrivelse.slice(0, 90) : ''}`;
   const tekstliste = (titel, raekker) =>
     raekker.length ? `${titel}\n` + raekker.join('\n') : `${titel}\n(ingen)`;
 
@@ -219,6 +231,98 @@ function opret(srv) {
           tekst: tekstliste(`${alle} ${alle === 1 ? 'opskrift har' : 'opskrifter har'} alle ${ord.length}, ${scoret.length} har mindst én:`,
             valgt.map(x => `- ${x.r.title} [${x.r.id}] · ${x.n}/${ord.length} råvarer`)),
           data: { with_all: alle, with_any: scoret.length, recipes: valgt.map(x => Object.assign(kort(x.r), { matched: x.n })) }
+        };
+      }
+    },
+    {
+      name: 'get_offers',
+      scope: 'read',
+      description: 'Current grocery offers (tilbud) from the stores the user shops in, from eTilbudsavis. '
+        + 'Search with a plain Danish word ("kylling", "hakket oksekød", "laks") - without a query you get a '
+        + 'sample of everything on offer. Each line has store, product, price, normal price and the last valid date.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Danish product word. Leave empty to browse.' },
+          store: { type: 'string', description: 'Only this store, e.g. "Netto". Default: all the user\'s stores.' },
+          limit: { type: 'number', description: 'Default 30, max 100.' }
+        }
+      },
+      async kald(a) {
+        if (!srv.tilbud) return { fejl: 'Tilbud er ikke tilgængelige her.' };
+        const grænse = Math.min(100, Math.max(1, +a.limit || 30));
+        let liste;
+        if (String(a.query || '').trim()) {
+          /* eTilbudsavis' soegning er loes - behold kun tilbud, der passer. Er
+           * ordet en raavaregruppe, gaelder gruppen ("svampe" -> champignon). */
+          const q = norm(a.query);
+          const re = raavareRe(q);
+          const ord = q.split(' ').filter(w => w.length >= 3);
+          const passer = o => { const t = norm(o.titel + ' ' + o.beskrivelse); return (re && re.test(t)) || ord.some(w => t.includes(w)); };
+          liste = await srv.tilbud.soeg(String(a.query).trim(), a.store || '', passer);
+        }
+        else {
+          liste = await srv.tilbud.alle();
+          if (a.store) liste = liste.filter(o => norm(o.butik).includes(norm(a.store)));
+        }
+        liste.sort((x, y) => (x.pris == null ? 1e9 : x.pris) - (y.pris == null ? 1e9 : y.pris));
+        const butikker = srv.tilbud.opsaetning().butikker.map(b => b.navn).join(', ');
+        return {
+          tekst: tekstliste(`${liste.length} tilbud${a.query ? ' på "' + a.query + '"' : ''} i ${butikker} (viser ${Math.min(grænse, liste.length)}):`,
+            liste.slice(0, grænse).map(tilbudLinje)),
+          data: { total: liste.length, offers: liste.slice(0, grænse) }
+        };
+      }
+    },
+    {
+      name: 'recipes_on_offer',
+      scope: 'read',
+      description: 'Match this week\'s grocery offers in the user\'s stores against the user\'s OWN recipes: '
+        + 'returns recipes whose main ingredients (meat, fish, chicken, eggs, vegetables, dairy ...) are on offer, '
+        + 'with the offers that match. Use it to plan meals around what is cheap right now.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          meal: { type: 'string', description: 'Set to "lunch" to only suggest lunch-friendly recipes.' },
+          category: { type: 'string', description: 'Only recipes in this category, e.g. "Aftensmad".' },
+          limit: { type: 'number', description: 'Default 20, max 60.' }
+        }
+      },
+      async kald(a) {
+        if (!srv.tilbud) return { fejl: 'Tilbud er ikke tilgængelige her.' };
+        const tilbud = await srv.tilbud.alle();
+        /* Hvilke raavaregrupper er paa tilbud - og det billigste tilbud i hver.
+         * Kun titlen: beskrivelsen naevner tit andre varer ("passer til ..."). */
+        const paaTilbud = new Map();
+        for (const [navn, re] of RAAVARE_GRUPPER) {
+          const hits = tilbud.filter(o => { const t = norm(o.titel); return re.test(t) && !SMAGSORD.test(t) && !FAERDIGVARE.test(t); })
+            .sort((x, y) => (x.pris == null ? 1e9 : x.pris) - (y.pris == null ? 1e9 : y.pris));
+          if (hits.length) paaTilbud.set(navn, hits);
+        }
+        if (!paaTilbud.size) return { tekst: `Ingen af ${tilbud.length} tilbud passer til råvaregrupperne i dine opskrifter.` };
+        const grænse = Math.min(60, Math.max(1, +a.limit || 20));
+        const kunFrokost = /lunch|frokost/i.test(String(a.meal || ''));
+        const scoret = [];
+        for (const r of opskrifter()) {
+          if (kunFrokost && !erFrokost(r)) continue;
+          if (a.category && norm(r.category) !== norm(a.category)) continue;
+          const grupper = [...paaTilbud.keys()].filter(g => harRaavare(r, g));
+          if (!grupper.length) continue;
+          /* Koed/fisk/kylling/aeg vejer tungest - det er dem, tilbuddene flytter. */
+          const point = grupper.reduce((n, g) => n + (HOVEDRAAVARER.has(g) ? 3 : 1), 0) + (r.rating || 0) * 0.2;
+          scoret.push({ r, grupper, point });
+        }
+        scoret.sort((x, y) => y.point - x.point);
+        const valgt = scoret.slice(0, grænse);
+        return {
+          tekst: `På tilbud nu: ${[...paaTilbud.keys()].join(', ')}.\n`
+            + tekstliste(`${scoret.length} af dine opskrifter bruger noget, der er på tilbud (viser ${valgt.length}):`,
+              valgt.map(x => `- ${x.r.title} [${x.r.id}]${x.r.category ? ' · ' + x.r.category : ''} · på tilbud: `
+                + x.grupper.map(g => `${g} (${tilbudKort(paaTilbud.get(g)[0])})`).join('; '))),
+          data: {
+            groups_on_offer: [...paaTilbud.entries()].map(([g, h]) => ({ group: g, offers: h.slice(0, 5) })),
+            recipes: valgt.map(x => Object.assign(kort(x.r), { on_offer: x.grupper }))
+          }
         };
       }
     },
@@ -435,7 +539,7 @@ function opret(srv) {
   });
   const ok = (id, result) => ({ jsonrpc: '2.0', id, result });
 
-  function behandl(besked, auth) {
+  async function behandl(besked, auth) {
     if (!besked || besked.jsonrpc !== '2.0' || typeof besked.method !== 'string') {
       return fejl(besked && besked.id, -32600, 'Invalid Request');
     }
@@ -479,8 +583,10 @@ function opret(srv) {
       }
       let svar;
       try {
-        svar = v.kald((params && params.arguments) || {});
+        svar = await v.kald((params && params.arguments) || {});
       } catch (e) {
+        /* Forventede fejl (fx eTilbudsavis nede) har status og en dansk besked. */
+        if (e && e.status) return ok(id, { isError: true, content: [{ type: 'text', text: e.message }] });
         srv.logError(`mcp ${navn}: ${e && e.stack ? e.stack : e}`);
         return ok(id, { isError: true, content: [{ type: 'text', text: 'Værktøjet fejlede. Se Kokkeris serverlog.' }] });
       }
@@ -541,7 +647,7 @@ function opret(srv) {
     }
 
     const flere = Array.isArray(krop);
-    const svar = (flere ? krop : [krop]).map(b => behandl(b, auth)).filter(Boolean);
+    const svar = (await Promise.all((flere ? krop : [krop]).map(b => behandl(b, auth)))).filter(Boolean);
 
     /* Kun notifikationer i bundtet: kvitter uden krop, som protokollen kraever.
      * Svarer man med JSON, brokker klienten sig. */

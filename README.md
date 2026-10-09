@@ -56,6 +56,8 @@ SQLite. **Ingen npm-afhængigheder, ingen CDN – alt kører lokalt.**
   indkøbslisten, når du beder om det. Idéer, ingrediens-erstatninger, teknik; nye
   opskrift-forslag kan gemmes i biblioteket med ét klik. Claude API-nøglen
   gemmes kun på serveren og sendes aldrig til browseren.
+- **Tilbud** 🏷️: vælg de butikker, du handler i, så kan AI-assistenten se ugens
+  tilbud fra eTilbudsavis og lægge en madplan ud fra dem.
 - **Kommandopalet**: `Cmd/Ctrl+K` – hop til sider, opskrifter og handlinger.
 - Flere brugere med kodeord + **passkeys** (WebAuthn), admin-brugerstyring,
   mørkt/lyst tema, logo-upload, backup/gendan (JSON + rå .db).
@@ -105,6 +107,13 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v44** (oktober 2026): **Tilbud fra eTilbudsavis.** Under Indstillinger →
+  Integrationer vælger du postnummer, afstand og de butikker, du handler i
+  (Netto, REMA 1000, Lidl, føtex …). AI-assistenten – og Claude via MCP – kan så
+  søge i ugens tilbud (`get_offers`) og finde dine egne opskrifter, hvis
+  hovedråvarer er på tilbud (`recipes_on_offer`), fx *»lav en madplan for næste
+  uge ud fra tilbuddene«*. Dyrefoder og færdigvarer sorteres fra. Data kommer fra
+  eTilbudsavis' åbne, men uofficielle tjeneste og caches i nogle timer.
 - **v43** (oktober 2026): **Originalen gemmes.** Første gang du retter i en
   opskrift, gemmer Kokkeri udgaven fra før – senere rettelser rører den ikke. Knappen
   *📜 Original* på opskriften viser **ændringerne** linje for linje (fjernet i rødt,

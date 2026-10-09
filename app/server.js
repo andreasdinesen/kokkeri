@@ -490,10 +490,10 @@ function validPassword(p) { return typeof p === 'string' && p.length >= 8 && p.l
  * med parametre; `logo` er et data-URL-billede. `ai_key` er Claude API-nøglen –
  * den gemmes her, men returneres ALDRIG til frontenden (kun aiKeySet: true). */
 const SETTING_KEYS = new Set(['app', 'logo', 'allow_registration', 'ai_key', 'ai_model',
-  'ai_provider', 'ai_url', 'ha_url', 'ha_token', 'ha_entity', 'todoist_token', 'todoist_project']);
+  'ai_provider', 'ai_url', 'ha_url', 'ha_token', 'ha_entity', 'todoist_token', 'todoist_project', 'tilbud']);
 const SETTING_MAX = { app: 200000, logo: 900000, allow_registration: 4, ai_key: 300, ai_model: 100,
   ai_provider: 20, ai_url: 300,
-  ha_url: 300, ha_token: 2000, ha_entity: 200, todoist_token: 200, todoist_project: 120 };
+  ha_url: 300, ha_token: 2000, ha_entity: 200, todoist_token: 200, todoist_project: 120, tilbud: 20000 };
 
 /* v33: "Frokost" kom til som standard-kategori. Frontenden fletter standarden
  * med de GEMTE indstillinger, og den gemte liste vinder - saa en installation,
@@ -552,6 +552,8 @@ function appSettingsJson() {
   out.haSet = !!(setting('ha_url', '') && setting('ha_token', '') && setting('ha_entity', ''));
   out.todoistProject = setting('todoist_project', '');
   out.todoistSet = !!setting('todoist_token', '');
+  /* Tilbud (v44): postnummer, radius og butikker - intet hemmeligt. */
+  out.tilbud = tilbudOpsaetning();
   return out;
 }
 
@@ -908,6 +910,139 @@ Findes der ingen opskrift, svar {"error":"ingen"}. Oversæt intet.`,
   crawlJob.urls = [];
 }
 
+/* ---------------- tilbud fra eTilbudsavis (v44) ----------------
+ * eTilbudsavis (Tjek A/S) har ingen officiel API, men app og hjemmeside henter
+ * fra squid-api.tjek.com/v2, som svarer uden noegle. UDOKUMENTERET: kan aendre
+ * sig uden varsel - alt her fejler derfor stille med en dansk besked, og resten
+ * af appen roeres aldrig. Vaer paen ved den: svar caches i timer, ikke sekunder.
+ * Postnummer -> koordinater via OpenStreetMap Nominatim (DAWA er lukket, 410
+ * Gone siden 2025); Nominatims regler kraever en rigtig User-Agent og hoejst
+ * ét kald i sekundet - vi kalder kun, naar man gemmer et postnummer. */
+const TJEK = process.env.KOKKERI_TJEK_URL || 'https://squid-api.tjek.com/v2';
+const TILBUD_TTL = 3 * 3600e3;
+const BUTIK_TTL = 24 * 3600e3;
+const tilbudCache = new Map();            // sti -> { t, data }
+
+function tilbudOpsaetning() {
+  let t = {};
+  try { t = JSON.parse(setting('tilbud', '') || '{}') || {}; } catch (e) { t = {}; }
+  const tal = v => (Number.isFinite(+v) && v !== '' && v != null ? +v : null);
+  return {
+    postnr: /^\d{4}$/.test(String(t.postnr || '')) ? String(t.postnr) : '',
+    by: String(t.by || '').slice(0, 80),
+    lat: tal(t.lat), lng: tal(t.lng),
+    radiusKm: Math.min(200, Math.max(1, tal(t.radiusKm) || 20)),
+    butikker: (Array.isArray(t.butikker) ? t.butikker : [])
+      .filter(b => b && /^[0-9a-zA-Z_-]{3,20}$/.test(String(b.id)))
+      .map(b => ({ id: String(b.id), navn: String(b.navn || b.id).slice(0, 80) })).slice(0, 30)
+  };
+}
+
+async function tjekHent(sti, ttl) {
+  const c = tilbudCache.get(sti);
+  if (c && Date.now() - c.t < (ttl || TILBUD_TTL)) return c.data;
+  let r;
+  try {
+    r = await fetch(TJEK + sti, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
+  } catch (e) {
+    console.log('[tilbud] advarsel: ' + sti.replace(/\?.*$/, '') + ': ' + e.message);
+    const x = new Error('Kunne ikke nå eTilbudsavis lige nu – prøv igen om lidt'); x.status = 502; throw x;
+  }
+  if (!r.ok) {
+    console.log('[tilbud] advarsel: ' + sti.replace(/\?.*$/, '') + ' svarede ' + r.status);
+    const x = new Error('eTilbudsavis svarede ' + r.status + ' – deres tjeneste kan have ændret sig'); x.status = 502; throw x;
+  }
+  const data = await r.json().catch(() => null);
+  if (!Array.isArray(data)) { const x = new Error('Uventet svar fra eTilbudsavis'); x.status = 502; throw x; }
+  if (tilbudCache.size > 500) tilbudCache.clear();
+  tilbudCache.set(sti, { t: Date.now(), data });
+  return data;
+}
+
+const tjekSted = t => (t.lat != null && t.lng != null
+  ? `&r_lat=${t.lat}&r_lng=${t.lng}&r_radius=${Math.round(t.radiusKm * 1000)}` : '');
+
+/* Et tilbud i Kokkeris form. Kun dem, der ikke er udloebet. */
+function tilbudRens(o) {
+  const p = o.pricing || {};
+  const m = o.quantity || {};
+  const str = m.size && m.unit ? (m.size.from === m.size.to || !m.size.to ? m.size.from : m.size.from + '-' + m.size.to) + ' ' + (m.unit.symbol || '') : '';
+  return {
+    id: o.id, butik: (o.dealer && o.dealer.name) || o.dealer_id || '',
+    butikId: o.dealer_id || '',
+    titel: String(o.heading || '').trim(),
+    beskrivelse: String(o.description || '').replace(/\s+/g, ' ').trim().slice(0, 200),
+    pris: p.price == null ? null : p.price, foerpris: p.pre_price || null,
+    maengde: str.trim(), fra: String(o.run_from || '').slice(0, 10), til: String(o.run_till || '').slice(0, 10)
+  };
+}
+/* Kun aktuelle tilbud - og ikke dyrefoder: "kattefoder med kylling" er ikke en
+ * kyllingeret, og eTilbudsavis' egen soegning er loes nok til at finde den. */
+const DYREFODER = /katte|hunde|dyrefoder|dyremad|\bkat\b|\bhund\b|whiskas|felix|pedigree|purina|gourmet gold|sheba/i;
+const tilbudGyldigt = o => (!o.run_till || Date.parse(o.run_till) >= Date.now())
+  && !DYREFODER.test(String(o.heading || '') + ' ' + String(o.description || '').slice(0, 80));
+const tilbudTekst = o => (o.titel + ' ' + o.beskrivelse).toLowerCase();
+/* Ordene i soegningen (mindst tre bogstaver) skal staa i tilbuddet - ét af dem er nok. */
+const tilbudOrd = q => String(q || '').toLowerCase().split(/[^a-zæøå0-9]+/).filter(w => w.length >= 3);
+
+async function tilbudSoeg(query, kunButik, relevant) {
+  const t = tilbudOpsaetning();
+  let ids = t.butikker.map(b => b.id);
+  if (kunButik) {
+    const k = String(kunButik).toLowerCase();
+    ids = t.butikker.filter(b => b.navn.toLowerCase().includes(k) || b.id === kunButik).map(b => b.id);
+  }
+  if (!ids.length) { const x = new Error(t.butikker.length ? 'Ingen af dine butikker hedder "' + kunButik + '"' : 'Ingen butikker valgt – vælg dem under Indstillinger → Integrationer → Tilbud'); x.status = 400; throw x; }
+  const data = await tjekHent('/offers/search?query=' + encodeURIComponent(String(query).slice(0, 100))
+    + '&dealer_ids=' + ids.join(',') + tjekSted(t) + '&limit=100');
+  const ord = tilbudOrd(query);
+  const passer = relevant || (o => !ord.length || ord.some(w => tilbudTekst(o).includes(w)));
+  return data.filter(tilbudGyldigt).map(tilbudRens).filter(passer);
+}
+
+/* Alle aktuelle tilbud fra de valgte butikker (til opskrift-matchningen).
+ * Op til 500 pr. butik - en Netto-avis er et par hundrede. */
+async function tilbudAlle() {
+  const t = tilbudOpsaetning();
+  if (!t.butikker.length) { const x = new Error('Ingen butikker valgt – vælg dem under Indstillinger → Integrationer → Tilbud'); x.status = 400; throw x; }
+  const ud = [];
+  for (const b of t.butikker) {
+    for (let off = 0; off < 500; off += 100) {
+      const side = await tjekHent('/offers?dealer_ids=' + b.id + tjekSted(t) + '&limit=100&offset=' + off);
+      ud.push(...side.filter(tilbudGyldigt).map(tilbudRens));
+      if (side.length < 100) break;
+    }
+  }
+  return ud;
+}
+
+/* Alle danske kaeder (ca. 300 - ogsaa byggemarkeder og toejbutikker). */
+async function tjekButikker() {
+  const alle = [];
+  for (let off = 0; off < 2000; off += 100) {
+    const side = await tjekHent('/dealers?country_id=DK&limit=100&offset=' + off, BUTIK_TTL);
+    alle.push(...side.map(d => ({ id: d.id, navn: d.name })));
+    if (side.length < 100) break;
+  }
+  return alle.sort((a, b) => a.navn.localeCompare(b.navn, 'da'));
+}
+
+async function postnrOpslag(nr) {
+  if (!/^\d{4}$/.test(String(nr))) { const x = new Error('Et postnummer er fire cifre'); x.status = 400; throw x; }
+  let r;
+  try {
+    r = await fetch('https://nominatim.openstreetmap.org/search?country=dk&format=jsonv2&limit=1&postalcode=' + nr, {
+      headers: { 'User-Agent': 'Kokkeri/' + APP_VER_NR + ' (selvhostet opskriftsapp; github.com/andreasdinesen/kokkeri)', 'Accept-Language': 'da' },
+      signal: AbortSignal.timeout(10000)
+    });
+  } catch (e) { const x = new Error('Kunne ikke slå postnummeret op (' + e.message + ')'); x.status = 502; throw x; }
+  const j = await r.json().catch(() => null);
+  const f = Array.isArray(j) && j[0];
+  if (!f) { const x = new Error('Kendte ikke postnummer ' + nr); x.status = 404; throw x; }
+  const by = String(f.display_name || '').split(',').map(s => s.trim()).filter(s => s && s !== String(nr))[0] || '';
+  return { postnr: String(nr), by: by.replace(/ Kommune$/, ''), lat: +(+f.lat).toFixed(4), lng: +(+f.lon).toFixed(4) };
+}
+
 /* ---------------- AI-proxy ----------------
  * To udbydere: Claude API (Anthropic) eller en egen OpenAI-kompatibel server
  * (LM Studio, Ollama, llama.cpp ...). Valget bor i settings `ai_provider`;
@@ -1074,6 +1209,13 @@ const AI_MAKS_RUNDER = 8;
 const AI_SKRIVER = { add_to_meal_plan: 'planEntry', add_to_shopping_list: 'shopItem' };
 const aiVaerktoejer = () => mcp.VAERKTOEJER.filter(v => v.scope === 'read' || AI_SKRIVER[v.name]);
 
+function tilbudLinjeTilPrompt() {
+  const t = tilbudOpsaetning();
+  return t.butikker.length
+    ? '  Brugeren handler i: ' + t.butikker.map(b => b.navn).join(', ') + (t.postnr ? ' (nær ' + t.postnr + ' ' + t.by + ')' : '') + '.'
+    : '  Brugeren har ikke valgt butikker endnu – spørges der til tilbud, så sig, at det sættes op under Indstillinger → Integrationer → Tilbud.';
+}
+
 function aiAssistentSystem(kontekst) {
   const k = kontekst && typeof kontekst === 'object' ? kontekst : {};
   const idag = /^\d{4}-\d{2}-\d{2}$/.test(String(k.idag || '')) ? k.idag : new Date().toISOString().slice(0, 10);
@@ -1100,6 +1242,10 @@ Brug værktøjerne til at slå op i biblioteket – gæt aldrig på, hvad det in
   "I morgen", "på fredag" osv. regnes ud fra datoen i dag. Tjek madplanen først, hvis dagen måske er optaget.
 - add_to_shopping_list tilføjer varer – med recipe_id kommer alle opskriftens ingredienser med.
   Brug kun de to, når brugeren beder om det, og sig bagefter kort, hvad du har lagt ind.
+- get_offers viser aktuelle tilbud i brugerens butikker (eTilbudsavis); recipes_on_offer finder
+  brugerens egne opskrifter, hvis hovedråvarer er på tilbud. Brug dem, når brugeren spørger til tilbud,
+  eller vil have en billig madplan/madplan ud fra tilbuddene – nævn butik og pris, og at tilbuddet gælder til en dato.
+${tilbudLinjeTilPrompt()}
 
 Foreslå brugerens EGNE opskrifter frem for at skrive nye. Henvis altid til en opskrift som et link
 i formatet [Titel](/opskrift/<id>) – fx [Lasagne](/opskrift/abc123) – så kan brugeren klikke direkte til den.
@@ -1107,15 +1253,17 @@ Skriv kun en ny opskrift, hvis biblioteket ikke har noget passende, eller bruger
 så med tydelige afsnit "Ingredienser:" og "Fremgangsmåde:", så den kan gemmes med ét klik.`;
 }
 
-function aiKoerVaerktoej(navn, input, aendret) {
+async function aiKoerVaerktoej(navn, input, aendret) {
   const v = aiVaerktoejer().find(x => x.name === navn);
   if (!v) return { tekst: 'Ukendt værktøj: ' + navn, fejl: true };
   try {
-    const r = v.kald(input && typeof input === 'object' ? input : {});
+    const r = await v.kald(input && typeof input === 'object' ? input : {});
     if (r.fejl) return { tekst: String(r.fejl), fejl: true };
     if (AI_SKRIVER[navn]) aendret.add(AI_SKRIVER[navn]);
     return { tekst: String(r.tekst || 'Færdig.').slice(0, 30000) };
   } catch (e) {
+    /* Forventede fejl (fx eTilbudsavis nede) har status og en dansk besked. */
+    if (e && e.status) return { tekst: e.message, fejl: true };
     console.error('[fejl] ai-vaerktoej ' + navn + ': ' + (e && e.stack ? e.stack : e));
     return { tekst: 'Værktøjet fejlede.', fejl: true };
   }
@@ -1146,7 +1294,7 @@ async function aiAssistent(body) {
         let input = {};
         try { input = JSON.parse((c.function && c.function.arguments) || '{}'); } catch (e) { input = {}; }
         const navn = c.function && c.function.name;
-        const r = aiKoerVaerktoej(navn, input, aendret);
+        const r = await aiKoerVaerktoej(navn, input, aendret);
         kald.push({ name: navn, input, error: !!r.fejl });
         beskeder.push({ role: 'tool', tool_call_id: c.id, content: r.tekst });
       }
@@ -1163,11 +1311,13 @@ async function aiAssistent(body) {
     const brug = blokke.filter(b => b.type === 'tool_use');
     if (!brug.length || j.stop_reason !== 'tool_use') { faerdig = true; break; }
     beskeder.push({ role: 'assistant', content: blokke });
-    beskeder.push({ role: 'user', content: brug.map(b => {
-      const r = aiKoerVaerktoej(b.name, b.input, aendret);
+    const svar = [];
+    for (const b of brug) {
+      const r = await aiKoerVaerktoej(b.name, b.input, aendret);
       kald.push({ name: b.name, input: b.input || {}, error: !!r.fejl });
-      return Object.assign({ type: 'tool_result', tool_use_id: b.id, content: r.tekst }, r.fejl ? { is_error: true } : {});
-    }) });
+      svar.push(Object.assign({ type: 'tool_result', tool_use_id: b.id, content: r.tekst }, r.fejl ? { is_error: true } : {}));
+    }
+    beskeder.push({ role: 'user', content: svar });
   }
   /* Kun det SIDSTE tekststykke er svaret; tidligere er "jeg slår lige op"-mellemtekst. */
   let text = tekster.length ? tekster[tekster.length - 1] : '';
@@ -1267,7 +1417,9 @@ const mcp = require('./mcp.js').opret({
   },
   /* Afdelingen gaettes i browseren (guessSection i p1b_food.js). Serveren
    * lader feltet staa tomt - listen viser den saa under "Andet". */
-  gaetAfdeling: () => ''
+  gaetAfdeling: () => '',
+  /* Tilbud fra eTilbudsavis (v44) - asynkrone, kaster med status ved fejl. */
+  tilbud: { opsaetning: () => tilbudOpsaetning(), soeg: (q2, butik, rel) => tilbudSoeg(q2, butik, rel), alle: () => tilbudAlle() }
 });
 
 /* De offentlige OAuth-ruter skal kunne naas fra claude.ai's oprindelse. */
@@ -1987,6 +2139,20 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
       } catch (e) {
         return err(res, 502, 'Kunne ikke hente billedet: ' + e.message);
       }
+    }
+
+    /* ---- tilbud (v44) ---- */
+    if (p === '/api/tilbud/butikker' && req.method === 'GET') {
+      try { return send(res, 200, { butikker: await tjekButikker() }); }
+      catch (e) { return err(res, e.status || 502, e.message); }
+    }
+    if (p === '/api/tilbud/postnr' && req.method === 'GET') {
+      try { return send(res, 200, await postnrOpslag(u.searchParams.get('nr'))); }
+      catch (e) { return err(res, e.status || 502, e.message); }
+    }
+    if (p === '/api/tilbud/soeg' && req.method === 'GET') {
+      try { return send(res, 200, { tilbud: await tilbudSoeg(u.searchParams.get('q') || '') }); }
+      catch (e) { return err(res, e.status || 502, e.message); }
     }
 
     /* ---- AI-assistenten (panelet) - med adgang til biblioteket ---- */

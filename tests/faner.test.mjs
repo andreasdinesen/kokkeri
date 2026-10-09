@@ -80,7 +80,7 @@ function kort(html) {
 }
 
 /* Afsnittene, som de var foer opdelingen (v34) - alle ti. */
-const ALLE = ['App', '✨ AI-assistent', '🏠 Home Assistant', '✅ Todoist', '📅 Madplan i din kalender',
+const ALLE = ['App', '✨ AI-assistent', '🏷️ Tilbud fra eTilbudsavis', '🏠 Home Assistant', '✅ Todoist', '📅 Madplan i din kalender',
   'Backup & import', '🗑️ Ryd data', 'Min konto', 'Claude-adgang (MCP)', 'Brugere (admin)'];
 const KUN_ADMIN = ['🗑️ Ryd data', 'Brugere (admin)'];
 

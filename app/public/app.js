@@ -105,7 +105,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 43;
+const APP_VERSION = 44;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -5001,6 +5001,29 @@ RENDER.settings = () => {
     </div>
   </div>
 
+  <div class="panelbox" id="tilbudBox">
+    <h2 style="margin-top:0">🏷️ Tilbud fra eTilbudsavis</h2>
+    <p class="small muted">Vælg de butikker, du handler i, så kan AI-assistenten se ugens tilbud og lægge
+      en madplan ud fra dem – fx <i>»lav en madplan for næste uge ud fra tilbuddene«</i>. Tilbuddene hentes fra
+      eTilbudsavis' åbne data. Det er en uofficiel tjeneste, som kan ændre sig uden varsel; resten af Kokkeri
+      påvirkes ikke, hvis den holder op med at svare.</p>
+    <div class="formgrid" style="grid-template-columns:1fr 1fr">
+      <label class="fld"><span>Postnummer <span id="tbBy" class="muted">${esc(S.settings.tilbud && S.settings.tilbud.by || '')}</span></span>
+        <input id="tbPostnr" inputmode="numeric" maxlength="4" placeholder="fx 8000" value="${esc(S.settings.tilbud && S.settings.tilbud.postnr || '')}"></label>
+      <label class="fld"><span>Afstand til butikkerne</span>
+        <select id="tbRadius">${[5, 10, 20, 50].map(k => `<option value="${k}"${(S.settings.tilbud && S.settings.tilbud.radiusKm || 20) === k ? ' selected' : ''}>${k} km</option>`).join('')}</select></label>
+    </div>
+    <p class="small" style="margin:12px 0 6px"><b>Hvor handler du?</b> <span class="muted" id="tbAntal"></span></p>
+    <div class="chathints" id="tbButikker"><span class="small muted">Henter butikkerne …</span></div>
+    <label class="fld" style="max-width:420px"><span>Tilføj en anden butik</span>
+      <input id="tbAndet" list="tbAlle" placeholder="Skriv navnet …" autocomplete="off"><datalist id="tbAlle"></datalist></label>
+    <div class="rowflex" style="margin-top:10px">
+      <button class="btn primary" id="tbSave">Gem tilbud</button>
+      <button class="btn small" id="tbTest">Prøv: hvad er på tilbud med kylling?</button>
+      <span class="small muted" id="tbTestSvar"></span>
+    </div>
+  </div>
+
   <div class="panelbox">
     <h2 style="margin-top:0">🏠 Home Assistant</h2>
     <p class="small muted">Send indkøbslisten til en todo-liste i Home Assistant med ét klik fra
@@ -5260,6 +5283,8 @@ RENDER.settings_bind = () => {
     render();
   };
 
+  bindTilbud();
+
   $('#haSave').onclick = async () => {
     const settings = {
       ha_url: $('#haUrl').value.trim().replace(/\/+$/, ''),
@@ -5505,4 +5530,82 @@ function wipeModal() {
 }
 
 /* start appen */
+
+/* ---------------- tilbud fra eTilbudsavis (v44) ----------------
+ * Butikslisten hentes fra serveren (der cacher den et doegn). Dagligvarekaederne
+ * vises som knapper; alt andet (ca. 300 kaeder - ogsaa byggemarkeder) kan
+ * tilfoejes ved navn. Valget gemmes som settings `tilbud` (JSON). */
+const DAGLIGVARE_RE = /^(netto|rema 1000|føtex|bilka|lidl|365discount|brugsen|superbrugsen|kvickly|meny|spar|løvbjerg|min købmand|abc lavpris|let-køb|salling|irma|nemlig|coop\.dk mad)$/i;
+
+function bindTilbud() {
+  const box = $('#tilbudBox');
+  if (!box) return;
+  const gemt = S.settings.tilbud || {};
+  const tb = {
+    postnr: gemt.postnr || '', by: gemt.by || '', lat: gemt.lat, lng: gemt.lng,
+    radiusKm: gemt.radiusKm || 20, butikker: (gemt.butikker || []).slice()
+  };
+  let alle = [];
+  const valgt = id => tb.butikker.some(b => b.id === id);
+  const tegn = () => {
+    const vis = alle.filter(b => DAGLIGVARE_RE.test(b.navn));
+    for (const b of tb.butikker) if (!vis.some(v => v.id === b.id)) vis.push({ id: b.id, navn: b.navn });
+    $('#tbButikker').innerHTML = vis.length ? vis.map(b =>
+      `<button type="button" class="chip chipbtn${valgt(b.id) ? ' sel' : ''}" data-tbid="${esc(b.id)}" data-tbnavn="${esc(b.navn)}">${valgt(b.id) ? '✓ ' : ''}${esc(b.navn)}</button>`).join('')
+      : '<span class="small muted">Kunne ikke hente butikkerne.</span>';
+    $('#tbAntal').textContent = tb.butikker.length ? '(' + tb.butikker.length + ' valgt)' : '(ingen valgt endnu)';
+    $$('#tbButikker [data-tbid]').forEach(c => c.onclick = () => {
+      const id = c.dataset.tbid;
+      tb.butikker = valgt(id) ? tb.butikker.filter(b => b.id !== id) : tb.butikker.concat({ id, navn: c.dataset.tbnavn });
+      tegn();
+    });
+  };
+  api('/api/tilbud/butikker').then(r => {
+    alle = r.butikker || [];
+    $('#tbAlle').innerHTML = alle.map(b => `<option value="${esc(b.navn)}">`).join('');
+    tegn();
+  }).catch(e => { tegn(); toast('Butikkerne: ' + e.message, true); });
+
+  const andet = $('#tbAndet');
+  andet.onchange = () => {
+    const b = alle.find(x => x.navn.toLowerCase() === andet.value.trim().toLowerCase());
+    if (!b) return toast('Kender ikke en butik ved det navn', true);
+    if (!valgt(b.id)) tb.butikker.push({ id: b.id, navn: b.navn });
+    andet.value = '';
+    tegn();
+  };
+  const postnr = $('#tbPostnr');
+  postnr.oninput = async () => {
+    const v = postnr.value.trim();
+    if (!/^\d{4}$/.test(v)) { if (!v) { tb.postnr = ''; tb.by = ''; tb.lat = tb.lng = null; $('#tbBy').textContent = ''; } return; }
+    $('#tbBy').textContent = '…';
+    try {
+      const r = await api('/api/tilbud/postnr?nr=' + v);
+      Object.assign(tb, { postnr: r.postnr, by: r.by, lat: r.lat, lng: r.lng });
+      $('#tbBy').textContent = r.by;
+    } catch (e) { $('#tbBy').textContent = ''; toast(e.message, true); }
+  };
+  $('#tbRadius').onchange = e => { tb.radiusKm = +e.target.value; };
+  $('#tbSave').onclick = async () => {
+    await saveSettings({ tilbud: JSON.stringify(tb) });
+    tegn();
+  };
+  $('#tbTest').onclick = async () => {
+    const svar = $('#tbTestSvar');
+    if (JSON.stringify(tb.butikker) !== JSON.stringify((S.settings.tilbud || {}).butikker || [])) {
+      svar.textContent = 'Gem først dine butikker.';
+      return;
+    }
+    svar.textContent = 'Henter …';
+    try {
+      const r = await api('/api/tilbud/soeg?q=kylling');
+      const t = (r.tilbud || []).sort((a, b) => (a.pris ?? 1e9) - (b.pris ?? 1e9));
+      svar.textContent = t.length
+        ? `${t.length} tilbud. Billigst: ${t[0].butik} – ${t[0].titel} ${String(t[0].pris).replace('.', ',')} kr`
+        : 'Ingen kylling på tilbud i dine butikker lige nu.';
+    } catch (e) { svar.textContent = '⚠️ ' + e.message; }
+  };
+}
+
+
 boot();
