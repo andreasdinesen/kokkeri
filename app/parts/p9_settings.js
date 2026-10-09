@@ -128,7 +128,10 @@ RENDER.settings = () => {
       <label class="fld"><span>Todo-enhed (fx todo.indkobsliste)</span>
         <input id="haEntity" value="${esc(S.settings.haEntity || '')}" placeholder="todo.…"></label>
     </div>
-    <button class="btn primary" id="haSave">Gem Home Assistant</button>
+    <div class="rowflex">
+      <button class="btn primary" id="haSave">Gem Home Assistant</button>
+      ${S.settings.haSet ? '<button class="btn small danger" id="haClear">Fjern forbindelsen</button>' : ''}
+    </div>
   </div>
 
   <div class="panelbox">
@@ -146,7 +149,10 @@ RENDER.settings = () => {
           <button class="btn small" id="tdLoad" ${S.settings.todoistSet ? '' : 'disabled'}>Hent</button>
         </span></label>
     </div>
-    <button class="btn primary" id="tdSave">Gem Todoist</button>
+    <div class="rowflex">
+      <button class="btn primary" id="tdSave">Gem Todoist</button>
+      ${S.settings.todoistSet ? '<button class="btn small danger" id="tdClear">Fjern forbindelsen</button>' : ''}
+    </div>
   </div>
 
   <div class="panelbox">
@@ -464,6 +470,21 @@ RENDER.settings_bind = () => {
         toast('doda er forbundet ✓');
       } catch (e) { toast('doda: ' + e.message, true); }
     }
+    render();
+  };
+  /* Fjern forbindelsen (v47): tokenet slettes paa serveren, og knappen
+   * forsvinder fra Indkoebslisten. Adresse/projekt ryger med, saa en senere
+   * forbindelse starter forfra. */
+  const haClear = $('#haClear');
+  if (haClear) haClear.onclick = async () => {
+    if (!await confirmBox('Fjern forbindelsen til Home Assistant?', 'Fjern')) return;
+    await saveSettings({ ha_token: '', ha_url: '', ha_entity: '' });
+    render();
+  };
+  const tdClear = $('#tdClear');
+  if (tdClear) tdClear.onclick = async () => {
+    if (!await confirmBox('Fjern forbindelsen til Todoist? Knappen forsvinder fra Indkøbslisten.', 'Fjern')) return;
+    await saveSettings({ todoist_token: '', todoist_project: '' });
     render();
   };
   const dodaClear = $('#dodaClear');

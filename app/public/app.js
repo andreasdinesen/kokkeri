@@ -105,7 +105,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 46;
+const APP_VERSION = 47;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -682,16 +682,28 @@ async function categorizeImported() {
 const SHOP_SECTIONS = ['Frugt & grønt', 'Kød & fisk', 'Mejeri & køl', 'Frost', 'Brød', 'Kolonial', 'Krydderier', 'Drikkevarer', 'Andet'];
 const SECTION_RULES = [
   ['Frugt & grønt', /løg|hvidløg|kartof|gulerod|guleroedder|gulerødder|tomat(?!.*dåse)|agurk|peberfrug|salat|spinat|broccoli|blomkål|squash|aubergine|champignon|svampe|citron|lime|appelsin|æble|banan|bær|avocado|porre|selleri|ingefær|chili|krydderurt|persille|basilikum|koriander|dild|purløg|forårsløg|rødbede|græskar|majs|ærter(?!.*frost)|bønner(?!.*dåse)|kål|frugt/i],
-  ['Kød & fisk', /kylling|okse|svin|hakket|kød|bacon|skinke|pølse|chorizo|lam|kalkun|and(?:ebryst)?|laks|torsk|fisk|reje|tun(?!.*dåse)|muslinge|filet|mørbrad|culotte|entrecote|frikadelle/i],
+  ['Kød & fisk', /kylling|okse|svin|hakket|kød|bacon|skinke|pølse|chorizo|lam|kalkun|(^| )and( |$)|andebryst|andelår|andesteg|laks|torsk|fisk|reje|tun(?!.*dåse)|muslinge|filet|mørbrad|culotte|entrecote|frikadelle/i],
   ['Mejeri & køl', /mælk|fløde|smør(?!rebrød)|ost|yoghurt|skyr|creme fraiche|cremefraiche|æg(?:$|\s)|parmesan|mozzarella|feta|hytteost|kærnemælk|mascarpone|ricotta|halloumi|tortilla(?:pandekage)?|hummus/i],
-  ['Frost', /frost|frossen|frosne|is(?:$|\s)/i],
+  ['Frost', /frost|frossen|frosne|(^| )is( |,|$)/i],     // v47: ikke "flormelis"
   ['Brød', /brød|bolle|baguette|rugbrød|toast|pita|naan|croissant/i],
   ['Krydderier', /salt|peber(?!frug)|paprika(?:pulver)?|spidskommen|kommen|karry|gurkemeje|kanel|kardemomme|muskat|oregano|timian(?:,)?\s*tørret|tørret timian|laurbær|chiliflager|bouillon|fond|krydderi/i],
   ['Drikkevarer', /vand(?:$|\s)|juice|sodavand|øl(?:$|\s)|vin(?:$|\s|,)|rødvin|hvidvin|kaffe|te(?:$|\s)/i],
   ['Kolonial', /mel|sukker|gryn|ris(?:$|\s)|pasta|spaghetti|nudler|olie|eddike|balsamico|dåse|passata|ketchup|sennep|mayo|soja|honning|sirup|chokolade|kakao|nødder|mandler|rosiner|linser|kikærter|kokosmælk|tomatpuré|gær|bagepulver|vanilje|husblas|couscous|bulgur|quinoa|havregryn|müsli|marmelade|peanutbutter|kapers|oliven|ansjos|tortillachips/i]
 ];
+/* v47: Paa dansk staar hovedordet SIDST i et sammensat ord - majsmel er mel,
+ * aeblecidereddike er eddike, kyllingebouillon er bouillon. Disse regler ser
+ * paa ordets ENDE og spoerges foer SECTION_RULES, der ellers fanger forleddet
+ * (majs -> Frugt & groent, kylling -> Koed & fisk). */
+const SECTION_HOVEDORD = [
+  ['Frost', /frost|frossen|frosne|(fløde|vanilje|chokolade|jordbær|lakrids|mælke)is( |,|$)|sorbet/i],
+  ['Kolonial', /(^| )dåser?( |$)/i],               // "1 dåse majs/tomater/tun"
+  ['Krydderier', /(pulver|flager|bouillon|bouillonterning|fond|krydderi|krydderiblanding)( |,|$)|laurbær/i],
+  ['Kolonial', /(mel|melis|eddike|olie|sirup|stivelse|puré|pure|kokosmælk|gryn|chips|marmelade|syltetøj)( |,|$)/i],
+  ['Drikkevarer', /(juice|saft|sodavand|most)( |,|$)/i]
+];
 function guessSection(text) {
   const t = normName(text);
+  for (const [section, re] of SECTION_HOVEDORD) if (re.test(t)) return section;
   for (const [section, re] of SECTION_RULES) if (re.test(t)) return section;
   return '';
 }
@@ -4288,7 +4300,6 @@ RENDER.shopping = () => {
   items.sort((a, b) => sortKey(a).localeCompare(sortKey(b), 'da') ||
     String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
   const open = items.filter(i => !i.done), done = items.filter(i => i.done);
-  const unsorted = open.filter(i => !i.section && !guessSection(i.text)).length;
 
   const visGruppe = shopShowGroup();
   const listHtml = arr => {
@@ -4317,7 +4328,7 @@ RENDER.shopping = () => {
       `<div class="rowflex shoptools">
         <button class="btn" id="shopPrint">🖨️ Print</button>
         <button class="btn" id="shopMerge" ${open.length > 1 ? '' : 'disabled'}>🧮 Læg ens varer sammen</button>
-        ${S.settings.aiKeySet && unsorted ? `<button class="btn" id="shopAiSort">✨ Sortér ${unsorted} med AI</button>` : ''}
+        ${S.settings.aiKeySet && open.length ? `<button class="btn" id="shopAiSort" title="AI gennemgår alle ${open.length} varer og flytter dem, der ligger i en forkert afdeling">✨ Sortér med AI</button>` : ''}
         ${S.settings.haSet ? '<button class="btn" id="shopHa">🏠 Send til Home Assistant</button>' : ''}
         ${S.settings.todoistSet ? '<button class="btn" id="shopTd">✅ Send til Todoist</button>' : ''}
         ${S.settings.dodaSet ? '<button class="btn" id="shopDoda">☑️ Send til doda</button>' : ''}
@@ -4485,33 +4496,51 @@ function printShoppingList() {
   printSheet(`${printLogoHtml()}<h1>Indkøbsliste</h1>${rows}<p class="pdate">${fmtDate(isoDate())}</p>`, 'Indkoebsliste');
 }
 
-/* AI saetter afdeling paa de varer, reglerne ikke kender */
+/* v47: AI GENNEMGAAR HELE LISTEN - ikke kun de varer, reglerne ikke kender.
+ * Reglerne gaetter forkert paa sammensatte ord (flormelis -> Frost foer v47),
+ * og en afdeling, der én gang er gemt paa varen, bliver staaende. Varerne
+ * sendes nummereret (ens tekster og AI'ens stavning kan ikke forvirre
+ * opslaget), og kun de varer, AI'en flytter, gemmes. */
 async function aiSortSections(btn) {
-  const unknown = K('shopItem').filter(i => !i.done && !i.section && !guessSection(i.text));
-  if (!unknown.length) return;
+  const varer = K('shopItem').filter(i => !i.done);
+  if (!varer.length) return;
   btn.disabled = true;
-  btn.textContent = '✨ Sorterer …';
+  btn.textContent = '✨ Gennemgår …';
   try {
-    const sys = `Du sorterer dagligvarer i supermarkeds-afdelinger. Svar KUN med ét JSON-objekt der
-mapper hver vare til præcis én af disse afdelinger: ${JSON.stringify(SHOP_SECTIONS)}.
-Format: {"vare-tekst": "afdeling", ...}`;
-    const r = await api('/api/ai', {
-      body: { system: sys, messages: [{ role: 'user', content: JSON.stringify(unknown.map(i => i.text)) }], maxTokens: 1500 }
-    });
-    const map = parseAiJson(r.text, false);
-    if (!map) throw new Error('AI-svaret kunne ikke læses.' + aiSvarUddrag(r.text));
-    const changed = [];
-    for (const it of unknown) {
-      const sec = map[it.text];
-      if (SHOP_SECTIONS.includes(sec)) { it.section = sec; changed.push(it); }
+    const sys = `Du sorterer dagligvarer i supermarkeds-afdelinger i en dansk butik. Du får en nummereret
+liste med varer og den afdeling, varen ligger i nu. Svar KUN med ét JSON-objekt, der mapper HVERT nummer
+til præcis én af disse afdelinger: ${JSON.stringify(SHOP_SECTIONS)}.
+Tænk på, hvor varen står i butikken: flormelis og majsmel er Kolonial, kyllingebouillon er Krydderier,
+frosne ærter er Frost. Ret de varer, der ligger forkert – behold dem, der ligger rigtigt.
+Format: {"1": "afdeling", "2": "afdeling", ...}`;
+    const flyttet = [];
+    /* 80 ad gangen - en lang liste skal ikke ramme svarets loft */
+    for (let fra = 0; fra < varer.length; fra += 80) {
+      const bid = varer.slice(fra, fra + 80);
+      const liste = bid.map((it, n) => `${n + 1}. ${it.text} (nu: ${shopSectionOf(it)})`).join('\n');
+      const r = await api('/api/ai', {
+        body: { system: sys, messages: [{ role: 'user', content: liste }], maxTokens: Math.min(8192, 400 + bid.length * 20) }
+      });
+      const map = parseAiJson(r.text, false);
+      if (!map || typeof map !== 'object') throw new Error('AI-svaret kunne ikke læses.' + aiSvarUddrag(r.text));
+      bid.forEach((it, n) => {
+        const sec = map[String(n + 1)];
+        if (!SHOP_SECTIONS.includes(sec) || sec === shopSectionOf(it)) return;
+        flyttet.push({ it, til: sec });
+        it.section = sec;
+      });
     }
-    if (changed.length) await saveBulk(changed);
-    toast(`${changed.length} varer sorteret i afdelinger`);
+    if (flyttet.length) await saveBulk(flyttet.map(f => f.it));
+    const vis = flyttet.slice(0, 3).map(f => `${parseShopText(f.it.text).name || f.it.text} → ${f.til}`).join(', ');
+    toast(flyttet.length
+      ? `AI gennemgik ${varer.length} varer og flyttede ${flyttet.length}: ${vis}${flyttet.length > 3 ? ' …' : ''}`
+      : `AI gennemgik ${varer.length} varer – de ligger alle rigtigt`);
   } catch (e) {
     toast('Kunne ikke sortere: ' + e.message, true);
   }
   render();
 }
+
 /* ---------------- Timere ---------------- */
 /* Timerne lever i localStorage (kk_timers), saa de overlever en genindlaesning.
  * {id, label, totalMs, endsAt (epoch-ms), remainMs (ved pause), paused, ringing} */
@@ -5153,7 +5182,10 @@ RENDER.settings = () => {
       <label class="fld"><span>Todo-enhed (fx todo.indkobsliste)</span>
         <input id="haEntity" value="${esc(S.settings.haEntity || '')}" placeholder="todo.…"></label>
     </div>
-    <button class="btn primary" id="haSave">Gem Home Assistant</button>
+    <div class="rowflex">
+      <button class="btn primary" id="haSave">Gem Home Assistant</button>
+      ${S.settings.haSet ? '<button class="btn small danger" id="haClear">Fjern forbindelsen</button>' : ''}
+    </div>
   </div>
 
   <div class="panelbox">
@@ -5171,7 +5203,10 @@ RENDER.settings = () => {
           <button class="btn small" id="tdLoad" ${S.settings.todoistSet ? '' : 'disabled'}>Hent</button>
         </span></label>
     </div>
-    <button class="btn primary" id="tdSave">Gem Todoist</button>
+    <div class="rowflex">
+      <button class="btn primary" id="tdSave">Gem Todoist</button>
+      ${S.settings.todoistSet ? '<button class="btn small danger" id="tdClear">Fjern forbindelsen</button>' : ''}
+    </div>
   </div>
 
   <div class="panelbox">
@@ -5489,6 +5524,21 @@ RENDER.settings_bind = () => {
         toast('doda er forbundet ✓');
       } catch (e) { toast('doda: ' + e.message, true); }
     }
+    render();
+  };
+  /* Fjern forbindelsen (v47): tokenet slettes paa serveren, og knappen
+   * forsvinder fra Indkoebslisten. Adresse/projekt ryger med, saa en senere
+   * forbindelse starter forfra. */
+  const haClear = $('#haClear');
+  if (haClear) haClear.onclick = async () => {
+    if (!await confirmBox('Fjern forbindelsen til Home Assistant?', 'Fjern')) return;
+    await saveSettings({ ha_token: '', ha_url: '', ha_entity: '' });
+    render();
+  };
+  const tdClear = $('#tdClear');
+  if (tdClear) tdClear.onclick = async () => {
+    if (!await confirmBox('Fjern forbindelsen til Todoist? Knappen forsvinder fra Indkøbslisten.', 'Fjern')) return;
+    await saveSettings({ todoist_token: '', todoist_project: '' });
     render();
   };
   const dodaClear = $('#dodaClear');

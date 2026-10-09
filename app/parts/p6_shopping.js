@@ -22,7 +22,6 @@ RENDER.shopping = () => {
   items.sort((a, b) => sortKey(a).localeCompare(sortKey(b), 'da') ||
     String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
   const open = items.filter(i => !i.done), done = items.filter(i => i.done);
-  const unsorted = open.filter(i => !i.section && !guessSection(i.text)).length;
 
   const visGruppe = shopShowGroup();
   const listHtml = arr => {
@@ -51,7 +50,7 @@ RENDER.shopping = () => {
       `<div class="rowflex shoptools">
         <button class="btn" id="shopPrint">🖨️ Print</button>
         <button class="btn" id="shopMerge" ${open.length > 1 ? '' : 'disabled'}>🧮 Læg ens varer sammen</button>
-        ${S.settings.aiKeySet && unsorted ? `<button class="btn" id="shopAiSort">✨ Sortér ${unsorted} med AI</button>` : ''}
+        ${S.settings.aiKeySet && open.length ? `<button class="btn" id="shopAiSort" title="AI gennemgår alle ${open.length} varer og flytter dem, der ligger i en forkert afdeling">✨ Sortér med AI</button>` : ''}
         ${S.settings.haSet ? '<button class="btn" id="shopHa">🏠 Send til Home Assistant</button>' : ''}
         ${S.settings.todoistSet ? '<button class="btn" id="shopTd">✅ Send til Todoist</button>' : ''}
         ${S.settings.dodaSet ? '<button class="btn" id="shopDoda">☑️ Send til doda</button>' : ''}
@@ -219,28 +218,45 @@ function printShoppingList() {
   printSheet(`${printLogoHtml()}<h1>Indkøbsliste</h1>${rows}<p class="pdate">${fmtDate(isoDate())}</p>`, 'Indkoebsliste');
 }
 
-/* AI saetter afdeling paa de varer, reglerne ikke kender */
+/* v47: AI GENNEMGAAR HELE LISTEN - ikke kun de varer, reglerne ikke kender.
+ * Reglerne gaetter forkert paa sammensatte ord (flormelis -> Frost foer v47),
+ * og en afdeling, der én gang er gemt paa varen, bliver staaende. Varerne
+ * sendes nummereret (ens tekster og AI'ens stavning kan ikke forvirre
+ * opslaget), og kun de varer, AI'en flytter, gemmes. */
 async function aiSortSections(btn) {
-  const unknown = K('shopItem').filter(i => !i.done && !i.section && !guessSection(i.text));
-  if (!unknown.length) return;
+  const varer = K('shopItem').filter(i => !i.done);
+  if (!varer.length) return;
   btn.disabled = true;
-  btn.textContent = '✨ Sorterer …';
+  btn.textContent = '✨ Gennemgår …';
   try {
-    const sys = `Du sorterer dagligvarer i supermarkeds-afdelinger. Svar KUN med ét JSON-objekt der
-mapper hver vare til præcis én af disse afdelinger: ${JSON.stringify(SHOP_SECTIONS)}.
-Format: {"vare-tekst": "afdeling", ...}`;
-    const r = await api('/api/ai', {
-      body: { system: sys, messages: [{ role: 'user', content: JSON.stringify(unknown.map(i => i.text)) }], maxTokens: 1500 }
-    });
-    const map = parseAiJson(r.text, false);
-    if (!map) throw new Error('AI-svaret kunne ikke læses.' + aiSvarUddrag(r.text));
-    const changed = [];
-    for (const it of unknown) {
-      const sec = map[it.text];
-      if (SHOP_SECTIONS.includes(sec)) { it.section = sec; changed.push(it); }
+    const sys = `Du sorterer dagligvarer i supermarkeds-afdelinger i en dansk butik. Du får en nummereret
+liste med varer og den afdeling, varen ligger i nu. Svar KUN med ét JSON-objekt, der mapper HVERT nummer
+til præcis én af disse afdelinger: ${JSON.stringify(SHOP_SECTIONS)}.
+Tænk på, hvor varen står i butikken: flormelis og majsmel er Kolonial, kyllingebouillon er Krydderier,
+frosne ærter er Frost. Ret de varer, der ligger forkert – behold dem, der ligger rigtigt.
+Format: {"1": "afdeling", "2": "afdeling", ...}`;
+    const flyttet = [];
+    /* 80 ad gangen - en lang liste skal ikke ramme svarets loft */
+    for (let fra = 0; fra < varer.length; fra += 80) {
+      const bid = varer.slice(fra, fra + 80);
+      const liste = bid.map((it, n) => `${n + 1}. ${it.text} (nu: ${shopSectionOf(it)})`).join('\n');
+      const r = await api('/api/ai', {
+        body: { system: sys, messages: [{ role: 'user', content: liste }], maxTokens: Math.min(8192, 400 + bid.length * 20) }
+      });
+      const map = parseAiJson(r.text, false);
+      if (!map || typeof map !== 'object') throw new Error('AI-svaret kunne ikke læses.' + aiSvarUddrag(r.text));
+      bid.forEach((it, n) => {
+        const sec = map[String(n + 1)];
+        if (!SHOP_SECTIONS.includes(sec) || sec === shopSectionOf(it)) return;
+        flyttet.push({ it, til: sec });
+        it.section = sec;
+      });
     }
-    if (changed.length) await saveBulk(changed);
-    toast(`${changed.length} varer sorteret i afdelinger`);
+    if (flyttet.length) await saveBulk(flyttet.map(f => f.it));
+    const vis = flyttet.slice(0, 3).map(f => `${parseShopText(f.it.text).name || f.it.text} → ${f.til}`).join(', ');
+    toast(flyttet.length
+      ? `AI gennemgik ${varer.length} varer og flyttede ${flyttet.length}: ${vis}${flyttet.length > 3 ? ' …' : ''}`
+      : `AI gennemgik ${varer.length} varer – de ligger alle rigtigt`);
   } catch (e) {
     toast('Kunne ikke sortere: ' + e.message, true);
   }

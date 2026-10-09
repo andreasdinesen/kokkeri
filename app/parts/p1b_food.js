@@ -100,16 +100,28 @@ async function categorizeImported() {
 const SHOP_SECTIONS = ['Frugt & grønt', 'Kød & fisk', 'Mejeri & køl', 'Frost', 'Brød', 'Kolonial', 'Krydderier', 'Drikkevarer', 'Andet'];
 const SECTION_RULES = [
   ['Frugt & grønt', /løg|hvidløg|kartof|gulerod|guleroedder|gulerødder|tomat(?!.*dåse)|agurk|peberfrug|salat|spinat|broccoli|blomkål|squash|aubergine|champignon|svampe|citron|lime|appelsin|æble|banan|bær|avocado|porre|selleri|ingefær|chili|krydderurt|persille|basilikum|koriander|dild|purløg|forårsløg|rødbede|græskar|majs|ærter(?!.*frost)|bønner(?!.*dåse)|kål|frugt/i],
-  ['Kød & fisk', /kylling|okse|svin|hakket|kød|bacon|skinke|pølse|chorizo|lam|kalkun|and(?:ebryst)?|laks|torsk|fisk|reje|tun(?!.*dåse)|muslinge|filet|mørbrad|culotte|entrecote|frikadelle/i],
+  ['Kød & fisk', /kylling|okse|svin|hakket|kød|bacon|skinke|pølse|chorizo|lam|kalkun|(^| )and( |$)|andebryst|andelår|andesteg|laks|torsk|fisk|reje|tun(?!.*dåse)|muslinge|filet|mørbrad|culotte|entrecote|frikadelle/i],
   ['Mejeri & køl', /mælk|fløde|smør(?!rebrød)|ost|yoghurt|skyr|creme fraiche|cremefraiche|æg(?:$|\s)|parmesan|mozzarella|feta|hytteost|kærnemælk|mascarpone|ricotta|halloumi|tortilla(?:pandekage)?|hummus/i],
-  ['Frost', /frost|frossen|frosne|is(?:$|\s)/i],
+  ['Frost', /frost|frossen|frosne|(^| )is( |,|$)/i],     // v47: ikke "flormelis"
   ['Brød', /brød|bolle|baguette|rugbrød|toast|pita|naan|croissant/i],
   ['Krydderier', /salt|peber(?!frug)|paprika(?:pulver)?|spidskommen|kommen|karry|gurkemeje|kanel|kardemomme|muskat|oregano|timian(?:,)?\s*tørret|tørret timian|laurbær|chiliflager|bouillon|fond|krydderi/i],
   ['Drikkevarer', /vand(?:$|\s)|juice|sodavand|øl(?:$|\s)|vin(?:$|\s|,)|rødvin|hvidvin|kaffe|te(?:$|\s)/i],
   ['Kolonial', /mel|sukker|gryn|ris(?:$|\s)|pasta|spaghetti|nudler|olie|eddike|balsamico|dåse|passata|ketchup|sennep|mayo|soja|honning|sirup|chokolade|kakao|nødder|mandler|rosiner|linser|kikærter|kokosmælk|tomatpuré|gær|bagepulver|vanilje|husblas|couscous|bulgur|quinoa|havregryn|müsli|marmelade|peanutbutter|kapers|oliven|ansjos|tortillachips/i]
 ];
+/* v47: Paa dansk staar hovedordet SIDST i et sammensat ord - majsmel er mel,
+ * aeblecidereddike er eddike, kyllingebouillon er bouillon. Disse regler ser
+ * paa ordets ENDE og spoerges foer SECTION_RULES, der ellers fanger forleddet
+ * (majs -> Frugt & groent, kylling -> Koed & fisk). */
+const SECTION_HOVEDORD = [
+  ['Frost', /frost|frossen|frosne|(fløde|vanilje|chokolade|jordbær|lakrids|mælke)is( |,|$)|sorbet/i],
+  ['Kolonial', /(^| )dåser?( |$)/i],               // "1 dåse majs/tomater/tun"
+  ['Krydderier', /(pulver|flager|bouillon|bouillonterning|fond|krydderi|krydderiblanding)( |,|$)|laurbær/i],
+  ['Kolonial', /(mel|melis|eddike|olie|sirup|stivelse|puré|pure|kokosmælk|gryn|chips|marmelade|syltetøj)( |,|$)/i],
+  ['Drikkevarer', /(juice|saft|sodavand|most)( |,|$)/i]
+];
 function guessSection(text) {
   const t = normName(text);
+  for (const [section, re] of SECTION_HOVEDORD) if (re.test(t)) return section;
   for (const [section, re] of SECTION_RULES) if (re.test(t)) return section;
   return '';
 }

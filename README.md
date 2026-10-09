@@ -109,6 +109,13 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v47** (oktober 2026): **»Sortér med AI« tjekker hele listen.** Knappen
+  gennemgår nu alle varer og flytter dem, der ligger i en forkert afdeling – ikke
+  kun dem, Kokkeri ikke kunne placere – og fortæller, hvad den flyttede. Bedre gæt
+  på sammensatte ord: flormelis og majsmel er Kolonial (ikke Frost/Frugt),
+  æblecidereddike er Kolonial, kyllingebouillon Krydderier, vand ikke længere
+  Kød & fisk, frosne ærter Frost og dåsevarer Kolonial. Home Assistant og Todoist
+  har fået *Fjern forbindelsen* ligesom doda.
 - **v46** (oktober 2026): **Indkøbslisten til doda.** Magen til Todoist-knappen:
   under Indstillinger → Integrationer angiver du dodas adresse, en nøgle (scopet
   *capture* er nok), et projekt (standard »Indkøb«) og evt. en kontekst. Knappen
