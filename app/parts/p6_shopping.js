@@ -218,6 +218,19 @@ function printShoppingList() {
   printSheet(`${printLogoHtml()}<h1>Indkøbsliste</h1>${rows}<p class="pdate">${fmtDate(isoDate())}</p>`, 'Indkoebsliste');
 }
 
+/* Afdelingssvaret: {"1": "Kolonial", ...}. Laeses par for par i stedet for som
+ * ét JSON-objekt (v48) - saa et klippet svar, en kommentar efter objektet
+ * eller et manglende komma ikke smider ALT vaek; varer uden svar roeres ikke.
+ * Kun afdelinger fra SHOP_SECTIONS godtages. */
+function afdelingsSvar(text) {
+  const s = String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '');
+  const map = {};
+  for (const m of s.matchAll(/"?(\d{1,3})"?\s*[:=]\s*"([^"\n]{2,40})"/g)) {
+    if (SHOP_SECTIONS.includes(m[2].trim())) map[m[1]] = m[2].trim();
+  }
+  return map;
+}
+
 /* v47: AI GENNEMGAAR HELE LISTEN - ikke kun de varer, reglerne ikke kender.
  * Reglerne gaetter forkert paa sammensatte ord (flormelis -> Frost foer v47),
  * og en afdeling, der én gang er gemt paa varen, bliver staaende. Varerne
@@ -236,17 +249,24 @@ Tænk på, hvor varen står i butikken: flormelis og majsmel er Kolonial, kyllin
 frosne ærter er Frost. Ret de varer, der ligger forkert – behold dem, der ligger rigtigt.
 Format: {"1": "afdeling", "2": "afdeling", ...}`;
     const flyttet = [];
-    /* 80 ad gangen - en lang liste skal ikke ramme svarets loft */
-    for (let fra = 0; fra < varer.length; fra += 80) {
-      const bid = varer.slice(fra, fra + 80);
+    let uset = 0;
+    /* 40 ad gangen med rigeligt loft (v48): 113 varer i ét hug blev klippet
+     * midt i svaret, og saa kunne intet laeses. */
+    for (let fra = 0; fra < varer.length; fra += 40) {
+      const bid = varer.slice(fra, fra + 40);
+      btn.textContent = `✨ Gennemgår ${Math.min(fra + bid.length, varer.length)}/${varer.length} …`;
       const liste = bid.map((it, n) => `${n + 1}. ${it.text} (nu: ${shopSectionOf(it)})`).join('\n');
       const r = await api('/api/ai', {
-        body: { system: sys, messages: [{ role: 'user', content: liste }], maxTokens: Math.min(8192, 400 + bid.length * 20) }
+        body: { system: sys, messages: [{ role: 'user', content: liste }], maxTokens: Math.min(8192, 800 + bid.length * 40), effort: 'low' }
       });
-      const map = parseAiJson(r.text, false);
-      if (!map || typeof map !== 'object') throw new Error('AI-svaret kunne ikke læses.' + aiSvarUddrag(r.text));
+      const map = afdelingsSvar(r.text);
+      if (!Object.keys(map).length) {
+        console.warn('[sortér med AI] svaret kunne ikke læses:', r.stop, r.text);
+        throw new Error((r.stop === 'max_tokens' || r.stop === 'length' ? 'AI-svaret blev skåret af.' : 'AI-svaret kunne ikke læses.') + aiSvarUddrag(r.text));
+      }
       bid.forEach((it, n) => {
         const sec = map[String(n + 1)];
+        if (!sec) { uset++; return; }
         if (!SHOP_SECTIONS.includes(sec) || sec === shopSectionOf(it)) return;
         flyttet.push({ it, til: sec });
         it.section = sec;
@@ -254,9 +274,11 @@ Format: {"1": "afdeling", "2": "afdeling", ...}`;
     }
     if (flyttet.length) await saveBulk(flyttet.map(f => f.it));
     const vis = flyttet.slice(0, 3).map(f => `${parseShopText(f.it.text).name || f.it.text} → ${f.til}`).join(', ');
-    toast(flyttet.length
-      ? `AI gennemgik ${varer.length} varer og flyttede ${flyttet.length}: ${vis}${flyttet.length > 3 ? ' …' : ''}`
-      : `AI gennemgik ${varer.length} varer – de ligger alle rigtigt`);
+    const tjekket = varer.length - uset;
+    toast((flyttet.length
+      ? `AI gennemgik ${tjekket} varer og flyttede ${flyttet.length}: ${vis}${flyttet.length > 3 ? ' …' : ''}`
+      : `AI gennemgik ${tjekket} varer – de ligger alle rigtigt`)
+      + (uset ? ` (${uset} kom ikke med i svaret – tryk igen for at tjekke dem)` : ''));
   } catch (e) {
     toast('Kunne ikke sortere: ' + e.message, true);
   }

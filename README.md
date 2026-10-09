@@ -109,6 +109,12 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v48** (oktober 2026): **»Sortér med AI« virker på lange lister.** Claude tænker,
+  før den svarer, og tænkningen tæller med i svarets loft – med 80+ varer blev
+  svaret klippet over eller kom tomt tilbage (»AI-svaret kunne ikke læses«). Nu
+  får alle AI-kald luft til tænkningen, sorteringen kører med lav tænke-indsats og
+  40 varer ad gangen (med fremdrift på knappen), og et afklippet svar bruges for
+  det, der nåede med, i stedet for at blive kasseret.
 - **v47** (oktober 2026): **»Sortér med AI« tjekker hele listen.** Knappen
   gennemgår nu alle varer og flytter dem, der ligger i en forkert afdeling – ikke
   kun dem, Kokkeri ikke kunne placere – og fortæller, hvad den flyttede. Bedre gæt

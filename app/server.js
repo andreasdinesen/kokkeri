@@ -1258,15 +1258,25 @@ async function aiMessage(body) {
     let text = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '';
     /* raesonnerende lokale modeller (qwen3 m.fl.) pakker taenkning ind i <think>-blokke */
     text = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-    return { text, model: j.model || f.model, usage: j.usage || null };
+    /* stop: 'length' = svaret blev klippet ved max_tokens (v48) */
+    return { text, model: j.model || f.model, usage: j.usage || null,
+      stop: (j.choices && j.choices[0] && j.choices[0].finish_reason) || null };
   }
 
-  /* --- Claude API (standard) --- */
-  const payload = { model: f.model, max_tokens: maxTokens, messages };
+  /* --- Claude API (standard) ---
+   * v48: Nuvaerende Claude-modeller TAENKER som standard, og taenkningen
+   * taeller med i max_tokens. Med frontendens 2.000 brugte modellen hele
+   * loftet paa at taenke over 80 varer: svaret blev klippet - eller var tomt.
+   * Derfor luft til taenkningen oven i det, der bedes om, og `effort: low`
+   * til enkle opgaver (sortering), hvor modellen kender parameteren. */
+  const payload = { model: f.model, max_tokens: Math.min(32000, maxTokens + 8000), messages };
   if (system) payload.system = system;
+  if (['low', 'medium', 'high'].includes(body.effort) && /claude-(opus|sonnet|haiku|fable|mythos)-(5|4-[6-9])/.test(f.model)) {
+    payload.output_config = { effort: body.effort };
+  }
   const j = await aiPost(f, payload);
   const text = (j.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
-  return { text, model: j.model, usage: j.usage || null };
+  return { text, model: j.model, usage: j.usage || null, stop: j.stop_reason || null };
 }
 
 /* ---------------- AI-assistenten (v41) ----------------
