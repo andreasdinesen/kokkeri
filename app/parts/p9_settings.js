@@ -150,6 +150,32 @@ RENDER.settings = () => {
   </div>
 
   <div class="panelbox">
+    <h2 style="margin-top:0">☑️ doda</h2>
+    <p class="small muted">Send indkøbslisten til doda med ét klik fra Indkøbsliste-siden – hver vare bliver en
+      opgave under <i>Next</i> i det projekt, du vælger, med butiksafdeling og opskrift som note.
+      Lav en nøgle i doda under Settings → Keys; scopet <b>capture</b> er nok.
+      Status: ${S.settings.dodaSet ? '<span class="good">forbundet ✓</span>' : '<span class="warn">ikke sat op</span>'}</p>
+    <div class="formgrid">
+      <label class="fld"><span>dodas adresse (fx https://doda.dk)</span>
+        <input id="dodaUrl" value="${esc(S.settings.dodaUrl || '')}" placeholder="https://…" inputmode="url" autocapitalize="none" spellcheck="false"></label>
+      <label class="fld"><span>Nøgle ${S.settings.dodaSet ? '(udfyld kun for at skifte)' : ''}</span>
+        <input id="dodaKey" type="password" autocomplete="off"></label>
+      <label class="fld"><span>Projekt</span>
+        <span class="rowflex">
+          <input id="dodaProject" list="dodaProjList" value="${esc(S.settings.dodaProject || '')}" placeholder="Indkøb" style="flex:1">
+          <datalist id="dodaProjList"></datalist>
+          <button class="btn small" id="dodaLoad" type="button" ${S.settings.dodaSet ? '' : 'disabled'}>Hent</button>
+        </span></label>
+      <label class="fld"><span>Kontekst (valgfri, fx indkøb)</span>
+        <input id="dodaContext" value="${esc(S.settings.dodaContext || '')}" placeholder="fx indkøb" autocapitalize="none"></label>
+    </div>
+    <div class="rowflex">
+      <button class="btn primary" id="dodaSave">Gem doda</button>
+      ${S.settings.dodaSet ? '<button class="btn small danger" id="dodaClear">Fjern forbindelsen</button>' : ''}
+    </div>
+  </div>
+
+  <div class="panelbox">
     <h2 style="margin-top:0">📅 Madplan i din kalender</h2>
     <p class="small muted">Abonnér på madplanen i Apple/Google Kalender med dette link:</p>
     <div class="rowflex">
@@ -406,6 +432,44 @@ RENDER.settings_bind = () => {
     const token = $('#tdToken').value.trim();
     if (token) settings.todoist_token = token;
     await saveSettings(settings);
+    render();
+  };
+
+  $('#dodaLoad').onclick = async () => {
+    const btn = $('#dodaLoad');
+    btn.disabled = true;
+    btn.textContent = 'Henter …';
+    try {
+      const r = await api('/api/doda/projects');
+      $('#dodaProjList').innerHTML = r.projects.map(n => `<option value="${esc(n)}">`).join('');
+      toast(r.projects.length ? `Hentede ${r.projects.length} projekter – vælg ét i feltet` : 'doda har ingen projekter endnu – skriv et navn, så oprettes det');
+    } catch (e) { toast(e.message, true); }
+    btn.disabled = false;
+    btn.textContent = 'Hent';
+  };
+  $('#dodaSave').onclick = async () => {
+    const settings = {
+      doda_url: $('#dodaUrl').value.trim().replace(/\/+$/, ''),
+      doda_project: $('#dodaProject').value.trim().replace(/"/g, ''),
+      doda_context: $('#dodaContext').value.trim()
+    };
+    const key = $('#dodaKey').value.trim();
+    if (key) settings.doda_key = key;
+    await saveSettings(settings);
+    if (S.settings.dodaSet) {
+      /* Proev forbindelsen med det samme - ellers opdages en forkert noegle
+       * foerst ved koekkenbordet. */
+      try {
+        await api('/api/doda/test', { body: {} });
+        toast('doda er forbundet ✓');
+      } catch (e) { toast('doda: ' + e.message, true); }
+    }
+    render();
+  };
+  const dodaClear = $('#dodaClear');
+  if (dodaClear) dodaClear.onclick = async () => {
+    if (!await confirmBox('Fjern forbindelsen til doda?', 'Fjern')) return;
+    await saveSettings({ doda_key: '', doda_url: '' });
     render();
   };
 

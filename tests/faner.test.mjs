@@ -43,7 +43,7 @@ function tegn(admin) {
     RENDER: {},
     S: {
       me: { username: 'proeve', isAdmin: admin, passkeys: [{ id: 'pk1', label: 'Mac', created: '2026-09-16' }] },
-      settings: { logo: 'data:,', aiKeySet: true, aiProvider: 'claude', aiModel: '', haSet: true, todoistSet: true, icalToken: 't' }
+      settings: { logo: 'data:,', aiKeySet: true, aiProvider: 'claude', aiModel: '', haSet: true, todoistSet: true, dodaSet: true, icalToken: 't' }
     },
     app: () => ({ appTitle: 'Kokkeri', defaultServings: 4, timerPresets: [5], categories: ['Suppe'] }),
     esc: s => String(s == null ? '' : s).replace(/[&<>"']/g, c => '&#' + c.charCodeAt(0) + ';'),
@@ -80,7 +80,7 @@ function kort(html) {
 }
 
 /* Afsnittene, som de var foer opdelingen (v34) - alle ti. */
-const ALLE = ['App', '✨ AI-assistent', '🏷️ Tilbud fra eTilbudsavis', '🏠 Home Assistant', '✅ Todoist', '📅 Madplan i din kalender',
+const ALLE = ['App', '✨ AI-assistent', '🏷️ Tilbud fra eTilbudsavis', '🏠 Home Assistant', '✅ Todoist', '☑️ doda', '📅 Madplan i din kalender',
   'Backup & import', '🗑️ Ryd data', 'Min konto', 'Claude-adgang (MCP)', 'Brugere (admin)'];
 const KUN_ADMIN = ['🗑️ Ryd data', 'Brugere (admin)'];
 

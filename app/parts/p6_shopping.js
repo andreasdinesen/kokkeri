@@ -54,6 +54,7 @@ RENDER.shopping = () => {
         ${S.settings.aiKeySet && unsorted ? `<button class="btn" id="shopAiSort">✨ Sortér ${unsorted} med AI</button>` : ''}
         ${S.settings.haSet ? '<button class="btn" id="shopHa">🏠 Send til Home Assistant</button>' : ''}
         ${S.settings.todoistSet ? '<button class="btn" id="shopTd">✅ Send til Todoist</button>' : ''}
+        ${S.settings.dodaSet ? '<button class="btn" id="shopDoda">☑️ Send til doda</button>' : ''}
         <button class="btn" id="shopClearDone" ${done.length ? '' : 'disabled'}>Ryd afkrydsede</button>
         <button class="btn danger" id="shopClearAll" ${items.length ? '' : 'disabled'}>Tøm listen</button>
       </div>`) + `
@@ -153,6 +154,21 @@ RENDER.shopping_bind = () => {
     try {
       const r = await api('/api/todoist/push-shopping', { body: {} });
       toast(`${r.pushed} varer sendt til Todoist` + (r.failed ? ` (${r.failed} fejlede)` : ''));
+    } catch (e) { toast(e.message, true); }
+    render();
+  };
+
+  const doda = $('#shopDoda');
+  if (doda) doda.onclick = async () => {
+    doda.disabled = true;
+    doda.textContent = '☑️ Sender …';
+    try {
+      /* Afdelingen gaettes i browseren (guessSection) - send den med, saa
+       * noten i doda siger "Koed & fisk" ligesom listen her. */
+      const afdelinger = {};
+      for (const i of K('shopItem')) if (!i.done) afdelinger[i.id] = shopSectionOf(i);
+      const r = await api('/api/doda/push-shopping', { body: { afdelinger } });
+      toast(`${r.pushed} varer sendt til doda` + (r.failed ? ` (${r.failed} fejlede)` : ''));
     } catch (e) { toast(e.message, true); }
     render();
   };

@@ -43,7 +43,8 @@ SQLite. **Ingen npm-afhængigheder, ingen CDN – alt kører lokalt.**
   et måltid med ét — og byt en ret ud uden at lægge den ind forfra.
   AI'en kan foreslå en hel uges madplan ud fra dine egne opskrifter.
 - **Indkøbsliste**: tilføj en hel opskrift (skaleret) eller hele ugens madplan
-  med ét klik, grupperet pr. opskrift, afkrydsning, print.
+  med ét klik, grupperet pr. opskrift, afkrydsning, print. Send den videre til
+  Home Assistant, Todoist eller doda med ét klik.
 - **Timere**: flere navngivne køkkentimere med forvalg, pause og +1 min – de
   overlever sideskift og genindlæsning, ringer med lyd og notifikation.
   Klik på et minuttal inde i en fremgangsmåde for at starte en timer direkte.
@@ -108,6 +109,11 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v46** (oktober 2026): **Indkøbslisten til doda.** Magen til Todoist-knappen:
+  under Indstillinger → Integrationer angiver du dodas adresse, en nøgle (scopet
+  *capture* er nok), et projekt (standard »Indkøb«) og evt. en kontekst. Knappen
+  *☑️ Send til doda* på Indkøbslisten gør hver vare til en opgave under *Next* med
+  butiksafdeling og opskrift som note. Forbindelsen prøves, når du gemmer.
 - **v45** (oktober 2026): **Assistenten husker samtalerne.** Samtalen gemmes på
   serveren efter hvert spørgsmål og svar, så en genindlæsning ikke sletter den –
   panelet åbner med den seneste igen. *🕘* viser tidligere samtaler (åbn og skriv

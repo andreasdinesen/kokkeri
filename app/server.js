@@ -507,10 +507,12 @@ function validPassword(p) { return typeof p === 'string' && p.length >= 8 && p.l
  * med parametre; `logo` er et data-URL-billede. `ai_key` er Claude API-nøglen –
  * den gemmes her, men returneres ALDRIG til frontenden (kun aiKeySet: true). */
 const SETTING_KEYS = new Set(['app', 'logo', 'allow_registration', 'ai_key', 'ai_model',
-  'ai_provider', 'ai_url', 'ha_url', 'ha_token', 'ha_entity', 'todoist_token', 'todoist_project', 'tilbud']);
+  'ai_provider', 'ai_url', 'ha_url', 'ha_token', 'ha_entity', 'todoist_token', 'todoist_project', 'tilbud',
+  'doda_url', 'doda_key', 'doda_project', 'doda_context']);
 const SETTING_MAX = { app: 200000, logo: 900000, allow_registration: 4, ai_key: 300, ai_model: 100,
   ai_provider: 20, ai_url: 300,
-  ha_url: 300, ha_token: 2000, ha_entity: 200, todoist_token: 200, todoist_project: 120, tilbud: 20000 };
+  ha_url: 300, ha_token: 2000, ha_entity: 200, todoist_token: 200, todoist_project: 120, tilbud: 20000,
+  doda_url: 300, doda_key: 300, doda_project: 120, doda_context: 120 };
 
 /* v33: "Frokost" kom til som standard-kategori. Frontenden fletter standarden
  * med de GEMTE indstillinger, og den gemte liste vinder - saa en installation,
@@ -569,6 +571,11 @@ function appSettingsJson() {
   out.haSet = !!(setting('ha_url', '') && setting('ha_token', '') && setting('ha_entity', ''));
   out.todoistProject = setting('todoist_project', '');
   out.todoistSet = !!setting('todoist_token', '');
+  /* doda (v46): noeglen forlader aldrig serveren - kun om den er sat. */
+  out.dodaUrl = setting('doda_url', '');
+  out.dodaProject = setting('doda_project', '');
+  out.dodaContext = setting('doda_context', '');
+  out.dodaSet = !!(setting('doda_url', '') && setting('doda_key', ''));
   /* Tilbud (v44): postnummer, radius og butikker - intet hemmeligt. */
   out.tilbud = tilbudOpsaetning();
   return out;
@@ -925,6 +932,58 @@ Findes der ingen opskrift, svar {"error":"ingen"}. Oversæt intet.`,
   crawlJob.cookie = '';       // hemmeligheden lever ikke laengere end jobbet
   crawlJob.userAgent = '';
   crawlJob.urls = [];
+}
+
+/* ---------------- doda (v46) ----------------
+ * Kald svarer aldrig med en undtagelse, men { ok, data } / { ok: false, kode,
+ * besked } - et netvaerksbrud og et afslag er to ting. En doda, der er nede, er
+ * ikke en fejl i Kokkeri: `[doda] advarsel:`, aldrig `[fejl]` (panelets vagt). */
+function dodaBase(v) {
+  const s = String(v || '').trim();
+  if (!s) return '';
+  try {
+    const u = new URL(/^https?:\/\//i.test(s) ? s : 'https://' + s);
+    if (!/^https?:$/.test(u.protocol) || !u.hostname || u.username || u.password) return '';
+    return u.protocol + '//' + u.host + u.pathname.replace(/\/+$/, '');
+  } catch (e) { return ''; }
+}
+
+async function dodaKald(base, key, metode, sti, krop) {
+  let svar;
+  try {
+    svar = await fetch(base + sti, {
+      method: metode,
+      headers: Object.assign({ Authorization: 'Bearer ' + key }, krop === undefined ? {} : { 'Content-Type': 'application/json' }),
+      body: krop === undefined ? undefined : JSON.stringify(krop),
+      signal: AbortSignal.timeout(10000)
+    });
+  } catch (e) {
+    console.log('[doda] advarsel: ' + metode + ' ' + sti + ': ' + (e && e.message));
+    return { ok: false, kode: 'unreachable', besked: 'Kunne ikke nå doda på ' + base };
+  }
+  let data = null;
+  try { data = await svar.json(); } catch (e) { /* tomt svar */ }
+  if (svar.status === 403 && data && data.error === 'wrong_scope') return { ok: false, kode: 'wrong_scope', besked: data.message || 'Nøglen har ikke adgang til det' };
+  if (svar.status === 401 || svar.status === 403) return { ok: false, kode: 'bad_key', besked: 'doda afviste nøglen – tjek at den er kopieret rigtigt' };
+  if (!svar.ok) return { ok: false, kode: 'error', besked: (data && data.message) || 'doda svarede ' + svar.status };
+  return { ok: true, data: data || {} };
+}
+
+/* Varen som dodas fangsttekst. dodas markoerer (# @ ! ~ / : > %) med mellemrum
+ * eller linjestart foran ville blive laest som kontekst, projekt, dato osv. -
+ * de bliver til lignende tegn. "1/2 dl" roeres ikke (tegn foran skraastregen). */
+const DODA_LIGNER = { '#': '＃', '@': '＠', '!': 'ǃ', '~': '∼', '/': '∕', ':': '꞉', '>': '›', '%': '％' };
+function dodaRens(t) {
+  return String(t || '').replace(/[\r\n]+/g, ' ')
+    .replace(/(^|\s)([#@!~/:>%])/g, (m, foer, tegn) => foer + DODA_LIGNER[tegn])
+    .replace(/^[+*]\s*/, '').replace(/\s+/g, ' ').trim();
+}
+function dodaOpgaveTekst(it, projekt, kontekster) {
+  const titel = dodaRens(it.text).slice(0, 200) || 'Vare';
+  const hale = (projekt ? ' @"' + projekt + '"' : '') + kontekster.map(k => ' #' + k).join('') + ' >next';
+  /* butiksafdeling/opskrift som note - godt naar man staar i butikken */
+  const note = [it.section, it.group].filter(Boolean).map(dodaRens).join(' · ');
+  return titel + hale + (note ? '\n' + note.slice(0, 300) : '');
 }
 
 /* ---------------- tilbud fra eTilbudsavis (v44) ----------------
@@ -2326,6 +2385,56 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
         if (!ok) return err(res, lastStatus === 401 ? 401 : 502, 'Kunne ikke sende til Todoist: ' + lastErr);
         return send(res, 200, { pushed: ok, failed });
       }
+    }
+
+    /* ---- doda (v46) ----
+     * Samme knap som Todoist: hver aaben vare bliver en opgave i doda via
+     * POST /api/v1/capture, som en noegle med det smalleste scope (`capture`)
+     * maa. Teksten er dodas fangstsprog: `vare @"Projekt" #kontekst >next`,
+     * og afdeling/opskrift paa linjen under bliver opgavens note. Samme
+     * moenster som qlk's doda-bro (qlk/app/doda.js). */
+    if (p.startsWith('/api/doda/')) {
+      const base = dodaBase(setting('doda_url', ''));
+      const key = setting('doda_key', '');
+      if (!base || !key) return err(res, 400, 'doda er ikke sat op – angiv adresse og nøgle under Indstillinger');
+
+      if (p === '/api/doda/test' && req.method === 'POST') {
+        const r = await dodaKald(base, key, 'GET', '/api/v1/state');
+        /* En capture-noegle maa ikke laese - men den kan oprette, og det er alt, vi skal. */
+        if (r.ok || r.kode === 'wrong_scope') return send(res, 200, { ok: true, kanLaese: r.ok });
+        return err(res, r.kode === 'bad_key' ? 401 : 502, r.besked);
+      }
+      if (p === '/api/doda/projects' && req.method === 'GET') {
+        const r = await dodaKald(base, key, 'GET', '/api/v1/projects');
+        if (r.kode === 'wrong_scope') return err(res, 403, 'Nøglen må kun oprette opgaver – skriv projektets navn i stedet');
+        if (!r.ok) return err(res, r.kode === 'bad_key' ? 401 : 502, r.besked);
+        const liste = (r.data.projects || []).filter(x => x && x.name && !x.deleted_at && x.status !== 'done' && x.status !== 'dropped')
+          .map(x => String(x.name)).sort((a, b) => a.localeCompare(b, 'da'));
+        return send(res, 200, { projects: [...new Set(liste)] });
+      }
+      if (p === '/api/doda/push-shopping' && req.method === 'POST') {
+        const items = q.itemsByKind.all('shopItem').map(r => JSON.parse(r.data)).filter(i => !i.done);
+        if (!items.length) return err(res, 400, 'Indkøbslisten er tom');
+        const projekt = String(setting('doda_project', '') || 'Indkøb').replace(/"/g, '').trim();
+        const kontekster = String(setting('doda_context', '')).split(/[\s,]+/)
+          .map(k => k.replace(/^[#@]+/, '').replace(/[^\p{L}\p{N}_-]/gu, '')).filter(Boolean).slice(0, 5);
+        let ok = 0, failed = 0, sidst = null;
+        for (const it of items.slice(0, 200)) {
+          const afd = body.afdelinger && typeof body.afdelinger === 'object' ? String(body.afdelinger[it.id] || '').slice(0, 60) : '';
+          const r = await dodaKald(base, key, 'POST', '/api/v1/capture',
+            { text: dodaOpgaveTekst(Object.assign({}, it, { section: it.section || afd }), projekt, kontekster), createNew: true });
+          if (r.ok) ok++;
+          else {
+            failed++;
+            sidst = r;
+            if (r.kode === 'bad_key' || r.kode === 'wrong_scope' || r.kode === 'unreachable') break;
+          }
+          if (failed >= 3 && ok === 0) break;
+        }
+        if (!ok) return err(res, sidst && sidst.kode === 'bad_key' ? 401 : 502, 'Kunne ikke sende til doda: ' + (sidst ? sidst.besked : 'ukendt fejl'));
+        return send(res, 200, { pushed: ok, failed });
+      }
+      return err(res, 404, 'Ukendt doda-kald');
     }
 
     /* ---- adgangsnoegler og forbundne apps (MCP) ----
