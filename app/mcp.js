@@ -52,6 +52,22 @@ const RAAVARE_GRUPPER = [
  * HOLD DEN I SYNC med frontenden, samme aftale som RAAVARE_GRUPPER. */
 const FROKOST_RE = /frokost|madpakke|madkasse|brunch|smørrebrød|sandwich|\bwrap\b|panini|\bpita\b|toast|croque|æggekage|omelet|frittata|tapas|\bbowl\b|quiche|let ret|letret|mellemmåltid/;
 
+/* Indholdsfelterne i opskriftens original (v43). HOLD I SYNC med
+ * ORIGINAL_FELTER i app/parts/p4_recipes.js. */
+const ORIGINAL_FELTER = ['title', 'description', 'servings', 'prepMin', 'cookMin', 'ingredients', 'instructions', 'notes'];
+const udsnit = r => {
+  const o = {};
+  for (const k of ORIGINAL_FELTER) {
+    const v = r[k];
+    o[k] = Array.isArray(v) ? v.slice() : (v == null ? (k === 'ingredients' || k === 'instructions' ? [] : '') : v);
+  }
+  return o;
+};
+const noegle = o => JSON.stringify(ORIGINAL_FELTER.map(k => {
+  const v = o[k];
+  return Array.isArray(v) ? v.map(l => String(l).trim()) : String(v == null ? '' : v).trim();
+}));
+
 const norm = s => String(s || '').toLowerCase().replace(/[^a-zæøå0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 
 function opret(srv) {
@@ -387,6 +403,9 @@ function opret(srv) {
         const r = srv.getItem(String(a.id || ''));
         if (!r || r.kind !== 'recipe') return { fejl: 'Ingen opskrift med det id.' };
         const linjeliste = v => (Array.isArray(v) ? v : []).map(s => String(s).trim()).filter(Boolean).slice(0, 200);
+        /* Originalen (v43): samme regel som huskOriginal() i p4_recipes.js -
+         * foerste rettelse af INDHOLDET gemmer udgaven, som den var. */
+        const foer = r.original ? null : udsnit(r);
         if (a.title !== undefined) r.title = String(a.title).trim().slice(0, 200) || r.title;
         if (a.description !== undefined) r.description = String(a.description).slice(0, 2000);
         if (a.ingredients !== undefined) r.ingredients = linjeliste(a.ingredients);
@@ -401,6 +420,7 @@ function opret(srv) {
         if (a.book !== undefined) r.book = String(a.book).trim().slice(0, 200);
         if (a.author !== undefined) r.bookAuthor = String(a.author).trim().slice(0, 200);
         if (a.page !== undefined) r.bookPage = String(a.page).trim().slice(0, 20);
+        if (foer && noegle(foer) !== noegle(udsnit(r))) r.original = Object.assign(foer, { savedAt: new Date().toISOString() });
         r.updatedAt = new Date().toISOString();
         if (!srv.gemItem(r)) return { fejl: 'Kunne ikke gemme ændringen.' };
         return { tekst: `Opdateret "${r.title}" [${r.id}]`, data: kort(r) };

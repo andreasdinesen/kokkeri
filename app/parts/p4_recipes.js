@@ -462,6 +462,7 @@ RENDER.recipeDetail = () => {
       <button class="btn" id="planBtn">📅 Til madplan</button>
       <button class="btn" id="printBtn">🖨️ Print</button>
       <button class="btn" id="editBtn">✏️ Redigér</button>
+      ${r.original ? '<button class="btn" id="origBtn" title="Opskriften er rettet – se originalen eller ændringerne">📜 Original</button>' : ''}
     </div></div>
 
   <div class="rowflex" style="margin:6px 0 14px">
@@ -508,6 +509,8 @@ RENDER.recipeDetail_bind = () => {
   if (!r || r.partial) return;             // venter stadig paa resten af opskriften
   $('#backToList').onclick = e => { e.preventDefault(); S.detailServings = null; goto('recipes'); };
   $('#editBtn').onclick = () => recipeModal(r);
+  const orig = $('#origBtn');
+  if (orig) orig.onclick = () => originalModal(r);
   $('#cookBtn').onclick = () => openCookMode(r);
   $('#printBtn').onclick = () => printRecipe(r);
   const detBook = $('#detBook');
@@ -537,7 +540,9 @@ RENDER.recipeDetail_bind = () => {
   const metric = $('#metricBtn');
   if (metric) metric.onclick = async () => {
     if (!await confirmBox('Omregn alle amerikanske mål (cups, oz, lbs, °F …) til metrisk i denne opskrift? Ændringen gemmes.', 'Omregn')) return;
+    const foer = originalUdsnit(r);
     convertRecipeToMetric(r);
+    huskOriginal(r, foer);
     await saveItem(r);
     render();
   };
@@ -910,8 +915,9 @@ function recipeModal(r, prefill) {
       goto('recipes');
     };
     m.querySelector('#rmSave').onclick = async () => {
+      if (!m.querySelector('#rmTitle').value.trim()) return toast('Opskriften skal have en titel', true);
+      const foer = isNew ? null : originalUdsnit(d);
       d.title = m.querySelector('#rmTitle').value.trim();
-      if (!d.title) return toast('Opskriften skal have en titel', true);
       d.category = m.querySelector('#rmCat').value;
       d.description = m.querySelector('#rmDesc').value.trim();
       d.servings = parseInt(m.querySelector('#rmServ').value, 10) || null;
@@ -923,6 +929,7 @@ function recipeModal(r, prefill) {
       d.notes = m.querySelector('#rmNotes').value.trim();
       d.url = m.querySelector('#rmUrl').value.trim();
       Object.assign(d, laesBogFelter(m, 'rm'));
+      if (foer) huskOriginal(d, foer);
       closeModal();
       /* billedet gemmes som sit eget item - saa opskriften selv bliver ved med
        * at vaere et par kilobyte og kan sendes med i listen */
@@ -930,6 +937,128 @@ function recipeModal(r, prefill) {
       else if (nytBillede === '') await deleteRecipeImage(d);
       await saveItem(d);
       goto('recipeDetail', d.id);
+    };
+  }, true);
+}
+
+/* ---------------- originalen (v43) ----------------
+ * Foerste gang en opskrift rettes, gemmes et oejebliksbillede af indholdet,
+ * som det saa ud FOER rettelsen (r.original). Det roeres aldrig igen ved senere
+ * rettelser - det er udgangspunktet (fx krondildpandekager -> baalpandekager).
+ * Kun indholdsfelterne: favorit, stjerner, tags og bog er ikke "opskriften".
+ * HOLD ORIGINAL_FELTER I SYNC med samme liste i app/mcp.js (update_recipe). */
+const ORIGINAL_FELTER = ['title', 'description', 'servings', 'prepMin', 'cookMin', 'ingredients', 'instructions', 'notes'];
+
+function originalUdsnit(r) {
+  const o = {};
+  for (const k of ORIGINAL_FELTER) {
+    const v = r[k];
+    o[k] = Array.isArray(v) ? v.slice() : (v == null ? (k === 'ingredients' || k === 'instructions' ? [] : '') : v);
+  }
+  return o;
+}
+const originalNoegle = o => JSON.stringify(ORIGINAL_FELTER.map(k => {
+  const v = o[k];
+  return Array.isArray(v) ? v.map(l => String(l).trim()) : String(v == null ? '' : v).trim();
+}));
+function huskOriginal(r, foer) {
+  if (r.original || !foer) return;
+  if (originalNoegle(foer) === originalNoegle(originalUdsnit(r))) return;   // intet indhold aendret
+  r.original = Object.assign(foer, { savedAt: new Date().toISOString() });
+}
+
+/* Linje-diff (laengste faelles delfoelge). Opskrifter er korte, saa n*m er fint.
+ * -> [{ t: ' '|'-'|'+', l }] */
+function linjeDiff(a, b) {
+  a = (a || []).map(String); b = (b || []).map(String);
+  const n = a.length, m = b.length;
+  const L = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) {
+    L[i][j] = a[i].trim() === b[j].trim() ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  }
+  const ud = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i].trim() === b[j].trim()) { ud.push({ t: ' ', l: b[j] }); i++; j++; }
+    else if (L[i + 1][j] >= L[i][j + 1]) ud.push({ t: '-', l: a[i++] });
+    else ud.push({ t: '+', l: b[j++] });
+  }
+  while (i < n) ud.push({ t: '-', l: a[i++] });
+  while (j < m) ud.push({ t: '+', l: b[j++] });
+  return ud;
+}
+function diffListeHtml(diff) {
+  if (!diff.some(d => d.t !== ' ')) return '<p class="small muted">Uændret.</p>';
+  return `<ul class="difliste">${diff.map(d => `<li class="dif${d.t === '-' ? ' ud' : d.t === '+' ? ' ind' : ''}">
+    <span class="difmark">${d.t === '-' ? '−' : d.t === '+' ? '+' : ''}</span>${esc(String(d.l).replace(/^##\s*/, ''))}</li>`).join('')}</ul>`;
+}
+
+function aendringerHtml(o, r) {
+  const felt = (navn, fra, til, fmt) => {
+    const f = fmt || (v => v == null || v === '' ? '–' : String(v));
+    return String(fra == null ? '' : fra).trim() === String(til == null ? '' : til).trim() ? ''
+      : `<p class="difelt"><strong>${navn}:</strong> <span class="dif ud">${esc(f(fra))}</span> → <span class="dif ind">${esc(f(til))}</span></p>`;
+  };
+  const min = v => (v ? fmtMin(v) : '–');
+  const felter = felt('Titel', o.title, r.title) + felt('Portioner', o.servings, r.servings)
+    + felt('Forberedelse', o.prepMin, r.prepMin, min) + felt('Tilberedning', o.cookMin, r.cookMin, min)
+    + felt('Beskrivelse', o.description, r.description);
+  const noter = String(o.notes || '').trim() === String(r.notes || '').trim() ? ''
+    : `<h3>Noter</h3>${diffListeHtml(linjeDiff(String(o.notes || '').split('\n').filter(Boolean), String(r.notes || '').split('\n').filter(Boolean)))}`;
+  return `${felter}
+    <h3>Ingredienser</h3>${diffListeHtml(linjeDiff(o.ingredients, r.ingredients))}
+    <h3>Fremgangsmåde</h3>${diffListeHtml(linjeDiff(o.instructions, r.instructions))}
+    ${noter}`;
+}
+
+function originalVisningHtml(o) {
+  /* Samme opstilling som opskriftssiden - bare uden skalering og timer-links. */
+  const ings = (o.ingredients || []).map(l => /^##/.test(l)
+    ? `<li style="border:0;font-weight:700;color:var(--amber);padding-top:12px">${esc(l.replace(/^##\s*/, ''))}</li>`
+    : `<li>${esc(l)}</li>`).join('');
+  const steps = (o.instructions || []).map(l => /^##/.test(l)
+    ? `<li class="stepsec">${esc(l.replace(/^##\s*/, ''))}</li>` : `<li>${esc(l)}</li>`).join('');
+  return `<h3 style="margin-top:4px">${esc(o.title || '')}</h3>
+    <p class="small muted">${[o.servings ? o.servings + ' portioner' : '', o.prepMin ? 'forberedelse ' + fmtMin(o.prepMin) : '',
+      o.cookMin ? 'tilberedning ' + fmtMin(o.cookMin) : ''].filter(Boolean).join(' · ')}</p>
+    ${o.description ? `<p class="muted">${esc(o.description)}</p>` : ''}
+    <h3>Ingredienser</h3><ul class="ings">${ings || '<li class="muted">–</li>'}</ul>
+    <h3>Fremgangsmåde</h3><ol class="steps">${steps || '<li class="muted">–</li>'}</ol>
+    ${o.notes ? `<h3>Noter</h3><p style="white-space:pre-wrap">${esc(o.notes)}</p>` : ''}`;
+}
+
+function originalModal(r, fane) {
+  const o = r.original;
+  if (!o) return;
+  const aktiv = fane === 'original' ? 'original' : 'aendringer';
+  openModal(`<h2>📜 Originalen</h2>
+    <p class="small muted" style="margin:0">Sådan så opskriften ud, før den blev rettet første gang
+      (${esc(fmtDate(o.savedAt))}). Senere rettelser rører ikke originalen.</p>
+    <div class="faner" role="tablist">
+      <button class="fanebtn${aktiv === 'aendringer' ? ' on' : ''}" data-ofane="aendringer" role="tab">Ændringer</button>
+      <button class="fanebtn${aktiv === 'original' ? ' on' : ''}" data-ofane="original" role="tab">Original</button>
+    </div>
+    <div class="origindhold">${aktiv === 'original' ? originalVisningHtml(o) : aendringerHtml(o, r)}</div>
+    <div class="actions">
+      <button class="btn danger" id="origGendan" style="margin-right:auto" title="Erstat den nuværende udgave med originalen">↩︎ Gendan originalen</button>
+      <button class="btn" id="origGlem" title="Den nuværende udgave bliver den nye original">Glem originalen</button>
+      <button class="btn primary" id="origLuk">Luk</button>
+    </div>`, m => {
+    m.querySelectorAll('[data-ofane]').forEach(b => b.onclick = () => originalModal(r, b.dataset.ofane));
+    m.querySelector('#origLuk').onclick = closeModal;
+    m.querySelector('#origGendan').onclick = async () => {
+      if (!await confirmBox(`Gendan originalen af "${r.title}"? Dine rettelser forsvinder.`, 'Gendan')) return;
+      for (const k of ORIGINAL_FELTER) r[k] = Array.isArray(o[k]) ? o[k].slice() : (o[k] === '' && /Min$|servings/.test(k) ? null : o[k]);
+      delete r.original;
+      S.detailServings = null;
+      await saveItem(r);
+      render();
+    };
+    m.querySelector('#origGlem').onclick = async () => {
+      if (!await confirmBox('Glem originalen? Den nuværende udgave bliver udgangspunktet næste gang du retter.', 'Glem')) return;
+      delete r.original;
+      await saveItem(r);
+      render();
     };
   }, true);
 }

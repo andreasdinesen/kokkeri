@@ -29,6 +29,9 @@ SQLite. **Ingen npm-afhængigheder, ingen CDN – alt kører lokalt.**
   eller en egen AI-server med en model, der kan se billeder.
 - **AI-fallback ved import**: har siden ingen maskinlæsbare data, kan AI'en
   læse sideteksten og bygge opskriften (kræver Claude API-nøgle).
+- **Originalen** 📜: retter du i en opskrift, gemmes udgaven fra før. Se
+  ændringerne linje for linje eller hele originalen – og gendan den, hvis du
+  fortryder.
 - **Portions-skalering**: skru op/ned for portioner – mængderne regnes om
   (forstår 1,5 · 1½ · ¾ · "2-3").
 - **Kogetilstand**: fuldskærm, ét trin ad gangen med stor skrift,
@@ -102,6 +105,12 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v43** (oktober 2026): **Originalen gemmes.** Første gang du retter i en
+  opskrift, gemmer Kokkeri udgaven fra før – senere rettelser rører den ikke. Knappen
+  *📜 Original* på opskriften viser **ændringerne** linje for linje (fjernet i rødt,
+  nyt i grønt) eller hele **originalen**, og du kan gendanne den eller glemme den.
+  Kun indholdet tæller (titel, portioner, tider, ingredienser, fremgangsmåde,
+  noter) – ikke stjerner, favorit eller tags. Gælder også rettelser via MCP.
 - **v42** (oktober 2026): **Assistenten kan tilføje.** Bed den om at lægge en ret
   på madplanen ("kylling i karry i morgen") eller sætte varer – eller alle
   ingredienserne fra en opskrift – på indkøbslisten. Den kan kun tilføje, ikke
