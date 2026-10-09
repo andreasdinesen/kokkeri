@@ -1060,14 +1060,19 @@ async function aiMessage(body) {
 
 /* ---------------- AI-assistenten (v41) ----------------
  * Panelet i hoejre side. Modellen faar MCP-serverens LAESE-vaerktoejer
- * (search_recipes, get_recipe, what_can_i_cook, get_meal_plan, get_shopping_list),
+ * (search_recipes, get_recipe, what_can_i_cook, get_meal_plan, get_shopping_list)
+ * og fra v42 to TILFOEJ-vaerktoejer (add_to_meal_plan, add_to_shopping_list),
  * saa den kan soege i HELE biblioteket og laese opskrifterne fuldt ud - i stedet
  * for en titelliste i systemprompten, som blev klippet ved 20.000 tegn.
  * Vaerktoejerne er de samme objekter som /mcp bruger: én implementering.
- * Intet skrives herfra - skrive-vaerktoejerne er bevidst udeladt.
+ * De to skrivende kun TILFOEJER - intet kan slettes eller overskrives herfra,
+ * og create_recipe/update_recipe er bevidst udeladt. De koeres uden
+ * godkendelse; panelet viser bagefter, hvad der blev lagt ind, og svaret
+ * fortaeller frontenden, hvilke datatyper der skal hentes igen (`aendret`).
  * Samtalen er tilstandsloes: frontenden sender teksthistorikken hver gang. */
 const AI_MAKS_RUNDER = 8;
-const aiVaerktoejer = () => mcp.VAERKTOEJER.filter(v => v.scope === 'read');
+const AI_SKRIVER = { add_to_meal_plan: 'planEntry', add_to_shopping_list: 'shopItem' };
+const aiVaerktoejer = () => mcp.VAERKTOEJER.filter(v => v.scope === 'read' || AI_SKRIVER[v.name]);
 
 function aiAssistentSystem(kontekst) {
   const k = kontekst && typeof kontekst === 'object' ? kontekst : {};
@@ -1091,6 +1096,10 @@ Brug værktøjerne til at slå op i biblioteket – gæt aldrig på, hvad det in
 - get_recipe læser en hel opskrift (ingredienser, fremgangsmåde, noter). Læs opskriften, før du svarer
   på spørgsmål om dens indhold.
 - get_meal_plan og get_shopping_list viser madplanen og indkøbslisten.
+- add_to_meal_plan lægger en opskrift (recipe_id) eller en fritekst-ret på madplanen på en dato.
+  "I morgen", "på fredag" osv. regnes ud fra datoen i dag. Tjek madplanen først, hvis dagen måske er optaget.
+- add_to_shopping_list tilføjer varer – med recipe_id kommer alle opskriftens ingredienser med.
+  Brug kun de to, når brugeren beder om det, og sig bagefter kort, hvad du har lagt ind.
 
 Foreslå brugerens EGNE opskrifter frem for at skrive nye. Henvis altid til en opskrift som et link
 i formatet [Titel](/opskrift/<id>) – fx [Lasagne](/opskrift/abc123) – så kan brugeren klikke direkte til den.
@@ -1098,12 +1107,14 @@ Skriv kun en ny opskrift, hvis biblioteket ikke har noget passende, eller bruger
 så med tydelige afsnit "Ingredienser:" og "Fremgangsmåde:", så den kan gemmes med ét klik.`;
 }
 
-function aiKoerVaerktoej(navn, input) {
+function aiKoerVaerktoej(navn, input, aendret) {
   const v = aiVaerktoejer().find(x => x.name === navn);
   if (!v) return { tekst: 'Ukendt værktøj: ' + navn, fejl: true };
   try {
     const r = v.kald(input && typeof input === 'object' ? input : {});
-    return r.fejl ? { tekst: String(r.fejl), fejl: true } : { tekst: String(r.tekst || 'Færdig.').slice(0, 30000) };
+    if (r.fejl) return { tekst: String(r.fejl), fejl: true };
+    if (AI_SKRIVER[navn]) aendret.add(AI_SKRIVER[navn]);
+    return { tekst: String(r.tekst || 'Færdig.').slice(0, 30000) };
   } catch (e) {
     console.error('[fejl] ai-vaerktoej ' + navn + ': ' + (e && e.stack ? e.stack : e));
     return { tekst: 'Værktøjet fejlede.', fejl: true };
@@ -1116,6 +1127,7 @@ async function aiAssistent(body) {
   const system = aiAssistentSystem(body.kontekst);
   const tekster = [];
   const kald = [];
+  const aendret = new Set();
   let faerdig = false;
   for (let runde = 0; runde < AI_MAKS_RUNDER && !faerdig; runde++) {
     if (f.provider === 'openai') {
@@ -1134,8 +1146,9 @@ async function aiAssistent(body) {
         let input = {};
         try { input = JSON.parse((c.function && c.function.arguments) || '{}'); } catch (e) { input = {}; }
         const navn = c.function && c.function.name;
-        kald.push({ name: navn, input });
-        beskeder.push({ role: 'tool', tool_call_id: c.id, content: aiKoerVaerktoej(navn, input).tekst });
+        const r = aiKoerVaerktoej(navn, input, aendret);
+        kald.push({ name: navn, input, error: !!r.fejl });
+        beskeder.push({ role: 'tool', tool_call_id: c.id, content: r.tekst });
       }
       continue;
     }
@@ -1151,15 +1164,15 @@ async function aiAssistent(body) {
     if (!brug.length || j.stop_reason !== 'tool_use') { faerdig = true; break; }
     beskeder.push({ role: 'assistant', content: blokke });
     beskeder.push({ role: 'user', content: brug.map(b => {
-      kald.push({ name: b.name, input: b.input || {} });
-      const r = aiKoerVaerktoej(b.name, b.input);
+      const r = aiKoerVaerktoej(b.name, b.input, aendret);
+      kald.push({ name: b.name, input: b.input || {}, error: !!r.fejl });
       return Object.assign({ type: 'tool_result', tool_use_id: b.id, content: r.tekst }, r.fejl ? { is_error: true } : {});
     }) });
   }
   /* Kun det SIDSTE tekststykke er svaret; tidligere er "jeg slår lige op"-mellemtekst. */
   let text = tekster.length ? tekster[tekster.length - 1] : '';
   if (!faerdig) text = (text ? text + '\n\n' : '') + '(Jeg stoppede efter for mange opslag. Spørg igen, hvis jeg skal fortsætte.)';
-  return { text: text || '(tomt svar)', tools: kald, model: f.model };
+  return { text: text || '(tomt svar)', tools: kald, aendret: [...aendret], model: f.model };
 }
 
 /* ---------------- router ---------------- */

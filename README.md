@@ -49,7 +49,8 @@ SQLite. **Ingen npm-afhængigheder, ingen CDN – alt kører lokalt.**
 - **AI-assistent**: et panel i højre side, der åbnes med ✨ Spørg i toppen af
   hver side (eller `⌘⌥A` / `Ctrl+Alt+A`). Assistenten søger selv i hele
   biblioteket, læser opskrifterne fuldt ud og linker direkte til dem – og kan
-  se madplanen og indkøbslisten. Idéer, ingrediens-erstatninger, teknik; nye
+  se madplanen og indkøbslisten – og lægge retter på madplanen og varer på
+  indkøbslisten, når du beder om det. Idéer, ingrediens-erstatninger, teknik; nye
   opskrift-forslag kan gemmes i biblioteket med ét klik. Claude API-nøglen
   gemmes kun på serveren og sendes aldrig til browseren.
 - **Kommandopalet**: `Cmd/Ctrl+K` – hop til sider, opskrifter og handlinger.
@@ -101,6 +102,11 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v42** (oktober 2026): **Assistenten kan tilføje.** Bed den om at lægge en ret
+  på madplanen ("kylling i karry i morgen") eller sætte varer – eller alle
+  ingredienserne fra en opskrift – på indkøbslisten. Den kan kun tilføje, ikke
+  slette eller ændre; panelet viser med ✅ hvad der blev lagt ind, og madplan,
+  indkøbsliste og tælleren i menuen opdateres med det samme.
 - **v41** (oktober 2026): **AI-assistenten flytter op i toppen.** ✨ Spørg-knappen
   sidder i øverste højre hjørne af hver side og åbner assistenten i et panel i
   højre side (som i qlk og sagu) – genvej `⌘⌥A` / `Ctrl+Alt+A`. Assistenten har nu

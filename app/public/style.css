@@ -511,6 +511,8 @@ main { position: relative; }
 .ai-tom { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
 .ai-tom p { margin: 0; line-height: 1.5; }
 .ai-trin { font-size: 12.5px; color: var(--muted); }
+.ai-trin.skrev { color: var(--accent); }
+.ai-trin.daarlig { color: var(--red); }
 .ai-form { display: flex; gap: 8px; align-items: flex-end; padding: 12px 14px; border-top: 1px solid var(--border); }
 .ai-form[hidden] { display: none; }
 .ai-form textarea { flex: 1; resize: none; min-height: 48px; max-height: 160px; }

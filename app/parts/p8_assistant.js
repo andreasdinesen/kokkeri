@@ -11,7 +11,8 @@ const AI_GENVEJ = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAge
 const AI_HINTS = ['Hvad kan jeg lave med kylling og ris?',
   'Foreslå en hurtig hverdagsret fra mine opskrifter',
   'Hvilke af mine opskrifter er vegetariske?',
-  'Hvad står der på madplanen i denne uge?'];
+  'Hvad står der på madplanen i denne uge?',
+  'Læg noget med kylling på madplanen i morgen, og sæt ingredienserne på indkøbslisten'];
 
 function aiKnapHtml() {
   return `<button class="btn ai-knap" id="aiBtn" type="button" aria-label="Spørg assistenten"
@@ -110,14 +111,35 @@ function aiTekst(s) {
 const AI_VAERKTOEJ_NAVN = {
   search_recipes: 'Søgte i opskrifterne', get_recipe: 'Læste opskriften',
   what_can_i_cook: 'Søgte efter råvarer', get_meal_plan: 'Læste madplanen',
-  get_shopping_list: 'Læste indkøbslisten'
+  get_shopping_list: 'Læste indkøbslisten',
+  add_to_meal_plan: 'Lagde på madplanen', add_to_shopping_list: 'Føjede til indkøbslisten'
 };
+const AI_SKRIVER = new Set(['add_to_meal_plan', 'add_to_shopping_list']);
 function aiKaldHtml(k) {
   const x = k.input || {};
-  const r = k.name === 'get_recipe' ? recipeById(x.id) : null;
-  const del = r ? r.title : x.query || (Array.isArray(x.ingredients) ? x.ingredients.join(', ') : '')
-    || (x.from && x.to ? x.from + ' – ' + x.to : '') || x.category || '';
-  return `<div class="ai-trin">🔎 ${esc(AI_VAERKTOEJ_NAVN[k.name] || k.name)}${del ? ` <span class="muted">· ${esc(del)}</span>` : ''}</div>`;
+  const r = x.id || x.recipe_id ? recipeById(x.id || x.recipe_id) : null;
+  const del = [x.date ? fmtDate(x.date) : '',
+    r ? r.title : x.query || x.text || (Array.isArray(x.ingredients) ? x.ingredients.join(', ') : '')
+      || (Array.isArray(x.items) ? x.items.join(', ') : '')
+      || (x.from && x.to ? x.from + ' – ' + x.to : '') || x.category || ''].filter(Boolean).join(' · ');
+  const skriver = AI_SKRIVER.has(k.name);
+  const ikon = k.error ? '⚠️' : skriver ? '✅' : '🔎';
+  return `<div class="ai-trin${skriver && !k.error ? ' skrev' : ''}${k.error ? ' daarlig' : ''}">${ikon} ${esc(AI_VAERKTOEJ_NAVN[k.name] || k.name)}${
+    k.error ? ' – mislykkedes' : ''}${del ? ` <span class="muted">· ${esc(del)}</span>` : ''}</div>`;
+}
+
+/* Assistenten har lagt noget ind paa serveren: hent de datatyper igen, saa
+ * madplanen, indkoebslisten og menuens taeller viser det med det samme.
+ * render() scroller ikke, saa man bliver staaende, hvor man er. */
+async function aiHentIgen(kinds) {
+  for (const kind of kinds || []) {
+    try {
+      const svar = await api('/api/items?kind=' + encodeURIComponent(kind));
+      S.items = S.items.filter(x => x.kind !== kind).concat(svar.items || []);
+    } catch (e) { toast('Kunne ikke hente ' + kind + ' igen: ' + e.message, true); }
+  }
+  reindex();
+  render();
 }
 
 function tegnAi() {
@@ -144,7 +166,8 @@ function tegnAi() {
   });
   if (!S.chat.length) {
     linjer.push(`<div class="ai-tom"><p>Hej! Jeg er din køkkenassistent 👨‍🍳 Jeg kan søge i og læse alle dine
-      ${K('recipe').length} opskrifter, din madplan og indkøbsliste – og sende dig direkte links.</p>
+      ${K('recipe').length} opskrifter, din madplan og indkøbsliste, sende dig direkte links –
+      og lægge retter på madplanen og varer på indkøbslisten.</p>
       <div class="chathints">${AI_HINTS.map(h => `<span class="chip chipbtn" data-hint="${esc(h)}">${esc(h)}</span>`).join('')}</div></div>`);
   }
   if (S.chatBusy) linjer.push('<div class="msg ai thinking">Slår op og tænker …</div>');
@@ -176,6 +199,7 @@ async function sendChat(text) {
       }
     });
     S.chat.push({ role: 'assistant', content: r.text || '(tomt svar)', tools: r.tools || [] });
+    if (r.aendret && r.aendret.length) await aiHentIgen(r.aendret);
   } catch (e) {
     S.chat.push({ role: 'assistant', content: '⚠️ ' + e.message, fejl: true });
   }
