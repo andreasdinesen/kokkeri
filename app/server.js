@@ -978,12 +978,10 @@ function aiMedBilleder(messages, images, provider) {
   return messages.map((m, j) => j === i ? { role: m.role, content: indhold } : m);
 }
 
-async function aiMessage(body) {
+/* Forbindelsen til den valgte udbyder - faelles for proxyen og assistenten.
+ * -> { provider: 'claude'|'openai', url, headers, model }. Kaster med status. */
+async function aiForbindelse() {
   const provider = setting('ai_provider', 'claude');
-  const messages = aiMedBilleder(aiSanitizeMessages(body), aiSanitizeImages(body), provider);
-  const maxTokens = Math.min(Math.max(parseInt(body.maxTokens, 10) || 2048, 256), 8192);
-  const system = typeof body.system === 'string' && body.system ? String(body.system).slice(0, 60000) : '';
-
   if (provider === 'openai') {
     const base = setting('ai_url', '').replace(/\/+$/, '');
     if (!base) { const e = new Error('Ingen AI-server sat op – angiv serverens adresse under Indstillinger'); e.status = 400; throw e; }
@@ -1000,53 +998,168 @@ async function aiMessage(body) {
       } catch (e) {}
       if (!model) { const e = new Error('Kunne ikke finde en model på AI-serveren – angiv modelnavnet under Indstillinger'); e.status = 400; throw e; }
     }
-    const payload = {
-      model, max_tokens: maxTokens,
+    return { provider, url: base + '/chat/completions', base, headers, model };
+  }
+  const key = setting('ai_key', '');
+  if (!key) { const e = new Error('Ingen AI-nøgle sat – tilføj din Claude API-nøgle under Indstillinger'); e.status = 400; throw e; }
+  return {
+    provider: 'claude', url: 'https://api.anthropic.com/v1/messages',
+    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    model: setting('ai_model', '') || AI_DEFAULT_MODEL
+  };
+}
+
+/* Ét kald til udbyderen -> raa JSON. Fejl bliver til en dansk besked med status. */
+async function aiPost(f, payload) {
+  let r;
+  try {
+    /* lokale modeller kan vaere langsomme - giv dem god tid */
+    r = await fetch(f.url, {
+      method: 'POST', headers: f.headers, body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(f.provider === 'openai' ? 300000 : 120000)
+    });
+  } catch (e2) {
+    const e = new Error(f.provider === 'openai' ? 'Kunne ikke nå AI-serveren på ' + f.base + ' (' + e2.message + ')'
+      : 'Kunne ikke nå AI-tjenesten (' + e2.message + ')');
+    e.status = 502; throw e;
+  }
+  const j = await r.json().catch(() => null);
+  if (!r.ok) {
+    const msg = (j && j.error && (j.error.message || j.error))
+      || ((f.provider === 'openai' ? 'AI-serveren' : 'AI-tjenesten') + ' svarede ' + r.status);
+    const e = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg).slice(0, 300));
+    e.status = f.provider === 'claude' && r.status === 401 ? 401 : 502; throw e;
+  }
+  return j || {};
+}
+
+async function aiMessage(body) {
+  const f = await aiForbindelse();
+  const messages = aiMedBilleder(aiSanitizeMessages(body), aiSanitizeImages(body), f.provider);
+  const maxTokens = Math.min(Math.max(parseInt(body.maxTokens, 10) || 2048, 256), 8192);
+  const system = typeof body.system === 'string' && body.system ? String(body.system).slice(0, 60000) : '';
+
+  if (f.provider === 'openai') {
+    const j = await aiPost(f, {
+      model: f.model, max_tokens: maxTokens,
       messages: (system ? [{ role: 'system', content: system }] : []).concat(messages)
-    };
-    let r;
-    try {
-      /* lokale modeller kan vaere langsomme - giv dem god tid */
-      r = await fetch(base + '/chat/completions', {
-        method: 'POST', headers, body: JSON.stringify(payload), signal: AbortSignal.timeout(300000)
-      });
-    } catch (e2) {
-      const e = new Error('Kunne ikke nå AI-serveren på ' + base + ' (' + e2.message + ')'); e.status = 502; throw e;
-    }
-    const j = await r.json().catch(() => null);
-    if (!r.ok) {
-      const msg = (j && j.error && (j.error.message || j.error)) || ('AI-serveren svarede ' + r.status);
-      const e = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg).slice(0, 300)); e.status = 502; throw e;
-    }
-    let text = (j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '';
+    });
+    let text = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '';
     /* raesonnerende lokale modeller (qwen3 m.fl.) pakker taenkning ind i <think>-blokke */
     text = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-    return { text, model: (j && j.model) || model, usage: (j && j.usage) || null };
+    return { text, model: j.model || f.model, usage: j.usage || null };
   }
 
   /* --- Claude API (standard) --- */
-  const key = setting('ai_key', '');
-  if (!key) { const e = new Error('Ingen AI-nøgle sat – tilføj din Claude API-nøgle under Indstillinger'); e.status = 400; throw e; }
-  const model = setting('ai_model', '') || AI_DEFAULT_MODEL;
-  const payload = { model, max_tokens: maxTokens, messages };
+  const payload = { model: f.model, max_tokens: maxTokens, messages };
   if (system) payload.system = system;
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json'
-    },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(120000)
-  });
-  const j = await r.json().catch(() => null);
-  if (!r.ok) {
-    const msg = (j && j.error && j.error.message) || ('AI-tjenesten svarede ' + r.status);
-    const e = new Error(msg); e.status = r.status === 401 ? 401 : 502; throw e;
-  }
+  const j = await aiPost(f, payload);
   const text = (j.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
   return { text, model: j.model, usage: j.usage || null };
+}
+
+/* ---------------- AI-assistenten (v41) ----------------
+ * Panelet i hoejre side. Modellen faar MCP-serverens LAESE-vaerktoejer
+ * (search_recipes, get_recipe, what_can_i_cook, get_meal_plan, get_shopping_list),
+ * saa den kan soege i HELE biblioteket og laese opskrifterne fuldt ud - i stedet
+ * for en titelliste i systemprompten, som blev klippet ved 20.000 tegn.
+ * Vaerktoejerne er de samme objekter som /mcp bruger: én implementering.
+ * Intet skrives herfra - skrive-vaerktoejerne er bevidst udeladt.
+ * Samtalen er tilstandsloes: frontenden sender teksthistorikken hver gang. */
+const AI_MAKS_RUNDER = 8;
+const aiVaerktoejer = () => mcp.VAERKTOEJER.filter(v => v.scope === 'read');
+
+function aiAssistentSystem(kontekst) {
+  const k = kontekst && typeof kontekst === 'object' ? kontekst : {};
+  const idag = /^\d{4}-\d{2}-\d{2}$/.test(String(k.idag || '')) ? k.idag : new Date().toISOString().slice(0, 10);
+  const ugedag = String(k.ugedag || '').slice(0, 20);
+  const side = String(k.side || '').slice(0, 400);
+  const raekker = q.itemsByKind.all('recipe');
+  const opskrifter = raekker.length;
+  const kategorier = [...new Set(raekker.map(r => {
+    try { return JSON.parse(r.data).category || ''; } catch (e) { return ''; }
+  }).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'da')).slice(0, 80);
+  return `Du er køkkenassistenten i appen "Kokkeri" – brugerens eget opskrifts-bibliotek.
+Du hjælper på dansk med madlavning: opskrifter, teknik, erstatninger af ingredienser, skalering,
+menu-idéer og madplaner. Vær konkret og kortfattet.
+
+I dag er det ${idag}${ugedag ? ' (' + ugedag + ')' : ''}.
+Biblioteket har ${opskrifter} opskrifter. Kategorier: ${kategorier.join(', ') || '(ingen)'}.
+${side ? '\nBrugeren står lige nu på: ' + side + '\n' : ''}
+Brug værktøjerne til at slå op i biblioteket – gæt aldrig på, hvad det indeholder, og opfind aldrig id'er.
+- search_recipes søger i titler, tags og ingredienser; what_can_i_cook finder opskrifter ud fra råvarer.
+- get_recipe læser en hel opskrift (ingredienser, fremgangsmåde, noter). Læs opskriften, før du svarer
+  på spørgsmål om dens indhold.
+- get_meal_plan og get_shopping_list viser madplanen og indkøbslisten.
+
+Foreslå brugerens EGNE opskrifter frem for at skrive nye. Henvis altid til en opskrift som et link
+i formatet [Titel](/opskrift/<id>) – fx [Lasagne](/opskrift/abc123) – så kan brugeren klikke direkte til den.
+Skriv kun en ny opskrift, hvis biblioteket ikke har noget passende, eller brugeren beder om det; skriv den
+så med tydelige afsnit "Ingredienser:" og "Fremgangsmåde:", så den kan gemmes med ét klik.`;
+}
+
+function aiKoerVaerktoej(navn, input) {
+  const v = aiVaerktoejer().find(x => x.name === navn);
+  if (!v) return { tekst: 'Ukendt værktøj: ' + navn, fejl: true };
+  try {
+    const r = v.kald(input && typeof input === 'object' ? input : {});
+    return r.fejl ? { tekst: String(r.fejl), fejl: true } : { tekst: String(r.tekst || 'Færdig.').slice(0, 30000) };
+  } catch (e) {
+    console.error('[fejl] ai-vaerktoej ' + navn + ': ' + (e && e.stack ? e.stack : e));
+    return { tekst: 'Værktøjet fejlede.', fejl: true };
+  }
+}
+
+async function aiAssistent(body) {
+  const f = await aiForbindelse();
+  const beskeder = aiSanitizeMessages(body);
+  const system = aiAssistentSystem(body.kontekst);
+  const tekster = [];
+  const kald = [];
+  let faerdig = false;
+  for (let runde = 0; runde < AI_MAKS_RUNDER && !faerdig; runde++) {
+    if (f.provider === 'openai') {
+      const j = await aiPost(f, {
+        model: f.model, max_tokens: 4000,
+        messages: [{ role: 'system', content: system }].concat(beskeder),
+        tools: aiVaerktoejer().map(v => ({ type: 'function', function: { name: v.name, description: v.description, parameters: v.inputSchema } }))
+      });
+      const m = (j.choices && j.choices[0] && j.choices[0].message) || { content: '' };
+      const t = String(m.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+      if (t) tekster.push(t);
+      const tc = Array.isArray(m.tool_calls) ? m.tool_calls : [];
+      if (!tc.length) { faerdig = true; break; }
+      beskeder.push({ role: 'assistant', content: m.content || null, tool_calls: tc });
+      for (const c of tc) {
+        let input = {};
+        try { input = JSON.parse((c.function && c.function.arguments) || '{}'); } catch (e) { input = {}; }
+        const navn = c.function && c.function.name;
+        kald.push({ name: navn, input });
+        beskeder.push({ role: 'tool', tool_call_id: c.id, content: aiKoerVaerktoej(navn, input).tekst });
+      }
+      continue;
+    }
+    /* Claude: hele svaret tilbage UAENDRET, alle vaerktoejssvar i ÉN besked. */
+    const j = await aiPost(f, {
+      model: f.model, max_tokens: 8000, system, messages: beskeder,
+      tools: aiVaerktoejer().map(v => ({ name: v.name, description: v.description, input_schema: v.inputSchema }))
+    });
+    const blokke = j.content || [];
+    const t = blokke.filter(b => b.type === 'text').map(b => b.text).join('\n\n').trim();
+    if (t) tekster.push(t);
+    const brug = blokke.filter(b => b.type === 'tool_use');
+    if (!brug.length || j.stop_reason !== 'tool_use') { faerdig = true; break; }
+    beskeder.push({ role: 'assistant', content: blokke });
+    beskeder.push({ role: 'user', content: brug.map(b => {
+      kald.push({ name: b.name, input: b.input || {} });
+      const r = aiKoerVaerktoej(b.name, b.input);
+      return Object.assign({ type: 'tool_result', tool_use_id: b.id, content: r.tekst }, r.fejl ? { is_error: true } : {});
+    }) });
+  }
+  /* Kun det SIDSTE tekststykke er svaret; tidligere er "jeg slår lige op"-mellemtekst. */
+  let text = tekster.length ? tekster[tekster.length - 1] : '';
+  if (!faerdig) text = (text ? text + '\n\n' : '') + '(Jeg stoppede efter for mange opslag. Spørg igen, hvis jeg skal fortsætte.)';
+  return { text: text || '(tomt svar)', tools: kald, model: f.model };
 }
 
 /* ---------------- router ---------------- */
@@ -1860,6 +1973,15 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
         return res.end(buf);
       } catch (e) {
         return err(res, 502, 'Kunne ikke hente billedet: ' + e.message);
+      }
+    }
+
+    /* ---- AI-assistenten (panelet) - med adgang til biblioteket ---- */
+    if (p === '/api/ai/assistent' && req.method === 'POST') {
+      try {
+        return send(res, 200, await aiAssistent(body));
+      } catch (e) {
+        return err(res, e.status || 502, e.message);
       }
     }
 

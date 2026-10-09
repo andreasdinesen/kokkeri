@@ -36,6 +36,8 @@ function renderNav() {
        <span class="ico">${v.ico}</span><span>${v.label}</span>${navBadge(v.id)}</button>`).join('');
   $$('#navItems .navbtn[data-view]').forEach(b => b.onclick = () => {
     if (smalSkaerm()) document.body.classList.remove('navopen');
+    /* Assistenten er et panel (p8), ikke en side - man bliver, hvor man er. */
+    if (b.dataset.view === 'assistant') { visAi(true); return; }
     goto(b.dataset.view);
   });
   $('#navSearch').onclick = openPalette;
@@ -134,6 +136,7 @@ function render() {
   $('#app').innerHTML = fn();
   const binder = RENDER[S.view + '_bind'];
   if (binder) binder();
+  indsaetAiKnap();
   /* EFTER optegningen: en opskrift, der ikke findes, skifter selv S.view til
    * listen, og det er den side, adressen skal vise. */
   synkAdresse(S._urlErstat);
@@ -154,7 +157,8 @@ function pageHead(title, sub, extraHtml) {
 
 /* ---------------- kommandopalet (Cmd/Ctrl+K) ---------------- */
 function paletteItems() {
-  const items = VIEWS.map(v => ({ ico: v.ico, label: v.label, hint: 'side', run: () => goto(v.id) }));
+  const items = VIEWS.map(v => ({ ico: v.ico, label: v.label, hint: 'side',
+    run: () => (v.id === 'assistant' ? visAi(true) : goto(v.id)) }));
   items.push(
     { ico: '📖', label: 'Ny opskrift', hint: 'handling', run: () => { goto('recipes'); recipeModal(null); } },
     { ico: '🌐', label: 'Importér opskrift fra URL', hint: 'handling', run: () => { goto('recipes'); importUrlModal(); } },

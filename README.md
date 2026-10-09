@@ -46,8 +46,10 @@ SQLite. **Ingen npm-afhængigheder, ingen CDN – alt kører lokalt.**
   Klik på et minuttal inde i en fremgangsmåde for at starte en timer direkte.
 - **Hold skærmen tændt**: global til/fra-knap (Wake Lock API, kræver https) –
   slås automatisk til i kogetilstand.
-- **AI-assistent**: chat med en køkkenassistent, der kender dine opskrifter og
-  din madplan – idéer, ingrediens-erstatninger, teknik. Assistentens
+- **AI-assistent**: et panel i højre side, der åbnes med ✨ Spørg i toppen af
+  hver side (eller `⌘⌥A` / `Ctrl+Alt+A`). Assistenten søger selv i hele
+  biblioteket, læser opskrifterne fuldt ud og linker direkte til dem – og kan
+  se madplanen og indkøbslisten. Idéer, ingrediens-erstatninger, teknik; nye
   opskrift-forslag kan gemmes i biblioteket med ét klik. Claude API-nøglen
   gemmes kun på serveren og sendes aldrig til browseren.
 - **Kommandopalet**: `Cmd/Ctrl+K` – hop til sider, opskrifter og handlinger.
@@ -99,6 +101,14 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v41** (oktober 2026): **AI-assistenten flytter op i toppen.** ✨ Spørg-knappen
+  sidder i øverste højre hjørne af hver side og åbner assistenten i et panel i
+  højre side (som i qlk og sagu) – genvej `⌘⌥A` / `Ctrl+Alt+A`. Assistenten har nu
+  adgang til **hele** biblioteket via de samme læse-værktøjer som MCP-serveren:
+  den søger i titler, tags og ingredienser, læser hele opskrifter og ser madplan
+  og indkøbsliste – i stedet for en titelliste, der blev klippet ved 20.000 tegn.
+  Den foreslår dine egne opskrifter med direkte links frem for at opfinde nye, og
+  ved, hvilken opskrift du står på. Virker med både Claude og en egen AI-server.
 - **v40** (oktober 2026): **Kogebøger.** En opskrift kan nu have en kogebog,
   en forfatter og et sidetal ved siden af kilde-linket. Bogen vælges fra en liste
   over dem, du allerede har brugt (eller skrives ind), og en kendt bog udfylder

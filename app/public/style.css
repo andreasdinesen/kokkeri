@@ -490,17 +490,47 @@ ul.shoplist .shopgroup { font-weight: 700; border-bottom: 2px solid var(--border
 #cookMode .cmprogress { flex: 1; text-align: center; color: var(--muted); }
 @media (max-width: 800px) { #cookMode .cmbody { grid-template-columns: 1fr; } #cookMode .cmstep { font-size: 20px; } }
 
-/* ---------- AI-assistent (chat) ---------- */
-.chatwrap { display: flex; flex-direction: column; height: calc(100vh - 210px); min-height: 380px; }
-.chatlog { flex: 1; overflow-y: auto; padding: 6px 2px; display: flex; flex-direction: column; gap: 12px; }
-.msg { max-width: 78%; padding: 10px 14px; border-radius: 14px; white-space: pre-wrap; line-height: 1.5; }
-.msg.user { align-self: flex-end; background: var(--accent-dim); color: #fff; border-bottom-right-radius: 4px; }
+/* ---------- AI-assistent: panel i hoejre side (v41, som i qlk og sagu) ----------
+ * z-index 60: over sidebaren (40), under kogetilstanden (70) og modalerne (75),
+ * saa "Gem som opskrift" kan aabne sin dialog oven paa panelet. */
+main { position: relative; }
+.ai-knap { position: absolute; top: 24px; right: 30px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+#app > .toprow:first-child { padding-right: 100px; }
+.ai-panel {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 60;
+  width: min(420px, 100vw); display: flex; flex-direction: column;
+  background: var(--panel); border-left: 1px solid var(--border); box-shadow: -6px 0 24px rgba(0,0,0,.25);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.ai-panel[hidden] { display: none; }
+@media (min-width: 1200px) { body.ai-aaben main { margin-right: 420px; } }
+.ai-hoved { display: flex; align-items: center; gap: 4px; padding: 14px 12px 12px 18px; border-bottom: 1px solid var(--border); }
+.ai-hoved h2 { flex: 1; margin: 0; font-size: 16px; }
+.ai-hoved .iconbtn { font-size: 17px; padding: 4px 8px; }
+.ai-log { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; overscroll-behavior: contain; }
+.ai-tom { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.ai-tom p { margin: 0; line-height: 1.5; }
+.ai-trin { font-size: 12.5px; color: var(--muted); }
+.ai-form { display: flex; gap: 8px; align-items: flex-end; padding: 12px 14px; border-top: 1px solid var(--border); }
+.ai-form[hidden] { display: none; }
+.ai-form textarea { flex: 1; resize: none; min-height: 48px; max-height: 160px; }
+.msg { max-width: 88%; padding: 10px 14px; border-radius: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.msg.user { align-self: flex-end; background: var(--accent-dim); color: #fff; border-bottom-right-radius: 4px; white-space: pre-wrap; }
 .msg.ai { align-self: flex-start; background: var(--card); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
 .msg.ai.thinking { color: var(--muted); font-style: italic; }
+.msg.ai.fejl { color: var(--red); }
+.msg.ai ul { margin: 4px 0; padding-left: 20px; }
+.msg.ai code { font-size: .9em; background: var(--card2); padding: 1px 4px; border-radius: 4px; }
+.msg.ai a { color: var(--accent); }
+.msg.ai a.ai-opskrift { font-weight: 600; text-decoration: none; border-bottom: 1px solid currentColor; }
 .msg .msgact { margin-top: 8px; }
-.chatinput { display: flex; gap: 10px; padding-top: 12px; }
-.chatinput textarea { flex: 1; resize: none; height: 58px; }
-.chathints { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.chathints { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0; }
+/* Smal skaerm: main har luft i toppen til menuknappen (#navToggle) - knappen
+ * staar i samme raekke ude til hoejre, saa sidens overskrift faar hele bredden. */
+@media (max-width: 900px) {
+  .ai-knap { top: 12px; right: 14px; }
+  #app > .toprow:first-child { padding-right: 0; }
+}
 
 /* ---------- modal ---------- */
 /* z-index 75: modaler skal ligge OVER kogetilstanden (70), fx timer-dialogen */
