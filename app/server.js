@@ -2236,6 +2236,19 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
       try { return send(res, 200, await postnrOpslag(u.searchParams.get('nr'))); }
       catch (e) { return err(res, e.status || 502, e.message); }
     }
+    /* v49: tilbud pr. vare paa indkoebslisten (chippen og butiksfilteret) */
+    if (p === '/api/tilbud/varer' && req.method === 'POST') {
+      const varer = (Array.isArray(body.varer) ? body.varer : []).slice(0, 500)
+        .filter(v => v && typeof v.id === 'string' && typeof v.text === 'string')
+        .map(v => ({ id: v.id.slice(0, 64), text: v.text.slice(0, 200) }));
+      if (!tilbudOpsaetning().butikker.length) return send(res, 200, { tilbud: {}, butikker: [] });
+      try {
+        return send(res, 200, {
+          tilbud: require('./mcp.js').tilbudForVarer(varer, await tilbudAlle()),
+          butikker: tilbudOpsaetning().butikker.map(b => b.navn)
+        });
+      } catch (e) { return err(res, e.status || 502, e.message); }
+    }
     if (p === '/api/tilbud/soeg' && req.method === 'GET') {
       try { return send(res, 200, { tilbud: await tilbudSoeg(u.searchParams.get('q') || '') }); }
       catch (e) { return err(res, e.status || 502, e.message); }

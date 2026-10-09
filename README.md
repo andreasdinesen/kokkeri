@@ -59,7 +59,8 @@ SQLite. **Ingen npm-afhængigheder, ingen CDN – alt kører lokalt.**
   du kan finde dem igen under 🕘. Claude API-nøglen
   gemmes kun på serveren og sendes aldrig til browseren.
 - **Tilbud** 🏷️: vælg de butikker, du handler i, så kan AI-assistenten se ugens
-  tilbud fra eTilbudsavis og lægge en madplan ud fra dem.
+  tilbud fra eTilbudsavis og lægge en madplan ud fra dem – og indkøbslisten viser,
+  hvilke varer der er på tilbud hvor, med et filter pr. butik.
 - **Kommandopalet**: `Cmd/Ctrl+K` – hop til sider, opskrifter og handlinger.
 - Flere brugere med kodeord + **passkeys** (WebAuthn), admin-brugerstyring,
   mørkt/lyst tema, logo-upload, backup/gendan (JSON + rå .db).
@@ -109,6 +110,13 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v49** (oktober 2026): **Tilbud på indkøbslisten.** Har du valgt butikker under
+  *Tilbud fra eTilbudsavis*, får hver vare, der er på tilbud, et 🏷️-mærke med
+  butik og pris (billigst først, »+2« hvis flere butikker har den) – tryk på det for
+  at se alle butikkers tilbud med navn, pris, førpris og sidste dag. Filteret
+  *🏷️ Tilbud: Alle varer · På tilbud · Kvickly · Netto …* viser kun de varer, der
+  skal købes i den butik, og Print følger filteret. Matchningen ser på varens
+  hovedord og sorterer kakaomælk, kokosmælk, »tun i olie« og færdigvarer fra.
 - **v48** (oktober 2026): **»Sortér med AI« virker på lange lister.** Claude tænker,
   før den svarer, og tænkningen tæller med i svarets loft – med 80+ varer blev
   svaret klippet over eller kom tomt tilbage (»AI-svaret kunne ikke læses«). Nu

@@ -412,6 +412,15 @@ ul.shoplist li .grp {
 }
 ul.shoplist li.done span.txt { text-decoration: line-through; color: var(--muted); }
 ul.shoplist li .iconbtn { flex: none; }
+/* tilbud pr. vare (v49) */
+.tilbudchip { flex: none; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border: 1px solid var(--amber); background: rgba(224, 112, 60, .1); color: var(--amber);
+  border-radius: 999px; padding: 2px 9px; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.tilbudchip:hover { background: rgba(224, 112, 60, .2); }
+.tilbudmere { font-weight: 400; opacity: .8; }
+ul.shoplist li.tilbuddetalje { display: flex; flex-direction: column; gap: 4px; padding: 6px 10px 10px 34px;
+  font-size: 13px; border-bottom: 1px solid var(--border); background: var(--card2); }
+.tilbudfilter { margin: 2px 0 8px; gap: 6px; }
 ul.shoplist .shopgroup { font-weight: 700; border-bottom: 2px solid var(--border); margin-top: 10px; color: var(--amber); }
 
 @media (max-width: 760px) {
