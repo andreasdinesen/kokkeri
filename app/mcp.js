@@ -71,72 +71,122 @@ const noegle = o => JSON.stringify(ORIGINAL_FELTER.map(k => {
 /* Faerdigvarer, der naevner en raavare uden at VAERE den: "oksekoedssuppe" er
  * ikke oksekoed, "kyllingeleverpostej" ikke kylling. Kun i recipes_on_offer -
  * soeger man selv paa "leverpostej" i get_offers, skal den findes. */
-const FAERDIGVARE = /suppe|postej|pålæg|paalæg|dressing|chips|snack|sauce|\bdip\b|pizza|færdigret|sandwich|spegepølse|salami|bouillon|fond|smørepålæg|spread|nuggets|toast|kebab|gyros|(^| )is( |$)|kage|kiks|knækbrød|chokolade|slik|drik|juice|smoothie|kakao/;
+const FAERDIGVARE = /suppe|postej|pålæg|paalæg|dressing|chips|snack|sauce|\bdip\b|pizza|færdigret|sandwich|spegepølse|salami|bouillon|fond|smørepålæg|spread|nuggets|toast|kebab|gyros|(^| )is( |$)|kage|kiks|knækbrød|chokolade|slik|drik|juice|smoothie|kakao|spejle|påskeæg|chokoladeæg|marcipan|remoulade|mayo|mayonnaise|(^| )k salat|(^| )frugt (spaghetti|snack)|vingummi|lakrids|bolsjer/;
 
 /* Raavaregrupper, som tilbuddene flytter mest - vejer tungest i recipes_on_offer. */
 const HOVEDRAAVARER = new Set(['kylling', 'hakket kød', 'oksekød', 'svinekød', 'lam', 'kalkun', 'fisk', 'skaldyr']);
 
 const norm = s => String(s || '').toLowerCase().replace(/[^a-zæøå0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 
-/* ------------------------------------------------- tilbud pr. vare (v49)
+/* ------------------------------------------------- tilbud pr. vare (v49, v50)
  * Hvilke af ugens tilbud passer til en vare paa indkoebslisten? Bruges af
- * chippen ud for varen og af butiksfilteret. Ordbaseret foerst: varens
- * noegleord (uden maengde, enhed og "finthakket") mod tilbuddets ord. Et
- * sammensat ord passer, naar tilbuddets ord ENDER paa varens - dansk hovedord
- * staar sidst (tomater ~ stilktomater, fløde ~ piskefløde). Korte ord
- * (loeg, aeg, ost, ris, mel) skal passe helt, ellers ville "loeg" ramme
- * "hvidloeg". Finder ordene intet, faar koed/fisk/kylling en chance via
- * raavaregruppen (kyllingebryst ~ kyllingefilet). Faerdigvarer (suppe,
- * postej ...) taeller kun, hvis varen selv er én. */
+ * chippen ud for varen og af butiksfilteret. KUN ordbaseret (v50): varens
+ * noegleord (kernen foer komma, parentes, "med", "til" og "i" - uden maengde,
+ * enhed og "finthakket") mod tilbuddets ord, begge boejet til grundform
+ * (fileter ~ filet, koteletter ~ kotelet). Et ord passer, naar tilbuddets ord
+ * ENDER paa varens - dansk hovedord staar sidst (tomater ~ stilktomater).
+ * Et koed-forled maa skilles fra (kyllingeinderfilet ~ "-inderfilet"), naar
+ * tilbuddet handler om samme dyr. v49 faldt tilbage til raavaregruppen, naar
+ * ordene intet fandt - saa blev bacon til flaeskesteg og torsk til laks. */
 const TILBUD_STOPORD = new Set(('finthakket hakket hakkede groft groftrevet grofthakket revet fintrevet frisk friske dansk danske '
-  + 'økologisk økologiske stor store lille små tynde tyndt tykke skiver stave halve drys evt gerne kold kolde varm '
+  + 'økologisk økologiske stor store lille små tynde tyndt tykke skiver stave halve drys drysset evt gerne kold kolde varm '
   + 'dampet dampede rå kogt kogte skrubbede tørret tørrede fintstrimlet strimlet stilke blade bundt fed stængler '
   + 'knivspids usprøjtet usprøjtede smeltet blødt stuetemperatur skåret skårne ringe skrå både terninger tern '
-  + 'cirka til af med fra og eller i på uden ekstra lidt mere evt efter smag pynt servering').split(' '));
+  + 'mundrette stykker stykke cirka til af med fra og eller i på uden ekstra lidt mere evt efter smag pynt servering '
+  + 'grøn grønne rød røde gul gule hvid hvide sort sorte blandet blandede hoved hovede hovedet').split(' '));
 const TILBUD_ENHEDER = new Set('g gram kg ml cl dl l liter tsk spsk stk styk knsp fed bundt pose poser dåse dåser glas pakke pakker bakke bakker håndfuld'.split(' '));
 const TILBUD_KORTE = new Set(['løg', 'æg', 'ost', 'ris', 'mel', 'te', 'is', 'øl', 'vin']);
+/* Forled, der goer ordet til en anden vare: kokosmaelk er ikke maelk, og
+ * karrysalat/hoensesalat/hverdagssalat er paalaeg, ikke salat. */
+const ANDEN_VARE_FORLED = new Set(['kokos', 'kakao', 'mandel', 'havre', 'soja', 'chokolade', 'jordbær', 'vanilje', 'kærne',
+  'karry', 'høns', 'hønse', 'hverdags', 'tun', 'kartoffel', 'pasta', 'rejse', 'sild', 'italiensk']);
+/* Ikke mad - Kvickly og Bilka har legetoej i avisen ("Smashers Dino Mania aeg"). */
+const IKKE_MAD = /legetøj|smashers|dino|figur|lego|bamse|playmobil|puslespil|plys|madras|dyne|pude|håndklæde|sengetøj|lampe|kniv|fiskars|(^| )gryder?( |$)|stegegryde|støbejernsgryde|stegepande|skærebræt|tallerken|termokande|blender|airfryer|støvsuger|batteri|elpære|vaskemiddel|opvask|toiletpapir|køkkenrulle|shampoo|tandpasta|deodorant|blomst|potteplante/;
+/* Koed-forled: [forled i varen, hvad tilbuddet SKAL naevne for at vaere samme dyr].
+ * Tilbuddet skal sige det udtrykkeligt (v50) - "Roeget filet eller kogt
+ * skinke" er ikke kyllingefilet, og "hakket grisekoed" ikke oksekoed. */
+const KOED_FORLED = [['kyllinge', /kylling/], ['kylling', /kylling/], ['kalkun', /kalkun/],
+  ['svine', /svin|gris|nakke|kam|flæsk|skinke|kotelet|mørbrad/], ['okse', /okse|kalv|bøf|entrecote|culotte|tyksteg/],
+  ['kalve', /kalv/], ['lamme', /(^| )lam/], ['ande', /(^| )and/]];
 
+/* Grundform: flertal og bestemt form af (kartofler -> kartofl, koteletter ->
+ * kotelet). Kun til sammenligning - begge sider boejes ens. */
+function grundform(w) {
+  if (w.length < 5) return w;
+  return w.replace(/(erne|ene|er|e|r)$/, '').replace(/([bdfgklmnprstv])\1$/, '$1');
+}
+function vareKerne(tekst) {
+  return norm(String(tekst || '').split(/[,(]| med | til | i | evt\b/i)[0]);
+}
 function vareNoegleord(tekst) {
-  const kerne = String(tekst || '').split(/[,(]/)[0];
-  return norm(kerne).split(' ').filter(w => w && !/^[\d½¼¾⅓⅔⅛.,/-]+$/.test(w)
+  return vareKerne(tekst).split(' ').filter(w => w && !/^[\d½¼¾⅓⅔⅛.,/%-]+$/.test(w)
     && !TILBUD_ENHEDER.has(w) && !TILBUD_STOPORD.has(w)
     && (w.length >= 4 || TILBUD_KORTE.has(w)));
 }
-/* Kun den ene vej: tilbuddets ord ENDER paa varens (varen "tomater" ~ tilbuddet
- * "stilktomater"). Den anden vej gav "olivenolie" ~ "tun i olie" og
- * "cherrytomater" ~ "hakkede tomater". */
-const ANDEN_VARE_FORLED = new Set(['kokos', 'kakao', 'mandel', 'havre', 'soja', 'chokolade', 'jordbær', 'vanilje', 'kærne']);
+/* k og t er grundformer. Kun den ene vej: tilbuddets ord ender paa varens
+ * (den anden gav olivenolie ~ "tun i olie"), og ikke naar forleddet goer det
+ * til en anden vare (kokosmaelk er ikke maelk). */
 function ordPasser(k, t) {
   if (k === t) return true;
   if (k.length < 4 || !t.endsWith(k)) return false;
-  /* kokosmaelk og kakaomaelk er ikke maelk */
   return !ANDEN_VARE_FORLED.has(t.slice(0, t.length - k.length).replace(/-$/, ''));
+}
+/* Varens ord med koed-forleddet skilt fra: kyllingeinderfilet -> inderfilet,
+ * hvis tilbuddet naevner kylling (eller slet intet dyr). */
+function koedHale(k, tilbudTekst) {
+  for (const [forled, rod] of KOED_FORLED) {
+    if (!k.startsWith(forled)) continue;
+    const hale = k.slice(forled.length);
+    /* "koed" alene er for generelt - oksekoed maa ikke ramme kalkunkoed */
+    return hale.length >= 4 && rod.test(tilbudTekst) ? hale : null;
+  }
+  return null;
+}
+function ordRammer(k, x) {
+  if (x.ord.some(t => ordPasser(k, t))) return true;
+  const hale = koedHale(k, x.t);
+  return !!hale && x.ord.some(t => t === hale || t.endsWith(hale));
+}
+
+/* Hovedordet (v50): paa dansk er det SIDSTE ord i et navneled selve varen -
+ * madras-KARRY, hakket OKSEKOED, worcestershire SAUCE. "x eller y" er to led,
+ * og det er nok, at ét af dem rammer. */
+function vareLed(tekst) {
+  return vareKerne(tekst).split(' eller ').map(alt => {
+    const ord = vareNoegleord(alt).map(grundform);
+    return ord.length ? { hoved: ord[ord.length - 1], andre: ord.slice(0, -1) } : null;
+  }).filter(Boolean);
+}
+/* Andreas (2026-10-09): "hellere mere praecis end flere med maerker". Derfor
+ * skal ALLE varens noegleord ramme - ikke kun hovedordet: soltoerrede tomater
+ * er ikke hakkede tomater, madras karry ikke almindelig karry. Ord som
+ * "hakket", "frisk" og farver er allerede sorteret fra som stopord. */
+function ledRammer(led, x) {
+  return ordRammer(led.hoved, x) && led.andre.every(k => ordRammer(k, x));
 }
 
 /** varer: [{id, text}], tilbud: [tilbudRens()] -> { id: [tilbud, billigst foerst, ét pr. butik] } */
 function tilbudForVarer(varer, tilbud) {
-  const forberedt = tilbud.map(o => ({ o, ord: norm(o.titel).split(' ').filter(Boolean), t: norm(o.titel) }));
+  const forberedt = tilbud.map(o => {
+    const t = norm(o.titel);
+    return { o, t, ord: t.split(' ').filter(Boolean).map(grundform) };
+  });
   const ud = {};
   for (const v of varer || []) {
-    const noegle = vareNoegleord(v.text);
-    if (!noegle.length) continue;
-    const vareTekst = norm(v.text);
-    const varenErFaerdig = FAERDIGVARE.test(vareTekst);
-    const tilladt = x => varenErFaerdig || !FAERDIGVARE.test(x.t);
-    let hits = forberedt.filter(x => tilladt(x) && noegle.some(k => x.ord.some(t => ordPasser(k, t))));
+    const led = vareLed(v.text);
+    if (!led.length) continue;
+    const varenErFaerdig = FAERDIGVARE.test(norm(v.text));
+    let hits = forberedt.filter(x => (varenErFaerdig || !FAERDIGVARE.test(x.t)) && !IKKE_MAD.test(x.t)
+      && led.some(l => ledRammer(l, x)));
     if (hits.length > 1) {
-      /* Tilbud, der rammer flere af varens ord (ogsaa "hakket", "revet" ...),
+      /* Tilbud, der rammer FLERE af varens ord (ogsaa "hakket", "revet" ...),
        * slaar dem, der kun rammer ét: "hakket oksekoed" -> "Hakket oksekoed
        * 14-18%" og ikke "Burgerboeffer af oksekoed". */
-      const alleOrd = norm(String(v.text || '').split(/[,(]/)[0]).split(' ')
-        .filter(w => w.length >= 3 && !TILBUD_ENHEDER.has(w) && !/^[\d½¼¾⅓⅔⅛.,/%-]+$/.test(w));
-      const rel = x => alleOrd.filter(w => x.ord.some(t => ordPasser(w, t))).length;
+      const alleOrd = vareKerne(v.text).split(' ')
+        .filter(w => w.length >= 3 && !TILBUD_ENHEDER.has(w) && !/^[\d½¼¾⅓⅔⅛.,/%-]+$/.test(w)).map(grundform);
+      const rel = x => alleOrd.filter(w => ordRammer(w, x)).length;
       const bedst = Math.max(...hits.map(rel));
       hits = hits.filter(x => rel(x) === bedst);
-    }
-    if (!hits.length) {
-      const grupper = RAAVARE_GRUPPER.filter(([navn, re]) => HOVEDRAAVARER.has(navn) && re.test(vareTekst) && !SMAGSORD.test(vareTekst));
-      if (grupper.length) hits = forberedt.filter(x => tilladt(x) && !SMAGSORD.test(x.t) && grupper.some(([, re]) => re.test(x.t)));
     }
     if (!hits.length) continue;
     const prButik = new Map();

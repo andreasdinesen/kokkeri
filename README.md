@@ -110,6 +110,13 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v50** (oktober 2026): **Præcise tilbudsmærker.** Hellere intet mærke end et
+  forkert: alle varens ord skal nu ramme tilbuddet (soltørrede tomater er ikke
+  hakkede tomater, madras karry ikke en foldemadras), og den brede gruppe-søgning,
+  der gjorde bacon til flæskesteg og torsk til laks, er fjernet. Ental/flertal og
+  kød-forled forstås (kyllingeinderfileter ~ »Kyllingebryst eller -inderfilet«).
+  Pålæg (K-Salat, remoulade, karrysalat), slik, legetøj, køkkengrej og boligting
+  sorteres fra.
 - **v49** (oktober 2026): **Tilbud på indkøbslisten.** Har du valgt butikker under
   *Tilbud fra eTilbudsavis*, får hver vare, der er på tilbud, et 🏷️-mærke med
   butik og pris (billigst først, »+2« hvis flere butikker har den) – tryk på det for
