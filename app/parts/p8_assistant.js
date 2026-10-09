@@ -35,6 +35,7 @@ function aiPanel() {
   document.body.insertAdjacentHTML('beforeend', `<aside class="ai-panel" id="aiPanel" role="dialog" aria-labelledby="aiTitel" hidden>
     <div class="ai-hoved">
       <h2 id="aiTitel">✨ Køkkenassistent</h2>
+      <button class="iconbtn" id="aiHist" type="button" title="Tidligere samtaler" aria-label="Tidligere samtaler">🕘</button>
       <button class="iconbtn" id="aiNy" type="button" title="Ny samtale" aria-label="Ny samtale">＋</button>
       <button class="iconbtn" id="aiLuk" type="button" title="Luk (Esc)" aria-label="Luk">✕</button>
     </div>
@@ -46,7 +47,12 @@ function aiPanel() {
   </aside>`);
   p = $('#aiPanel');
   p.querySelector('#aiLuk').onclick = () => visAi(false);
-  p.querySelector('#aiNy').onclick = () => { S.chat = []; tegnAi(); p.querySelector('#aiInput').focus(); };
+  p.querySelector('#aiNy').onclick = () => {
+    if (S.chatBusy) return;
+    S.chat = []; S.chatId = null; S.chatHistorik = null;
+    tegnAi(); p.querySelector('#aiInput').focus();
+  };
+  p.querySelector('#aiHist').onclick = () => (S.chatHistorik ? (S.chatHistorik = null, tegnAi()) : visHistorik());
   const felt = p.querySelector('#aiInput');
   felt.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); p.querySelector('#aiForm').requestSubmit(); }
@@ -67,6 +73,11 @@ function aiPanel() {
       goto('recipeDetail', a.dataset.aiOpskrift);
       return;
     }
+    const aabn = e.target.closest('[data-samtale]');
+    if (aabn) { aabnSamtale(aabn.dataset.samtale); return; }
+    const slet = e.target.closest('[data-slet-samtale]');
+    if (slet) { sletSamtale(slet.dataset.sletSamtale); return; }
+    if (e.target.closest('#aiTilbage')) { S.chatHistorik = null; tegnAi(); return; }
     const h = e.target.closest('[data-hint]');
     if (h) { sendChat(h.dataset.hint); return; }
     if (e.target.closest('#aiToSettings')) { visAi(false); goto('settings'); visSettingsFane('integrationer'); return; }
@@ -89,7 +100,84 @@ function visAi(vis) {
   if (!vis && p.contains(document.activeElement)) document.activeElement.blur();
   p.hidden = !vis;
   document.body.classList.toggle('ai-aaben', vis);
-  if (vis) { tegnAi(); const f = p.querySelector('#aiInput'); if (f && !S.chatBusy) f.focus(); }
+  if (vis) {
+    tegnAi();
+    const f = p.querySelector('#aiInput'); if (f && !S.chatBusy) f.focus();
+    if (!S.chatHentet) hentSenesteSamtale();
+  }
+}
+
+/* ---------------- samtalerne gemmes paa serveren (v45) ----------------
+ * En genindlaesning maa ikke slette det, man har skrevet. Samtalen gemmes
+ * efter hvert spoergsmaal OG hvert svar (pr. bruger, tabellen ai_samtaler),
+ * og panelet aabner med den seneste igen. 🕘 viser de tidligere. */
+async function hentSenesteSamtale() {
+  S.chatHentet = true;
+  if (S.chat.length || S.chatBusy) return;      // man er allerede i gang
+  try {
+    const r = await api('/api/ai/samtaler');
+    const seneste = (r.samtaler || [])[0];
+    if (seneste && !S.chat.length && !S.chatBusy) await aabnSamtale(seneste.id, true);
+  } catch (e) { /* ingen historik - en tom samtale virker fint */ }
+}
+
+async function gemSamtale() {
+  if (!S.chat.length) return;
+  if (!S.chatId) S.chatId = uid();
+  try {
+    await api('/api/ai/samtaler/' + S.chatId, { method: 'PUT', body: { beskeder: S.chat } });
+  } catch (e) { toast('Samtalen blev ikke gemt: ' + e.message, true); }
+}
+
+async function aabnSamtale(id, stille) {
+  if (S.chatBusy) return;
+  try {
+    const r = await api('/api/ai/samtaler/' + encodeURIComponent(id));
+    S.chat = r.beskeder || [];
+    S.chatId = r.id;
+    S.chatHistorik = null;
+    tegnAi();
+  } catch (e) { if (!stille) toast(e.message, true); }
+}
+
+async function visHistorik() {
+  S.chatHistorik = [];
+  S.chatHistorikHenter = true;
+  tegnAi();
+  try { S.chatHistorik = (await api('/api/ai/samtaler')).samtaler || []; }
+  catch (e) { S.chatHistorik = null; toast(e.message, true); }
+  S.chatHistorikHenter = false;
+  tegnAi();
+}
+
+async function sletSamtale(id) {
+  if (!await confirmBox('Slet samtalen?', 'Slet')) return;
+  try { await api('/api/ai/samtaler/' + encodeURIComponent(id), { method: 'DELETE', body: {} }); }
+  catch (e) { return toast(e.message, true); }
+  if (S.chatId === id) { S.chat = []; S.chatId = null; }
+  if (S.chatHistorik) S.chatHistorik = S.chatHistorik.filter(x => x.id !== id);
+  tegnAi();
+}
+
+/* "i dag 14:05", "i går 09:30", ellers datoen. */
+function samtaleTid(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  const kl = d.toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit' });
+  const dage = Math.round((new Date(isoDate()) - new Date(isoDate(d))) / 864e5);
+  return dage === 0 ? 'i dag ' + kl : dage === 1 ? 'i går ' + kl : fmtDate(iso);
+}
+
+function historikHtml() {
+  if (!S.chatHistorik.length) return `<p class="muted">${S.chatHistorikHenter ? 'Henter …' : 'Ingen tidligere samtaler endnu.'}</p>
+    <button class="btn small" id="aiTilbage" type="button">← Tilbage</button>`;
+  return `<div class="ai-histhoved"><strong>Tidligere samtaler</strong>
+      <button class="btn small" id="aiTilbage" type="button">← Tilbage</button></div>
+    <ul class="ai-historik">${S.chatHistorik.map(x => `<li class="${x.id === S.chatId ? 'on' : ''}">
+      <button type="button" class="ai-histlink" data-samtale="${esc(x.id)}">
+        <span class="ai-histtitel">${esc(x.titel)}</span><span class="small muted">${esc(samtaleTid(x.opdateret))}</span></button>
+      <button type="button" class="iconbtn" data-slet-samtale="${esc(x.id)}" title="Slet samtalen" aria-label="Slet samtalen">🗑</button>
+    </li>`).join('')}</ul>`;
 }
 
 /* Modellens tekst: escapet, saa lidt markdown. Links til /opskrift/<id> bliver
@@ -157,6 +245,11 @@ function tegnAi() {
     return;
   }
   form.hidden = false;
+  if (S.chatHistorik) {
+    log.innerHTML = historikHtml();
+    log.scrollTop = 0;
+    return;
+  }
   const linjer = S.chat.map((m, i) => {
     if (m.role === 'user') return `<div class="msg user">${esc(m.content)}</div>`;
     const trin = (m.tools || []).map(aiKaldHtml).join('');
@@ -190,7 +283,9 @@ async function sendChat(text) {
   if (S.chatBusy) return;
   S.chat.push({ role: 'user', content: text });
   S.chatBusy = true;
+  S.chatHistorik = null;
   tegnAi();
+  gemSamtale();                 // spoergsmaalet overlever en genindlaesning, mens der svares
   try {
     const r = await api('/api/ai/assistent', {
       body: {
@@ -205,6 +300,7 @@ async function sendChat(text) {
   }
   S.chatBusy = false;
   tegnAi();
+  gemSamtale();
 }
 
 /* ⌘⌥A / Ctrl+Alt+A aabner og lukker panelet - samme genvej som i qlk og sagu.

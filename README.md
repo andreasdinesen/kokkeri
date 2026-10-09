@@ -54,7 +54,8 @@ SQLite. **Ingen npm-afhængigheder, ingen CDN – alt kører lokalt.**
   biblioteket, læser opskrifterne fuldt ud og linker direkte til dem – og kan
   se madplanen og indkøbslisten – og lægge retter på madplanen og varer på
   indkøbslisten, når du beder om det. Idéer, ingrediens-erstatninger, teknik; nye
-  opskrift-forslag kan gemmes i biblioteket med ét klik. Claude API-nøglen
+  opskrift-forslag kan gemmes i biblioteket med ét klik. Samtalerne gemmes, så
+  du kan finde dem igen under 🕘. Claude API-nøglen
   gemmes kun på serveren og sendes aldrig til browseren.
 - **Tilbud** 🏷️: vælg de butikker, du handler i, så kan AI-assistenten se ugens
   tilbud fra eTilbudsavis og lægge en madplan ud fra dem.
@@ -107,6 +108,11 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v45** (oktober 2026): **Assistenten husker samtalerne.** Samtalen gemmes på
+  serveren efter hvert spørgsmål og svar, så en genindlæsning ikke sletter den –
+  panelet åbner med den seneste igen. *🕘* viser tidligere samtaler (åbn og skriv
+  videre, eller slet dem). Samtaler er personlige: hver bruger ser kun sine egne,
+  og de 100 nyeste gemmes.
 - **v44** (oktober 2026): **Tilbud fra eTilbudsavis.** Under Indstillinger →
   Integrationer vælger du postnummer, afstand og de butikker, du handler i
   (Netto, REMA 1000, Lidl, føtex …). AI-assistenten – og Claude via MCP – kan så

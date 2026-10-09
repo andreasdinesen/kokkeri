@@ -2,7 +2,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 44;
+const APP_VERSION = 45;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -30,7 +30,10 @@ const S = {
   /* undefined = ikke valgt endnu; filter-panelet starter da aabent paa en stor
    * skaerm og lukket paa en telefon */
   filterOpen: lsGet('kk_filteropen', '') === '' ? undefined : lsGet('kk_filteropen', '') === '1',
-  chat: [],             // AI-samtale (kun i hukommelsen)
+  chat: [],             // AI-samtalen, der er aaben (gemmes paa serveren, v45)
+  chatId: null,         // dens id i ai_samtaler - null = ikke gemt endnu
+  chatHentet: false,    // er den seneste samtale hentet efter indlaesning?
+  chatHistorik: null,   // listen over tidligere samtaler, naar den vises
   chatBusy: false,
   timers: [],           // [{id,label,totalMs,endsAt,remainMs,paused,ringing}]
   wakeOn: false,

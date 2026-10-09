@@ -99,6 +99,13 @@ CREATE TABLE IF NOT EXISTS oauth_clients (
   redirect_uris TEXT NOT NULL,        -- JSON-array, matches NOEJAGTIGT
   created_at INTEGER NOT NULL
 );
+-- AI-assistentens samtaler (v45): pr. bruger, saa en genindlaesning ikke
+-- sletter dem. data = JSON-array af { role, content, tools?, fejl? }.
+CREATE TABLE IF NOT EXISTS ai_samtaler (
+  id TEXT PRIMARY KEY, user_id INTEGER NOT NULL,
+  titel TEXT NOT NULL, data TEXT NOT NULL, opdateret TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_samtaler_bruger ON ai_samtaler(user_id, opdateret);
 CREATE TABLE IF NOT EXISTS oauth_refresh (
   hash TEXT PRIMARY KEY,
   token_id TEXT NOT NULL, client_id TEXT NOT NULL,
@@ -130,6 +137,16 @@ const q = {
   updateCounter: db.prepare('UPDATE credentials SET counter = ? WHERE id = ?'),
   deleteCred: db.prepare('DELETE FROM credentials WHERE id = ? AND user_id = ?'),
   deleteUserCreds: db.prepare('DELETE FROM credentials WHERE user_id = ?'),
+  samtaleListe: db.prepare('SELECT id, titel, opdateret, length(data) AS str FROM ai_samtaler WHERE user_id = ? ORDER BY opdateret DESC LIMIT 100'),
+  samtaleHent: db.prepare('SELECT * FROM ai_samtaler WHERE id = ? AND user_id = ?'),
+  samtaleGem: db.prepare(`INSERT INTO ai_samtaler (id, user_id, titel, data, opdateret) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET titel = excluded.titel, data = excluded.data, opdateret = excluded.opdateret
+    WHERE ai_samtaler.user_id = excluded.user_id`),
+  samtaleSlet: db.prepare('DELETE FROM ai_samtaler WHERE id = ? AND user_id = ?'),
+  samtaleSletBruger: db.prepare('DELETE FROM ai_samtaler WHERE user_id = ?'),
+  /* Hver bruger beholder de 100 nyeste - aeldre ryger, naar en ny gemmes. */
+  samtaleRyd: db.prepare(`DELETE FROM ai_samtaler WHERE user_id = ? AND id NOT IN
+    (SELECT id FROM ai_samtaler WHERE user_id = ? ORDER BY opdateret DESC LIMIT 100)`),
   itemsAll: db.prepare('SELECT kind, data FROM items WHERE deleted = 0'),
   itemsByKind: db.prepare('SELECT data FROM items WHERE kind = ? AND deleted = 0'),
   itemById: db.prepare('SELECT * FROM items WHERE id = ?'),
@@ -2155,6 +2172,44 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
       catch (e) { return err(res, e.status || 502, e.message); }
     }
 
+    /* ---- AI-assistentens samtaler (v45) - pr. bruger ---- */
+    if (p === '/api/ai/samtaler' && req.method === 'GET') {
+      return send(res, 200, { samtaler: q.samtaleListe.all(user.id) });
+    }
+    const samtaleM = /^\/api\/ai\/samtaler\/([0-9a-zA-Z-]{6,64})$/.exec(p);
+    if (samtaleM && req.method === 'GET') {
+      const r = q.samtaleHent.get(samtaleM[1], user.id);
+      if (!r) return err(res, 404, 'Samtalen findes ikke');
+      let beskeder = [];
+      try { beskeder = JSON.parse(r.data); } catch (e) { beskeder = []; }
+      return send(res, 200, { id: r.id, titel: r.titel, opdateret: r.opdateret, beskeder });
+    }
+    if (samtaleM && req.method === 'PUT') {
+      const beskeder = (Array.isArray(body.beskeder) ? body.beskeder : [])
+        .filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
+        .slice(-200).map(m => {
+          const o = { role: m.role, content: String(m.content).slice(0, 60000) };
+          if (Array.isArray(m.tools) && m.tools.length) o.tools = m.tools.slice(0, 30).map(t => ({
+            name: String(t && t.name || '').slice(0, 60), input: t && typeof t.input === 'object' ? t.input : {}, error: !!(t && t.error) }));
+          if (m.fejl) o.fejl = true;
+          return o;
+        });
+      if (!beskeder.length) return err(res, 400, 'Tom samtale');
+      const data = JSON.stringify(beskeder);
+      if (data.length > 1000000) return err(res, 413, 'Samtalen er for lang – start en ny');
+      const foerste = beskeder.find(m => m.role === 'user');
+      const titel = String(body.titel || (foerste && foerste.content) || 'Samtale').replace(/\s+/g, ' ').trim().slice(0, 120);
+      const stamp = nowIso();
+      const info = q.samtaleGem.run(samtaleM[1], user.id, titel, data, stamp);
+      if (!info.changes) return err(res, 404, 'Samtalen findes ikke');   // en anden brugers id
+      q.samtaleRyd.run(user.id, user.id);
+      return send(res, 200, { ok: true, opdateret: stamp });
+    }
+    if (samtaleM && req.method === 'DELETE') {
+      q.samtaleSlet.run(samtaleM[1], user.id);
+      return send(res, 200, { ok: true });
+    }
+
     /* ---- AI-assistenten (panelet) - med adgang til biblioteket ---- */
     if (p === '/api/ai/assistent' && req.method === 'POST') {
       try {
@@ -2469,6 +2524,7 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
           if (target.is_admin && q.adminCount.get().n <= 1) return err(res, 400, 'Kan ikke slette den sidste administrator');
           q.deleteUserSessions.run(targetId);
           q.deleteUserCreds.run(targetId);
+          q.samtaleSletBruger.run(targetId);
           q.deleteUser.run(targetId);
           console.log(`[admin] ${user.username} slettede brugeren ${target.username}`);
           return send(res, 200, { ok: true });
