@@ -476,6 +476,7 @@ RENDER.recipeDetail = () => {
     <button class="btn small" id="shareBtn">${r.shareToken ? '🔗 Deles – vis link' : '🔗 Del med et link'}</button>
     <button class="btn small" id="copyRichBtn" title="Til en mail, Word, Pages eller OneNote – med billede. Apple Notes tager kun teksten.">📋 Kopiér opskriften</button>
     ${S.settings.aiKeySet ? `<button class="btn small" id="nutriBtn">🥗 ${r.nutrition ? 'Genberegn ernæring' : 'Estimér ernæring'} (AI)</button>` : ''}
+    ${S.settings.cellariusSet ? '<button class="btn small" id="wineBtn" title="Forslag fra din vinkælder i Cellarius">🍷 Vinforslag</button>' : ''}
     ${hasImperial(r) ? '<button class="btn small" id="metricBtn">🌍 Omregn til metrisk (cups → dl …)</button>' : ''}
   </div>
 
@@ -537,6 +538,8 @@ RENDER.recipeDetail_bind = () => {
   $('#copyRichBtn').onclick = () => kopierOpskrift(r, S.detailServings / (r.servings || app().defaultServings));
   const nutri = $('#nutriBtn');
   if (nutri) nutri.onclick = () => aiEstimateNutrition(r, nutri);
+  const wine = $('#wineBtn');
+  if (wine) wine.onclick = () => wineModal(r);
   const metric = $('#metricBtn');
   if (metric) metric.onclick = async () => {
     if (!await confirmBox('Omregn alle amerikanske mål (cups, oz, lbs, °F …) til metrisk i denne opskrift? Ændringen gemmes.', 'Omregn')) return;
@@ -548,6 +551,52 @@ RENDER.recipeDetail_bind = () => {
   };
   bindInlineTimers(r.title);
 };
+
+/* ---------------- vinforslag fra Cellarius ----------------
+ * Serveren slaar opskriften op og sender kun retten (titel, kategori,
+ * ingrediensnavne) til Cellarius' egen madparring. Svaret er flasker, der
+ * ligger i kaelderen nu. Etiketterne er Cellarius' egne koder - samme ord som
+ * i Cellarius, saa "Læst som" betyder det samme begge steder. */
+const VIN_MAD = { beef: 'okse', lamb: 'lam', game: 'vildt', pork: 'svin', veal: 'kalv', poultry: 'fjerkræ',
+  cured_meat: 'pålæg', rich_fish: 'fed fisk', lean_fish: 'hvid fisk', shellfish: 'skaldyr', pasta: 'pasta',
+  mushrooms: 'svampe', vegetarian: 'grønt', spicy: 'stærkt', soft_cheese: 'blød ost', hard_cheese: 'lagret ost',
+  blue_cheese: 'blåskimmel', goat_cheese: 'gedeost', appetizer: 'snacks', sweet_dessert: 'dessert',
+  fruit_dessert: 'frugtdessert', chocolate: 'chokolade' };
+const VIN_GRUND = { food_match: 'passer til retten', by_colour: 'gættet ud fra farven', body_fits: 'fylden passer',
+  easy_to_reach: 'lige ved hånden', hard_to_reach: 'svær at nå' };
+function wineModal(r) {
+  const vis = (indhold) => openModal(`<h2>🍷 Vin til "${esc(r.title)}"</h2>${indhold}
+    <div class="rowflex" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="wineClose">Luk</button></div>`,
+  m => { m.querySelector('#wineClose').onclick = closeModal; });
+  vis('<p class="muted">Spørger vinkælderen …</p>');
+  api('/api/cellarius/pairings', { body: { recipeId: r.id, limit: 4 } }).then(d => {
+    if (!$('#wineClose')) return;          // vinduet er lukket i mellemtiden
+    const laest = d.foods.map(f => VIN_MAD[f] || f).join(', ');
+    let html = '';
+    const ai = d.source === 'ai';
+    if (d.empty) {
+      html = '<p>Der ligger ingen flasker i kælderen endnu.</p>';
+    } else if (!d.foods.length && !d.suggestions.length) {
+      html = '<p>Cellarius kunne ikke læse retten. Prøv at give opskriften en kategori, eller nævn hovedingrediensen i titlen.</p>';
+    } else {
+      if (d.foods.length) html = `<p class="small muted">Læst som: ${esc(laest)}</p>`;
+      html += !d.suggestions.length ? '<p>Intet i kælderen passer til den ret lige nu.</p>'
+        : '<ol class="winelist">' + d.suggestions.map(v => {
+            /* AI-reserven kender ikke pladserne - kun Cellarius har layoutet */
+            const om = [ai ? '' : (v.places.length ? v.places.slice(0, 2).join(', ') : 'mangler plads'),
+              v.bottles === 1 ? 'sidste flaske' : v.bottles + ' flasker',
+              ...v.reasons.map(g => VIN_GRUND[g] || g)].filter(Boolean).map(esc).join(' · ');
+            return `<li>
+            <strong>${esc(v.producer)}</strong> ${esc(v.name)}${v.vintage ? ' ' + esc(String(v.vintage)) : ''}
+            ${v.why ? `<div class="small">${esc(v.why)}</div>` : ''}
+            <div class="small muted">${om}</div>
+          </li>`; }).join('') + '</ol>';
+    }
+    if (ai && !d.empty) html += '<p class="small muted">Valgt af Kokkeris AI ud fra flaskerne i kælderen – Cellarius giver ikke selv forslag til en nøgle.</p>';
+    html += `<p class="small"><a href="${esc(d.cellarUrl)}" target="_blank" rel="noopener">Åbn Cellarius ↗</a></p>`;
+    vis(html);
+  }).catch(e => { if ($('#wineClose')) vis(`<p class="warn">${esc(e.message)}</p>`); });
+}
 
 /* ---------------- deling med offentligt link ---------------- */
 function shareRecipeModal(r) {

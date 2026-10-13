@@ -45,6 +45,8 @@ SQLite. **Ingen npm-afhængigheder, ingen CDN – alt kører lokalt.**
 - **Indkøbsliste**: tilføj en hel opskrift (skaleret) eller hele ugens madplan
   med ét klik, grupperet pr. opskrift, afkrydsning, print. Send den videre til
   Home Assistant, Todoist eller doda med ét klik.
+- **Vinforslag fra Cellarius**: knappen *🍷 Vinforslag* på en opskrift finder
+  flasker i din egen vinkælder i Cellarius, der passer til retten.
 - **Timere**: flere navngivne køkkentimere med forvalg, pause og +1 min – de
   overlever sideskift og genindlæsning, ringer med lyd og notifikation.
   Klik på et minuttal inde i en fremgangsmåde for at starte en timer direkte.
@@ -110,6 +112,15 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v51** (oktober 2026): **Vinforslag fra Cellarius.** Under Indstillinger →
+  Integrationer angiver du en læse-nøgle fra Cellarius (Indstillinger →
+  Integrationer dér) og husstandens `account_id` (står på `…/api/v1/auth/me`,
+  mens du er logget ind i Cellarius). Knappen *🍷 Vinforslag* på opskriften
+  sender retten – titel, kategori og ingrediensernes navne – og viser de flasker
+  i kælderen, der passer, med en kort begrundelse. Cellarius' egen madparring er
+  endnu lukket for nøgler, så Kokkeri henter flaskelisten og lader sin egen AI
+  vælge (AI skal være sat op); åbner Cellarius for det, bruges dens forslag af
+  sig selv. Nøglen forlader aldrig serveren.
 - **v50** (oktober 2026): **Præcise tilbudsmærker.** Hellere intet mærke end et
   forkert: alle varens ord skal nu ramme tilbuddet (soltørrede tomater er ikke
   hakkede tomater, madras karry ikke en foldemadras), og den brede gruppe-søgning,

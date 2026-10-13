@@ -508,11 +508,13 @@ function validPassword(p) { return typeof p === 'string' && p.length >= 8 && p.l
  * den gemmes her, men returneres ALDRIG til frontenden (kun aiKeySet: true). */
 const SETTING_KEYS = new Set(['app', 'logo', 'allow_registration', 'ai_key', 'ai_model',
   'ai_provider', 'ai_url', 'ha_url', 'ha_token', 'ha_entity', 'todoist_token', 'todoist_project', 'tilbud',
-  'doda_url', 'doda_key', 'doda_project', 'doda_context']);
+  'doda_url', 'doda_key', 'doda_project', 'doda_context',
+  'cellarius_url', 'cellarius_key', 'cellarius_account']);
 const SETTING_MAX = { app: 200000, logo: 900000, allow_registration: 4, ai_key: 300, ai_model: 100,
   ai_provider: 20, ai_url: 300,
   ha_url: 300, ha_token: 2000, ha_entity: 200, todoist_token: 200, todoist_project: 120, tilbud: 20000,
-  doda_url: 300, doda_key: 300, doda_project: 120, doda_context: 120 };
+  doda_url: 300, doda_key: 300, doda_project: 120, doda_context: 120,
+  cellarius_url: 300, cellarius_key: 300, cellarius_account: 100 };
 
 /* v33: "Frokost" kom til som standard-kategori. Frontenden fletter standarden
  * med de GEMTE indstillinger, og den gemte liste vinder - saa en installation,
@@ -576,6 +578,10 @@ function appSettingsJson() {
   out.dodaProject = setting('doda_project', '');
   out.dodaContext = setting('doda_context', '');
   out.dodaSet = !!(setting('doda_url', '') && setting('doda_key', ''));
+  /* Cellarius (vinkaelderen): heller ikke dens noegle forlader serveren. */
+  out.cellariusUrl = setting('cellarius_url', '');
+  out.cellariusAccount = setting('cellarius_account', '');
+  out.cellariusSet = !!setting('cellarius_key', '');
   /* Tilbud (v44): postnummer, radius og butikker - intet hemmeligt. */
   out.tilbud = tilbudOpsaetning();
   return out;
@@ -984,6 +990,127 @@ function dodaOpgaveTekst(it, projekt, kontekster) {
   /* butiksafdeling/opskrift som note - godt naar man staar i butikken */
   const note = [it.section, it.group].filter(Boolean).map(dodaRens).join(' · ');
   return titel + hale + (note ? '\n' + note.slice(0, 300) : '');
+}
+
+/* ---------------- Cellarius (vinforslag) ----------------
+ * Cellarius er husstandens vinkaelder. Den har selv en madparring:
+ * POST /api/v1/accounts/<konto>/pairings { recipe, limit } svarer
+ * { foods: [...], suggestions: [{ producer, name, vintage, bottles, places,
+ * reasons }] } - kun flasker, der faktisk ligger i kaelderen. Noeglen laves i
+ * Cellarius under Indstillinger -> Integrationer (scope cellar:read, kan intet
+ * aendre). Samme kontrakt som dodaKald: aldrig en undtagelse, og en Cellarius,
+ * der er nede, er en advarsel - ikke en fejl i Kokkeri. */
+const CELLARIUS_STANDARD = 'https://cellarius.yggdrasilpanel.com';
+async function cellariusKald(base, key, metode, sti, krop) {
+  let svar;
+  try {
+    svar = await fetch(base + '/api/v1' + sti, {
+      method: metode,
+      headers: Object.assign({ Authorization: 'Bearer ' + key, Accept: 'application/json' },
+        krop === undefined ? {} : { 'Content-Type': 'application/json' }),
+      body: krop === undefined ? undefined : JSON.stringify(krop),
+      signal: AbortSignal.timeout(15000)
+    });
+  } catch (e) {
+    console.log('[cellarius] advarsel: ' + metode + ' ' + sti + ': ' + (e && e.message));
+    return { ok: false, kode: 'unreachable', besked: 'Kunne ikke nå Cellarius på ' + base };
+  }
+  let data = null;
+  try { data = await svar.json(); } catch (e) { /* tomt svar */ }
+  if (svar.status === 401) return { ok: false, kode: 'bad_key', besked: 'Cellarius afviste nøglen – tjek at den er kopieret rigtigt' };
+  /* 403 "this integration token is not allowed here": RUTEN er lukket for
+   * integrationsnoegler (fx /pairings, okt. 2026) - uanset konto. */
+  if (svar.status === 403 && data && /integration token/i.test(String(data.error || ''))) return { ok: false, kode: 'not_allowed', besked: 'Cellarius tillader ikke den slags kald med en integrationsnøgle' };
+  if (svar.status === 403) return { ok: false, kode: 'forbidden', besked: 'Nøglen hører ikke til den konto – tjek konto-id’et under Indstillinger' };
+  if (svar.status === 404 && /^\/accounts\//.test(sti)) return { ok: false, kode: 'no_account', besked: 'Cellarius kender ikke konto-id’et – tjek det under Indstillinger' };
+  if (!svar.ok) return { ok: false, kode: 'error', besked: (data && data.error) || 'Cellarius svarede ' + svar.status };
+  return { ok: true, data: data || {} };
+}
+/* Kontoen (husstanden) noeglen hoerer til. Cellarius fortaeller IKKE en
+ * integrationsnoegle dens konto (/auth/me svarer 403 "not allowed here",
+ * testet okt. 2026) - saa id'et skrives ind under Indstillinger. /auth/me
+ * proeves stadig, saa det virker af sig selv, hvis Cellarius en dag tillader det. */
+function cellariusKontoFra(d) {
+  if (!d || typeof d !== 'object') return '';
+  const kandidater = [d.account, ...(Array.isArray(d.accounts) ? d.accounts : []),
+    ...(Array.isArray(d.memberships) ? d.memberships : []), d];
+  for (const k of kandidater) {
+    const id = k && (k.account_id || (k.account && k.account.account_id));
+    if (id && /^[\w-]{1,100}$/.test(String(id))) return String(id);
+  }
+  return '';
+}
+async function cellariusKonto(base, key) {
+  const gemt = String(setting('cellarius_account', '')).trim();
+  if (gemt) return { ok: true, konto: gemt };
+  const r = await cellariusKald(base, key, 'GET', '/auth/me');
+  if (r.kode === 'unreachable' || r.kode === 'bad_key') return r;
+  const konto = r.ok ? cellariusKontoFra(r.data) : '';
+  if (konto) { q.setSetting.run('cellarius_account', konto); return { ok: true, konto }; }
+  return { ok: false, kode: 'no_account', besked: 'Skriv husstandens konto-id under Indstillinger → Cellarius' };
+}
+/* Reserven, naar Cellarius' egen madparring er lukket for integrationsnoegler:
+ * hent kaelderens flasker (det MAA en cellar:read-noegle) og lad Kokkeris AI
+ * vaelge. Samme svarform som Cellarius' /pairings, plus `why` (AI'ens
+ * begrundelse) og `source: 'ai'`. Pladser kendes ikke herfra - kun Cellarius
+ * har layoutet - saa `places` er tom. */
+const CELLARIUS_MADKODER = ['beef', 'lamb', 'game', 'pork', 'veal', 'poultry', 'cured_meat', 'rich_fish', 'lean_fish',
+  'shellfish', 'pasta', 'mushrooms', 'vegetarian', 'spicy', 'soft_cheese', 'hard_cheese', 'blue_cheese', 'goat_cheese',
+  'appetizer', 'sweet_dessert', 'fruit_dessert', 'chocolate'];
+async function cellariusAiForslag(base, key, konto, tekst, limit) {
+  const r = await cellariusKald(base, key, 'GET', '/accounts/' + encodeURIComponent(konto) + '/bottles');
+  if (!r.ok) return r;
+  /* én linje pr. vin (wine_id), ikke pr. flaske */
+  const vine = new Map();
+  for (const b of (Array.isArray(r.data.bottles) ? r.data.bottles : [])) {
+    if (!b || (b.status && b.status !== 'in_cellar')) continue;
+    const k = b.wine_id || [b.producer, b.name, b.vintage].join('|');
+    const v = vine.get(k);
+    if (v) { v.bottles++; continue; }
+    vine.set(k, { id: b.wine_id || b.id || null, producer: String(b.producer || ''), name: String(b.name || ''),
+      vintage: b.vintage == null ? null : b.vintage, colour: String(b.colour || ''),
+      country: String(b.country || ''), region: String(b.region || ''), bottles: 1 });
+  }
+  const liste = [...vine.values()].slice(0, 200);
+  if (!liste.length) return { ok: true, data: { foods: [], suggestions: [], tom: true } };
+  let out;
+  try {
+    out = await aiMessage({
+      system: `Du er sommelier i et dansk hjem. Vælg op til ${limit} vine FRA LISTEN, der passer til retten – bedste først.
+Svar KUN med ét JSON-objekt: {"foods": [koder], "suggestions": [{"nr": tal, "why": "kort dansk begrundelse, højst 12 ord"}]}
+"foods" er rettens hovedingredienser som koder fra: ${CELLARIUS_MADKODER.join(', ')}.
+Brug kun numre fra listen. Passer intet rigtigt, så svar med tom "suggestions".`,
+      messages: [{ role: 'user', content: 'Retten: ' + tekst + '\n\nVinene i kælderen:\n' +
+        liste.map((v, i) => `${i + 1}. ${[v.producer, v.name, v.vintage].filter(Boolean).join(' ')} – ${[v.colour, v.region, v.country].filter(Boolean).join(', ')}`).join('\n') }],
+      maxTokens: 800, effort: 'low'
+    });
+  } catch (e) {
+    return { ok: false, kode: 'ai', besked: 'Cellarius giver ikke selv vinforslag til en nøgle, og AI’en svarede ikke: ' + e.message };
+  }
+  const j = parseAiJsonServer(out.text) || {};
+  const set = new Set();
+  const forslag = (Array.isArray(j.suggestions) ? j.suggestions : []).map(x => {
+    const n = parseInt(x && x.nr, 10);
+    if (!(n >= 1 && n <= liste.length) || set.has(n)) return null;
+    set.add(n);
+    return Object.assign({}, liste[n - 1], { places: [], reasons: [], why: String((x && x.why) || '').slice(0, 120) });
+  }).filter(Boolean).slice(0, limit);
+  return { ok: true, data: {
+    foods: (Array.isArray(j.foods) ? j.foods : []).map(String).filter(f => CELLARIUS_MADKODER.includes(f)),
+    suggestions: forslag
+  } };
+}
+/* Retten som Cellarius' fritekst: titel + kategori + ingrediensernes navne
+ * uden maengder. Cellarius laeser selv hovedingredienserne ud af teksten. */
+function cellariusRetTekst(r) {
+  const ings = (Array.isArray(r.ingredients) ? r.ingredients : [])
+    .filter(l => !/^##/.test(String(l)))
+    .map(l => String(l).replace(/\(.*?\)/g, '')
+      .replace(/^[\s\d.,/½¼¾⅓⅔–-]+/, '')
+      .replace(/^(g|kg|dl|l|ml|cl|spsk|tsk|knsp|stk|fed|bdt|ds|pk|pakke|dåse|nip|håndfuld|skiver?)\.?\s+/i, '')
+      .split(',')[0].trim())
+    .filter(Boolean);
+  return [r.title, r.category, ings.join(', ')].filter(Boolean).join('. ').slice(0, 500);
 }
 
 /* ---------------- tilbud fra eTilbudsavis (v44) ----------------
@@ -2458,6 +2585,60 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
         return send(res, 200, { pushed: ok, failed });
       }
       return err(res, 404, 'Ukendt doda-kald');
+    }
+
+    /* ---- Cellarius (vinforslag) ----
+     * Kaelderen svarer med de flasker, den har - Kokkeri sender kun retten.
+     * `recipeId` slaar opskriften op her paa serveren; `text` er fri tekst
+     * (madplanen, eller en ret uden opskrift). */
+    if (p.startsWith('/api/cellarius/')) {
+      const base = dodaBase(setting('cellarius_url', '') || CELLARIUS_STANDARD);
+      const key = setting('cellarius_key', '');
+      if (!base || !key) return err(res, 400, 'Cellarius er ikke sat op – angiv nøglen under Indstillinger');
+      const konto = await cellariusKonto(base, key);
+      if (!konto.ok) return err(res, konto.kode === 'bad_key' ? 401 : 502, konto.besked);
+
+      if (p === '/api/cellarius/test' && req.method === 'POST') {
+        const r = await cellariusKald(base, key, 'POST', '/accounts/' + encodeURIComponent(konto.konto) + '/pairings', { recipe: 'oksemørbrad', limit: 1 });
+        if (r.ok) return send(res, 200, { ok: true, konto: konto.konto, mode: 'cellarius' });
+        if (r.kode !== 'not_allowed') return err(res, r.kode === 'bad_key' ? 401 : 502, r.besked);
+        /* madparringen er lukket for noeglen - kan den saa laese flaskerne? */
+        const b = await cellariusKald(base, key, 'GET', '/accounts/' + encodeURIComponent(konto.konto) + '/bottles');
+        if (!b.ok) return err(res, b.kode === 'bad_key' ? 401 : 502, b.besked);
+        return send(res, 200, { ok: true, konto: konto.konto, mode: 'ai' });
+      }
+      if (p === '/api/cellarius/pairings' && req.method === 'POST') {
+        let tekst = String(body.text || '').trim().slice(0, 500);
+        if (body.recipeId) {
+          const row = q.recipeById.get(String(body.recipeId));
+          const rec = row ? JSON.parse(row.data) : null;
+          if (!rec) return err(res, 404, 'Opskriften findes ikke');
+          tekst = cellariusRetTekst(rec);
+        }
+        if (!tekst) return err(res, 400, 'Skriv hvad I skal spise');
+        const limit = Math.min(Math.max(parseInt(body.limit, 10) || 4, 1), 10);
+        let r = await cellariusKald(base, key, 'POST', '/accounts/' + encodeURIComponent(konto.konto) + '/pairings', { recipe: tekst, limit });
+        let kilde = 'cellarius';
+        if (r.kode === 'not_allowed') { r = await cellariusAiForslag(base, key, konto.konto, tekst, limit); kilde = 'ai'; }
+        if (!r.ok) return err(res, r.kode === 'bad_key' ? 401 : 502, r.besked);
+        const d = r.data;
+        return send(res, 200, {
+          sent: tekst, source: kilde, empty: !!d.tom,
+          foods: Array.isArray(d.foods) ? d.foods.map(String).slice(0, 20) : [],
+          suggestions: (Array.isArray(d.suggestions) ? d.suggestions : []).slice(0, 10).map(x => ({
+            id: x.id || x.wine_id || null,
+            producer: String(x.producer || ''), name: String(x.name || ''),
+            vintage: x.vintage == null ? null : x.vintage,
+            colour: String(x.colour || x.color || ''),
+            bottles: +x.bottles || 0,
+            places: Array.isArray(x.places) ? x.places.map(String).slice(0, 4) : [],
+            reasons: Array.isArray(x.reasons) ? x.reasons.map(String).slice(0, 6) : [],
+            why: x.why ? String(x.why) : ''
+          })),
+          cellarUrl: base
+        });
+      }
+      return err(res, 404, 'Ukendt Cellarius-kald');
     }
 
     /* ---- adgangsnoegler og forbundne apps (MCP) ----

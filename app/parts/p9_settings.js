@@ -182,6 +182,27 @@ RENDER.settings = () => {
   </div>
 
   <div class="panelbox">
+    <h2 style="margin-top:0">🍷 Cellarius (vinforslag)</h2>
+    <p class="small muted">Få vinforslag til en opskrift fra din egen vinkælder – knappen <b>🍷 Vinforslag</b> sidder på
+      opskriften. Kun retten sendes til Cellarius, og den svarer med flasker, I faktisk har.
+      Lav en nøgle i Cellarius under Indstillinger → Integrationer (den kan kun læse kælderen).
+      Konto-id'et finder du ved at åbne <code>…/api/v1/auth/me</code> på Cellarius, mens du er logget ind – det er feltet <code>account_id</code>.
+      Status: ${S.settings.cellariusSet ? '<span class="good">forbundet ✓</span>' : '<span class="warn">ikke sat op</span>'}</p>
+    <div class="formgrid">
+      <label class="fld"><span>Cellarius' adresse</span>
+        <input id="celUrl" value="${esc(S.settings.cellariusUrl || '')}" placeholder="https://cellarius.yggdrasilpanel.com" inputmode="url" autocapitalize="none" spellcheck="false"></label>
+      <label class="fld"><span>Nøgle ${S.settings.cellariusSet ? '(udfyld kun for at skifte)' : ''}</span>
+        <input id="celKey" type="password" autocomplete="off"></label>
+      <label class="fld"><span>Konto-id (husstanden)</span>
+        <input id="celAccount" value="${esc(S.settings.cellariusAccount || '')}" placeholder="account_id" autocapitalize="none" spellcheck="false"></label>
+    </div>
+    <div class="rowflex">
+      <button class="btn primary" id="celSave">Gem Cellarius</button>
+      ${S.settings.cellariusSet ? '<button class="btn small danger" id="celClear">Fjern forbindelsen</button>' : ''}
+    </div>
+  </div>
+
+  <div class="panelbox">
     <h2 style="margin-top:0">📅 Madplan i din kalender</h2>
     <p class="small muted">Abonnér på madplanen i Apple/Google Kalender med dette link:</p>
     <div class="rowflex">
@@ -491,6 +512,30 @@ RENDER.settings_bind = () => {
   if (dodaClear) dodaClear.onclick = async () => {
     if (!await confirmBox('Fjern forbindelsen til doda?', 'Fjern')) return;
     await saveSettings({ doda_key: '', doda_url: '' });
+    render();
+  };
+
+  $('#celSave').onclick = async () => {
+    const settings = {
+      cellarius_url: $('#celUrl').value.trim().replace(/\/+$/, ''),
+      cellarius_account: $('#celAccount').value.trim()
+    };
+    const key = $('#celKey').value.trim();
+    if (key) settings.cellarius_key = key;
+    await saveSettings(settings);
+    if (S.settings.cellariusSet) {
+      try {
+        const r = await api('/api/cellarius/test', { body: {} });
+        S.settings.cellariusAccount = r.konto || S.settings.cellariusAccount;
+        toast(r.mode === 'ai' ? 'Cellarius er forbundet ✓ – forslagene laves af Kokkeris AI ud fra kælderen' : 'Cellarius er forbundet ✓');
+      } catch (e) { toast('Cellarius: ' + e.message, true); }
+    }
+    render();
+  };
+  const celClear = $('#celClear');
+  if (celClear) celClear.onclick = async () => {
+    if (!await confirmBox('Fjern forbindelsen til Cellarius? Knappen Vinforslag forsvinder fra opskrifterne.', 'Fjern')) return;
+    await saveSettings({ cellarius_key: '', cellarius_url: '', cellarius_account: '' });
     render();
   };
 
