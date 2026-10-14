@@ -52,7 +52,7 @@ app_js = ("'use strict';\n" if shared else '') + '\n'.join(f'/* ---- shared/{s.s
     + ('\n' if shared else '') + '\n'.join(read(p) for p in parts)
 with open('app/public/app.js', 'w', encoding='utf-8') as f:
     f.write(app_js)
-for f_ in ['app/public/app.js', 'app/server.js', 'app/oauth.js', 'app/mcp.js', 'app/kilde.js'] + shared:
+for f_ in ['app/public/app.js', 'app/server.js', 'app/oauth.js', 'app/mcp.js', 'app/huti.js', 'app/netvagt.js', 'app/kilde.js'] + shared:
     subprocess.run(['node', '--check', f_], check=True)
 
 m = re.search(r'const APP_VERSION = (\d+);', app_js)
@@ -75,7 +75,7 @@ if f"const APP_VER = '{app_version}';" not in sw_js:
     sys.exit('FEJL: APP_VER ikke fundet/stemplet i sw.js')
 
 # --- sikkerhedstjek paa kilderne ---
-for name in ['app/server.js', 'app/oauth.js', 'app/mcp.js', 'app/kilde.js',
+for name in ['app/server.js', 'app/oauth.js', 'app/mcp.js', 'app/huti.js', 'app/netvagt.js', 'app/kilde.js',
              'app/public/index.html', 'app/public/app.js', 'app/public/style.css', 'app/public/sw.js'] + shared:
     txt = read(name)
     hits = set(re.findall(r'\{\{[A-Z_]+\}\}', txt))

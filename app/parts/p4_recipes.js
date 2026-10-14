@@ -1470,7 +1470,7 @@ Findes der ingen opskrift i teksten, svar {"error": "ingen opskrift fundet"}.`;
 /* ---------------- indkoebsliste fra opskrift ---------------- */
 /* springer varer over, der ligger i forraadet, gaetter afdeling og laegger
  * ens varer sammen med det, der allerede staar paa listen */
-async function addRecipeToShopping(r, factor) {
+async function addRecipeToShopping(r, factor, opts) {
   const lines = (r.ingredients || []).filter(l => !/^##/.test(l));
   if (!lines.length) return toast('Opskriften har ingen ingredienser', true);
   let skipped = 0;
@@ -1483,10 +1483,15 @@ async function addRecipeToShopping(r, factor) {
       section: guessSection(text), done: false, createdAt: new Date().toISOString()
     });
   }
-  if (items.length) await saveBulk(items);
+  /* huti (v55, fra madplanen): det, huti har, vises - brugeren vaelger */
+  const valgt = opts && opts.huti ? await hutiFiltrerIndkoeb(items) : items;
+  if (!valgt) return;
+  const hutiSprunget = valgt.hutiSprunget || 0;
+  if (valgt.length) await saveBulk(valgt);
   const merged = await mergeShoppingItems();
-  toast(`${items.length} varer føjet til listen` +
+  toast(`${valgt.length} varer føjet til listen` +
     (skipped ? ` · ${skipped} sprunget over (i forråd)` : '') +
+    (hutiSprunget ? ` · ${hutiSprunget} har I i huti` : '') +
     (merged ? ` · ${merged} lagt sammen` : ''));
   renderNav();
 }

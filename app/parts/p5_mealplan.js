@@ -196,6 +196,7 @@ RENDER.plan = () => {
           title="Vis eller skjul billeder i ugeoversigten">🖼️ Billeder</button>
         <button class="btn danger" id="wkClear">🗑️ Ryd ugen</button>
         ${S.settings.aiKeySet ? '<button class="btn primary" id="wkAi">✨ Foreslå madplan (AI)</button>' : ''}
+        ${hutiSat() ? '<button class="btn primary" id="wkHuti" title="Forslag ud fra det, I har i fryseren, køleskabet og spisekammeret i huti">🧊 Brug det, vi har</button>' : ''}
       </div>`) + planFindHtml() + planArmHtml() + `
   <div class="weekgrid">
     ${dates.map((d, i) => `
@@ -211,6 +212,7 @@ RENDER.plan = () => {
             ${slotTag}${r ? esc(r.title) : esc(e.text || '')}
             ${r && recipeTotalMin(r) ? `<div class="pmeta">⏱ ${fmtMin(recipeTotalMin(r))}${e.servings ? ' · ' + e.servings + ' pers.' : ''}</div>` : (e.servings ? `<div class="pmeta">${e.servings} pers.</div>` : '')}
             ${e.wine ? `<div class="pmeta" title="Vin til retten">🍷 ${esc(e.wine)}</div>` : ''}
+            ${hutiPlanMaerke(e)}
           </div>`;
         }).join('')}
         <button class="dayadd${S.planArm ? ' arm' : ''}" data-date="${d}">${S.planArm ? '⬇ Læg her' : '+ tilføj'}</button>
@@ -235,6 +237,10 @@ RENDER.plan_bind = () => {
   };
   const ai = $('#wkAi');
   if (ai) ai.onclick = aiSuggestWeek;
+  const hb = $('#wkHuti');
+  if (hb) hb.onclick = hutiForslagModal;
+  /* »fra huti: …« paa ugens retter - hentes én gang pr. (uge, retter), se p5b_huti.js */
+  hutiOpdaterPlan(K('planEntry').filter(e => weekDatesOf(S.weekStart || mondayOf()).includes(e.date)));
   $('#wkFind').onclick = () => {
     S.planFind = !S.planFind;
     S.planFokus = S.planFind;
@@ -608,6 +614,7 @@ async function planQuickView(entry) {
     ${r.description ? `<p class="small muted" style="margin:12px 0 0">${esc(r.description.slice(0, 220))}${r.description.length > 220 ? '…' : ''}</p>` : ''}
     <h3 style="margin-bottom:2px">Ingredienser${factor !== 1 ? ' <span class="chip on small">skaleret</span>' : ''}</h3>
     <ul class="ings" style="max-height:230px;overflow:auto;margin-top:4px">${ings || '<li class="muted">Ingen ingredienser</li>'}</ul>
+    ${hutiSat() ? '<div id="qvHuti"></div>' : ''}
     <div class="actions" style="flex-wrap:wrap">
       <button class="btn" id="qvEdit">✏️ Redigér</button>
       <button class="btn danger" id="qvDel" style="margin-right:auto">🗑️ Fjern fra dagen</button>
@@ -629,8 +636,9 @@ async function planQuickView(entry) {
     m.querySelector('#qvOpen').onclick = () => { closeModal(); goto('recipeDetail', r.id); };
     m.querySelector('#qvShop').onclick = async () => {
       closeModal();
-      await addRecipeToShopping(r, factor);
+      await addRecipeToShopping(r, factor, { huti: true });
     };
+    hutiKvikVis(m, r);
   }, true);
 }
 
@@ -729,10 +737,14 @@ async function weekToShopping() {
       });
     }
   }
-  if (items.length) await saveBulk(items);
+  /* huti (v55): det, huti har, vises - brugeren vaelger, om det springes over */
+  const valgt = await hutiFiltrerIndkoeb(items);
+  if (!valgt) return;
+  const hutiSprunget = valgt.hutiSprunget || 0;
+  if (valgt.length) await saveBulk(valgt);
   const merged = await mergeShoppingItems();
-  toast(`${items.length} varer føjet til listen` +
-    (skipped ? ` · ${skipped} i forråd` : '') + (merged ? ` · ${merged} lagt sammen` : ''));
+  toast(`${valgt.length} varer føjet til listen` +
+    (skipped ? ` · ${skipped} i forråd` : '') + (hutiSprunget ? ` · ${hutiSprunget} har I i huti` : '') + (merged ? ` · ${merged} lagt sammen` : ''));
   goto('shopping');
 }
 
@@ -772,20 +784,24 @@ async function aiSuggestWeek() {
   if (recipes.length < 2) return toast('Tilføj nogle opskrifter først, så AI\'en har noget at vælge imellem', true);
 
   toast('AI\'en sammensætter en madplan …');
-  const list = recipes.map(r => ({
+  let list = recipes.map(r => ({
     id: r.id, title: r.title, category: r.category || '',
     min: recipeTotalMin(r),
     rating: r.rating || 0, lastCooked: r.lastCooked || null
   }));
+  /* huti (v55): hvad husstanden har - ét kald, og null (= som foer) hvis huti ikke
+   * er forbundet eller ikke svarer. Ingen nye forsoeg, ingen loekke. */
+  const huti = await hutiMadplanKontekst(list);
+  if (huti) list = huti.list;
   const sys = `Du sammensætter en ugentlig aftensmads-plan ud fra brugerens egne opskrifter.
 Vælg varieret (ikke to ens retter i træk, bland kategorier), foretræk højt vurderede opskrifter og
-retter der ikke er lavet for nylig. Hverdagsretter bør være hurtige; weekend må gerne tage længere tid.
+retter der ikke er lavet for nylig. Hverdagsretter bør være hurtige; weekend må gerne tage længere tid.${huti ? '\n' + HUTI_MADPLAN_REGEL : ''}
 Svar KUN med JSON: [{"date": "YYYY-MM-DD", "recipeId": "..."}] – én pr. dato, brug KUN de givne datoer og recipeId'er.`;
   try {
     const r = await api('/api/ai', {
       body: {
         system: sys,
-        messages: [{ role: 'user', content: `Datoer der skal fyldes: ${free.join(', ')}\n\nOpskrifter:\n` + JSON.stringify(list) }],
+        messages: [{ role: 'user', content: `Datoer der skal fyldes: ${free.join(', ')}\n\n${huti ? huti.tekst + '\n\n' : ''}Opskrifter:\n` + JSON.stringify(list) }],
         maxTokens: 2048
       }
     });
@@ -799,7 +815,8 @@ Svar KUN med JSON: [{"date": "YYYY-MM-DD", "recipeId": "..."}] – én pr. dato,
     }
     if (!items.length) throw new Error('AI\'en foreslog ingen brugbare dage');
     await saveBulk(items);
-    toast(`Madplan foreslået for ${items.length} dage – ret til som du vil`);
+    const medHuti = huti ? items.filter(i => huti.bruger[i.recipeId]).length : 0;
+    toast(`Madplan foreslået for ${items.length} dage${medHuti ? ` – ${medHuti} bruger noget fra huti` : ''} – ret til som du vil`);
     render();
   } catch (e) {
     toast('Kunne ikke lave madplan: ' + e.message, true);

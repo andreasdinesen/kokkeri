@@ -721,3 +721,24 @@ span.dif { padding: 1px 4px; border-radius: 4px; }
   .modal .actions { flex-wrap: wrap; }
   .modal .actions .btn { flex: 1 1 auto; }
 }
+
+/* ---------------- huti (v55): fryser, koeleskab og spisekammer ---------------- */
+.hutifra { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+.hutifra.snart { color: var(--amber); }
+.hutifra .muted { color: var(--muted); }
+.hutichip { border-color: var(--blue); color: var(--blue); }
+.hutichip.snart { border-color: var(--amber); color: var(--amber); }
+.hutiforslag { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow: auto; }
+.hutiret { display: flex; gap: 12px; align-items: center; padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: 10px; background: var(--card2); }
+.hutiret .grow { flex: 1; }
+.hutiret b { display: block; }
+.hutiret .hutilaeg { flex: none; flex-wrap: nowrap; }
+.hutilinjer { list-style: none; padding: 0; margin: 10px 0; max-height: 50vh; overflow: auto; }
+.hutilinjer li { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.hutimaerke { font-size: 11.5px; color: var(--blue); }
+@media (max-width: 900px) {
+  .hutiret { flex-direction: column; align-items: stretch; }
+  .hutiret .hutilaeg { flex-wrap: wrap; }
+  .hutiret .hutilaeg select { flex: 1; min-width: 0; }
+}

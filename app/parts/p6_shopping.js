@@ -108,6 +108,7 @@ RENDER.shopping = () => {
         <span class="shopmain">
           <span class="txt">${esc(i.text)}</span>
           ${bySection && i.group && visGruppe ? `<span class="grp">${esc(i.group)}</span>` : ''}
+          ${i.huti && !i.done ? `<span class="hutimaerke" title="Lagt på listen, selv om huti har det">🧊 ${esc(i.huti)}</span>` : ''}
         </span>
         ${tilbudChipHtml(i)}
         <button class="iconbtn" data-del="${i.id}" title="Fjern">✕</button>

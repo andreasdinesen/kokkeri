@@ -80,7 +80,7 @@ function kort(html) {
 }
 
 /* Afsnittene, som de var foer opdelingen (v34) - alle ti. */
-const ALLE = ['App', '✨ AI-assistent', '🏷️ Tilbud fra eTilbudsavis', '🏠 Home Assistant', '✅ Todoist', '☑️ doda', '🍷 Cellarius (vinforslag)', '📅 Madplan i din kalender',
+const ALLE = ['App', '✨ AI-assistent', '🏷️ Tilbud fra eTilbudsavis', '🏠 Home Assistant', '✅ Todoist', '☑️ doda', '🍷 Cellarius (vinforslag)', '🧊 huti (fryser, køleskab og spisekammer)', '📅 Madplan i din kalender',
   'Backup & import', '🗑️ Ryd data', 'Min konto', 'Claude-adgang (MCP)', 'Brugere (admin)'];
 const KUN_ADMIN = ['🗑️ Ryd data', 'Brugere (admin)'];
 
@@ -121,9 +121,45 @@ for (const admin of [true, false]) {
   });
 }
 
+/* Sikkerhedsreviewet (14/10-2026): huti-forbindelsen er faelles - kun admin forbinder. */
+proev('huti-panelet: read-only for en ikke-admin, knapperne kun for admin', () => {
+  const afsnitAf = html => { const i = html.indexOf('🧊 huti'); return html.slice(i, html.indexOf('</div>\n  </div>', i)); };
+  const a = afsnitAf(tegn(true).html), b = afsnitAf(tegn(false).html);
+  if (!/id="hutiSave"/.test(a)) throw new Error('admin mangler Forbind-knappen');
+  if (/id="hutiSave"|id="hutiTest"|id="hutiClear"/.test(b)) throw new Error('en ikke-admin har knapperne');
+  if (!/id="hutiUrl"[^>]*disabled/.test(b)) throw new Error('adressefeltet er ikke laast for en ikke-admin');
+  if (/id="hutiKey"/.test(b)) throw new Error('en ikke-admin har noeglefeltet');
+  if (!/administrator/i.test(b)) throw new Error('ingen forklaring til en ikke-admin');
+});
+proev('huti-panelet anbefaler en read-noegle og forklarer write-noeglen', () => {
+  const html = tegn(true).html;
+  if (!/Read<\/i>-nøgle/.test(html)) throw new Error('anbefaler ikke en read-noegle');
+  if (!/alle hutis skriveværktøjer/.test(html) || !/take_stock/.test(html)) throw new Error('forklarer ikke write-noeglen');
+});
 proev('settings_bind() kalder faneskiftet', () => {
   if (!/bindSettingsFaner\(\)/.test(BIND)) throw new Error('bindSettingsFaner() kaldes ikke');
 });
+
+/* loadAdminUsers() er async (api-kaldet) - derfor med top-level await. */
+for (const aaben of [true, false]) {
+  const navn = `admin-panelet advarer, naar registreringen er aaben (aaben=${aaben})`;
+  try {
+    const LOAD = udsnit('async function loadAdminUsers()');
+    const host = { innerHTML: '', className: '' };
+    const stub = () => ({ onchange: null, onclick: null });
+    const ctx = {
+      S: { me: { id: 1 } }, esc: s => String(s), fmtDate: s => s, toast: () => {},
+      $: sel => (sel === '#adminUsers' ? host : stub()), $$: () => [],
+      api: async () => ({ allowRegistration: aaben, users: [] })
+    };
+    vm.createContext(ctx);
+    vm.runInContext(LOAD + ';\nthis.loadAdminUsers = loadAdminUsers;', ctx);
+    await ctx.loadAdminUsers();
+    const har = /enhver kan oprette en konto og se\/bruge huti-forbindelsen/.test(host.innerHTML);
+    if (har !== aaben) throw new Error(`advarsel ${har ? 'vist' : 'mangler'}`);
+    console.log('  ok   ' + navn); ok++;
+  } catch (e) { console.log('  FEJL ' + navn + '\n       ' + e.message); fejl++; }
+}
 
 console.log(`\n${ok} ok, ${fejl} fejl`);
 process.exit(fejl ? 1 : 0);

@@ -19,6 +19,10 @@ const APP_DIR = __dirname;
 const PUBLIC_DIR = path.join(APP_DIR, 'public');
 /* Sidernes adresser deles med frontenden og sw.js - se app/shared/ruter.js. */
 const ruter = require('./shared/ruter.js');
+/* Netvagten (sikkerhedsreviewet 14/10-2026): ALLE kald til en adresse, en bruger har
+ * angivet, gaar gennem den - DNS ved hvert kald, bundet til den tjekkede IP, hvert hop
+ * i en viderestilling tjekket, interne adresser kun for admin. Se app/netvagt.js. */
+const netvagt = require('./netvagt.js');
 const APP_NAME = process.env.APP_NAME || 'Kokkeri';
 const SESSION_DAYS = 90;
 const DB_PATH = path.join(DATA_DIR, 'kokkeri.db');
@@ -582,6 +586,9 @@ function appSettingsJson() {
   out.cellariusUrl = setting('cellarius_url', '');
   out.cellariusAccount = setting('cellarius_account', '');
   out.cellariusSet = !!setting('cellarius_key', '');
+  /* huti (v55): husstandens fryser/koeleskab/spisekammer. Noeglen forlader aldrig
+   * serveren - kun hutiKeySet, adressen og sidste tests tal (app/huti.js). */
+  Object.assign(out, hutiForb.offentlig());
   /* Tilbud (v44): postnummer, radius og butikker - intet hemmeligt. */
   out.tilbud = tilbudOpsaetning();
   return out;
@@ -797,12 +804,14 @@ function extractRecipe(html, pageUrl) {
   if (md && md.title) return md;
   return null;
 }
-async function fetchPage(url) {
-  const r = await fetch(url, { headers: FETCH_HEADERS, signal: AbortSignal.timeout(20000), redirect: 'follow' });
+/* Gennem netvagten: intern adresse kun for admin (`tilladPrivat`), hver viderestilling
+ * tjekkes. En fejl i forbindelsen kastes med `kode` - kalderen viser den samme besked
+ * (NET_FEJL_SIDE) uanset om adressen var blokeret, ukendt, lukket eller langsom. */
+const NET_FEJL_SIDE = 'Kunne ikke hente siden – tjek adressen, eller prøv igen senere';
+async function fetchPage(url, tilladPrivat) {
+  const r = await netvagt.vagtFetch(url, { headers: FETCH_HEADERS, timeoutMs: 20000, maksBytes: 8e6, tilladPrivat: !!tilladPrivat });
   if (!r.ok) throw new Error('Siden svarede ' + r.status);
-  const buf = Buffer.from(await r.arrayBuffer());
-  if (buf.length > 8e6) throw new Error('Siden er for stor');
-  return buf.toString('utf8');
+  return await r.text();
 }
 
 /* ---------------- crawl-job (baggrund) ----------------
@@ -814,7 +823,8 @@ async function fetchPage(url) {
 const crawlJob = {
   running: false, stop: false, startedAt: '', site: '',
   total: 0, done: 0, imported: 0, skipped: 0, failed: 0,
-  current: '', error: '', cookie: '', userAgent: '', useAi: false, urls: []
+  current: '', error: '', cookie: '', userAgent: '', useAi: false, urls: [],
+  tilladPrivat: false           // startet af en admin? (netvagten - interne adresser)
 };
 
 function crawlStatus() {
@@ -853,7 +863,7 @@ async function runCrawlJob() {
     if (crawlJob.stop) break;
     crawlJob.current = url;
     try {
-      const r = await fetch(url, { headers, signal: AbortSignal.timeout(25000), redirect: 'follow' });
+      const r = await netvagt.vagtFetch(url, { headers, timeoutMs: 25000, maksBytes: 8e6, klip: true, tilladPrivat: crawlJob.tilladPrivat });
       if (r.status === 401 || r.status === 403) {
         /* Ét afvist svar stopper ikke hele jobbet - en enkelt side kan vaere
          * beskyttet, uden at resten er det. Men afviser sitet tre i traek (fx
@@ -957,14 +967,14 @@ function dodaBase(v) {
 async function dodaKald(base, key, metode, sti, krop) {
   let svar;
   try {
-    svar = await fetch(base + sti, {
+    svar = await netvagt.vagtFetch(base + sti, {
       method: metode,
       headers: Object.assign({ Authorization: 'Bearer ' + key }, krop === undefined ? {} : { 'Content-Type': 'application/json' }),
       body: krop === undefined ? undefined : JSON.stringify(krop),
-      signal: AbortSignal.timeout(10000)
+      timeoutMs: 10000, maksBytes: 5e6, tilladPrivat: adminSatte('doda_url')
     });
   } catch (e) {
-    console.log('[doda] advarsel: ' + metode + ' ' + sti + ': ' + (e && e.message));
+    console.log('[doda] advarsel: ' + metode + ' ' + sti + ': ' + (e && (e.kode || e.message)));
     return { ok: false, kode: 'unreachable', besked: 'Kunne ikke nå doda på ' + base };
   }
   let data = null;
@@ -1022,18 +1032,38 @@ function migrateCellariusAdresse() {
   } catch (e) {}
 }
 migrateCellariusAdresse();
+
+/* ---------------- netvagten for de gemte integrationsadresser ----------------
+ * Indstillingerne er faelles, og enhver indlogget bruger maa gemme dem. Men en
+ * INTERN adresse (LAN, 127.0.0.1 - fx LM Studio, Home Assistant eller doda paa samme
+ * server som Kokkeri) maa kun bruges, naar en ADMIN satte den: `<noegle>_admin` = '1'.
+ * Flaget er ikke i SETTING_KEYS og kan ikke skrives udefra. Til hver adresse hoerer
+ * en hemmelighed, som sendes med til adressen - se reglen i POST /api/settings. */
+const URL_INDSTILLINGER = { ai_url: 'ai_key', ha_url: 'ha_token', doda_url: 'doda_key', cellarius_url: 'cellarius_key' };
+const adminSatte = noegle => setting(noegle + '_admin', '') === '1';
+/* Engangs: adresser, der var gemt FOER netvagten, regnes for admins (ellers holdt
+ * Home Assistant og den lokale AI-server op med at virke ved opdateringen). En
+ * ikke-admin, der senere aendrer adressen, saetter flaget til '0'. */
+function migrateUrlAdmin() {
+  for (const k of Object.keys(URL_INDSTILLINGER)) {
+    if (setting(k, '') && setting(k + '_admin', '') === '') q.setSetting.run(k + '_admin', '1');
+  }
+}
+migrateUrlAdmin();
+/* Ens fejl udadtil: blokeret, ikke naaet og timeout siger det samme (ingen portscanner). */
+const netFejlLog = (hvem, e) => console.log(`[${hvem}] advarsel: ${e && (e.kode || '')} ${e && e.message || ''}`.trim());
 async function cellariusKald(base, key, metode, sti, krop) {
   let svar;
   try {
-    svar = await fetch(base + '/api/v1' + sti, {
+    svar = await netvagt.vagtFetch(base + '/api/v1' + sti, {
       method: metode,
       headers: Object.assign({ Authorization: 'Bearer ' + key, Accept: 'application/json' },
         krop === undefined ? {} : { 'Content-Type': 'application/json' }),
       body: krop === undefined ? undefined : JSON.stringify(krop),
-      signal: AbortSignal.timeout(15000)
+      timeoutMs: 15000, maksBytes: 5e6, tilladPrivat: adminSatte('cellarius_url')
     });
   } catch (e) {
-    console.log('[cellarius] advarsel: ' + metode + ' ' + sti + ': ' + (e && e.message));
+    console.log('[cellarius] advarsel: ' + metode + ' ' + sti + ': ' + (e && (e.kode || e.message)));
     return { ok: false, kode: 'unreachable', besked: 'Kunne ikke nå Cellarius på ' + base };
   }
   let data = null;
@@ -1409,7 +1439,7 @@ async function aiForbindelse() {
     if (!model) {
       /* LM Studio kraever et modelnavn - tag den foerst indlaeste fra /models */
       try {
-        const r0 = await fetch(base + '/models', { headers, signal: AbortSignal.timeout(10000) });
+        const r0 = await netvagt.vagtFetch(base + '/models', { headers, timeoutMs: 10000, maksBytes: 2e6, tilladPrivat: adminSatte('ai_url') });
         const j0 = await r0.json();
         model = (j0 && j0.data && j0.data[0] && j0.data[0].id) || '';
       } catch (e) {}
@@ -1431,12 +1461,16 @@ async function aiPost(f, payload) {
   let r;
   try {
     /* lokale modeller kan vaere langsomme - giv dem god tid */
-    r = await fetch(f.url, {
-      method: 'POST', headers: f.headers, body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(f.provider === 'openai' ? 300000 : 120000)
-    });
+    /* Egen AI-server: brugerens adresse -> netvagten (intern kun, naar en admin satte den).
+     * Claude: fast offentlig adresse - almindelig fetch. */
+    r = f.provider === 'openai'
+      ? await netvagt.vagtFetch(f.url, { method: 'POST', headers: f.headers, body: JSON.stringify(payload),
+        timeoutMs: 300000, maksBytes: 20e6, tilladPrivat: adminSatte('ai_url') })
+      : await fetch(f.url, { method: 'POST', headers: f.headers, body: JSON.stringify(payload), signal: AbortSignal.timeout(120000) });
   } catch (e2) {
-    const e = new Error(f.provider === 'openai' ? 'Kunne ikke nå AI-serveren på ' + f.base + ' (' + e2.message + ')'
+    if (f.provider === 'openai') netFejlLog('ai', e2);
+    /* Fast besked for egen AI-server: blokeret og ikke naaet maa ikke kunne skelnes. */
+    const e = new Error(f.provider === 'openai' ? 'Kunne ikke nå AI-serveren på ' + f.base
       : 'Kunne ikke nå AI-tjenesten (' + e2.message + ')');
     e.status = 502; throw e;
   }
@@ -1542,6 +1576,10 @@ ${tilbudLinjeTilPrompt()}
 - get_wine_cellar viser vinene i brugerens vinkælder i Cellarius (plads, antal, drikkevindue).
   Brug det, når brugeren spørger til vin – også "kig i Cellarius" eller "hvilken vin til …". Foreslå kun
   vine, der faktisk ligger i kælderen, nævn pladsen, og foretræk vine der er klar eller bør drikkes snart.
+- huti_pantry viser, hvad husstanden har i fryseren, køleskabet og spisekammeret (appen huti), med det,
+  der skal spises snart, først. Med suggest_recipes kommer der også retter fra biblioteket, der bruger det.
+  Brug det, når brugeren spørger til fryseren/køleskabet/"det vi har", eller vil have en madplan ud fra det –
+  læg så retterne på madplanen med add_to_meal_plan, når brugeren beder om det, og prioritér det, der skal spises snart.
 - Vinen kan kobles til en ret på madplanen: set_wine_for_meal (entry-id fra get_meal_plan) for en ret,
   der allerede står der, eller feltet wine i add_to_meal_plan. Kun når brugeren beder om det.
 
@@ -1679,6 +1717,23 @@ const oauth = require('./oauth.js').opret({
 
 const SCOPE_TILLADER = { read: new Set(['read']), full: new Set(['read', 'full']) };
 
+/* ---------------- huti (v55) ----------------
+ * Kokkeri -> huti: madplanen kan se, hvad husstanden har i fryseren, koeleskabet og
+ * spisekammeret. Hele klienten (kun http(s), ingen viderestilling, timeout, faste
+ * fejlkoder, rensning, cache) bor i app/huti.js. Indstillingerne `huti_url`,
+ * `huti_key` og `huti_status` er IKKE i SETTING_KEYS: de saettes kun gennem
+ * /api/huti/forbind, saa »ny adresse kraever noeglen igen« ikke kan omgaas. */
+const hutiMod = require('./huti.js');
+const hutiForb = hutiMod.opret({ setting, setSetting: (k, v) => q.setSetting.run(k, String(v == null ? '' : v)), log: console.log });
+const mcpModul = require('./mcp.js');
+/* Opskrifterne til huti-matcheren - samme liste som MCP-vaerktoejerne bruger. */
+const alleOpskrifter = () => q.itemsByKind.all('recipe').map(r => { try { return JSON.parse(r.data); } catch (e) { return null; } }).filter(Boolean);
+const hentOpskrift = id => {
+  const row = q.itemById.get(String(id || ''));
+  if (!row || row.deleted) return null;
+  try { const r = JSON.parse(row.data); return r && r.kind === 'recipe' ? r : null; } catch (e) { return null; }
+};
+
 const mcp = require('./mcp.js').opret({
   version: APP_VER_NR,
   maa: (auth, scope) => (SCOPE_TILLADER[auth.scope] || SCOPE_TILLADER.read).has(scope),
@@ -1718,6 +1773,8 @@ const mcp = require('./mcp.js').opret({
   gaetAfdeling: () => '',
   /* Tilbud fra eTilbudsavis (v44) - asynkrone, kaster med status ved fejl. */
   tilbud: { opsaetning: () => tilbudOpsaetning(), soeg: (q2, butik, rel) => tilbudSoeg(q2, butik, rel), alle: () => tilbudAlle() },
+  /* huti (v55) - kun laesning; noeglen bliver her. */
+  huti: { beholdning: () => hutiForb.beholdning(), linje: v => hutiMod.vareLinje(v) },
   /* Vinkaelderen i Cellarius (v53) - kun laesning; noeglen bliver her. */
   cellarius: {
     retTekst: r => cellariusRetTekst(r),
@@ -1757,7 +1814,7 @@ async function oauthKrop(req) {
     req.on('end', () => resolve(Buffer.concat(dele).toString('utf8')));
     req.on('error', reject);
   });
-  if ((req.headers['content-type'] || '').includes('application/json')) {
+  if (String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase() === 'application/json') {
     try { return JSON.parse(raa || '{}'); } catch (e) { return {}; }
   }
   return Object.fromEntries(new URLSearchParams(raa));
@@ -1981,7 +2038,13 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
 
     /* --- API --- */
     const user = currentUser(req);
-    const isJson = (req.headers['content-type'] || '').includes('application/json');
+    /* CSRF-barrieren: en fremmed side kan kun sende »simple« typer (text/plain,
+     * form) uden preflight. MIME-essensen sammenlignes PRAECIST - `includes()` lod
+     * »text/plain; x=application/json« slippe igennem (sikkerhedsreviewet 14/10-2026).
+     * Uploads (backup-gendannelse, billeder) gaar ogsaa som JSON her; OAuth-samtykket
+     * har sin egen vagt (samtykkeBevis), /mcp og /token kraever en Bearer-noegle. */
+    const ctEssens = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+    const isJson = ctEssens === 'application/json';
     if (req.method !== 'GET' && !isJson) return err(res, 400, 'Content-Type skal være application/json');
     const body = req.method === 'GET' ? {} : await readBody(req);
 
@@ -2220,10 +2283,35 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
     if (p === '/api/settings' && req.method === 'POST') {
       const entries = body.settings && typeof body.settings === 'object' ? body.settings : null;
       if (!entries) return err(res, 400, 'Forventede { settings: {...} }');
+      /* Tjek ALT foer noget skrives. */
       for (const [key, val] of Object.entries(entries)) {
         if (!SETTING_KEYS.has(key)) return err(res, 400, 'Ukendt indstilling: ' + key);
         const str = key === 'app' ? JSON.stringify(val) : String(val == null ? '' : val);
         if (str.length > SETTING_MAX[key]) return err(res, 413, key + ' er for stor');
+      }
+      if (!user.is_admin) {
+        /* Registreringen styres kun af admin (/api/admin/settings). */
+        if ('allow_registration' in entries) return err(res, 403, 'Kun en administrator kan slå registrering til eller fra');
+        /* En ny adresse kraever noeglen igen: ellers kunne en ikke-admin flytte fx
+         * Home Assistant-adressen til sin egen server og faa det gemte token tilsendt
+         * ved naeste kald (samme regel som huti). Det samme gaelder AI-udbyderen: med
+         * »openai« sendes ai_key til ai_url. */
+        const nyVaerdi = k => k in entries && String(entries[k] == null ? '' : entries[k]) !== setting(k, '');
+        for (const [urlNoegle, hemmelig] of Object.entries(URL_INDSTILLINGER)) {
+          const flytter = nyVaerdi(urlNoegle) && String(entries[urlNoegle] || '') !== '';
+          const flytterAi = urlNoegle === 'ai_url' && nyVaerdi('ai_provider');
+          if ((flytter || flytterAi) && setting(hemmelig, '') && !(hemmelig in entries)) {
+            return err(res, 403, 'En ny adresse kræver nøglen igen – angiv nøglen, eller bed en administrator om at flytte forbindelsen');
+          }
+        }
+      }
+      for (const [key, val] of Object.entries(entries)) {
+        const str = key === 'app' ? JSON.stringify(val) : String(val == null ? '' : val);
+        /* Netvagten: hvem satte adressen? Admin -> interne adresser tilladt. En ikke-admin,
+         * der gemmer den SAMME adresse igen (panelet sender alle felter), aendrer intet. */
+        if (key in URL_INDSTILLINGER && (user.is_admin || str !== setting(key, ''))) {
+          q.setSetting.run(key + '_admin', user.is_admin ? '1' : '0');
+        }
         q.setSetting.run(key, str);
       }
       return send(res, 200, appSettingsJson());
@@ -2235,7 +2323,7 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
       try { target = new URL(String(u.searchParams.get('url') || '')); } catch (e) { return err(res, 400, 'Ugyldig URL'); }
       if (target.protocol !== 'https:' && target.protocol !== 'http:') return err(res, 400, 'Kun http/https-links');
       try {
-        const html = await fetchPage(target.href);
+        const html = await fetchPage(target.href, !!user.is_admin);
         const recipe = extractRecipe(html, target.href);
         if (recipe) return send(res, 200, { recipe });
         /* intet JSON-LD: returner sidens tekst, saa AI'en kan proeve */
@@ -2249,6 +2337,8 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
           pageText: stripHtml(html).slice(0, 30000)
         });
       } catch (e) {
+        /* Netvagtens fejl (blokeret/ikke naaet/timeout/for stor) ser ens ud udadtil. */
+        if (e.kode) { netFejlLog('import', e); return err(res, 502, NET_FEJL_SIDE); }
         return err(res, 502, 'Kunne ikke hente siden: ' + e.message);
       }
     }
@@ -2284,13 +2374,15 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
       try { target = new URL(String(body.url || '')); } catch (e) { return err(res, 400, 'Ugyldig URL'); }
       if (target.protocol !== 'https:' && target.protocol !== 'http:') return err(res, 400, 'Kun http/https');
       const headers = crawlHeaders(body);
+      const tilladPrivat = !!user.is_admin;
+      const hentSide = (adr, ms) => netvagt.vagtFetch(adr, { headers, timeoutMs: ms, maksBytes: 8e6, klip: true, tilladPrivat });
       const mode = body.mode === 'sitemap' ? 'sitemap' : 'links';
       const pattern = String(body.pattern || '').toLowerCase();
       try {
         let urls = [];
         let robotsAdvarsel = '';
         try {
-          const rob = await fetch(target.origin + '/robots.txt', { headers, signal: AbortSignal.timeout(8000) });
+          const rob = await hentSide(target.origin + '/robots.txt', 8000);
           if (rob.ok) {
             const txt = (await rob.text()).slice(0, 20000);
             /* meget simpelt tjek: er stien eksplicit disallowed for alle? */
@@ -2311,7 +2403,7 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
           const grab = async (u, dybde) => {
             if (dybde > 3 || seen.has(u) || seen.size > 60 || urls.length > 20000) return;
             seen.add(u);
-            const r = await fetch(u, { headers, signal: AbortSignal.timeout(20000), redirect: 'follow' });
+            const r = await hentSide(u, 20000);
             if (!r.ok) return;
             const txt = (await r.text()).slice(0, 8e6);
             /* Er dokumentet et <sitemapindex>, peger hver <loc> paa et UNDER-sitemap;
@@ -2334,7 +2426,7 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
           }
           if (!urls.length) {
             try {
-              const rob = await fetch(target.origin + '/robots.txt', { headers, signal: AbortSignal.timeout(8000) });
+              const rob = await hentSide(target.origin + '/robots.txt', 8000);
               if (rob.ok) {
                 for (const m of (await rob.text()).matchAll(/Sitemap:\s*(\S+)/gi)) await grab(m[1], 0);
               }
@@ -2342,7 +2434,7 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
           }
           if (!urls.length) return err(res, 404, 'Fandt intet sitemap på ' + target.origin + ' – prøv "links på siden" i stedet');
         } else {
-          const r = await fetch(target.href, { headers, signal: AbortSignal.timeout(20000), redirect: 'follow' });
+          const r = await hentSide(target.href, 20000);
           if (!r.ok) return err(res, 502, 'Siden svarede ' + r.status + (r.status === 401 || r.status === 403 ? ' – virker din cookie?' : ''));
           const html = (await r.text()).slice(0, 8e6);
           if (looksLikeLogin(html)) return err(res, 401, 'Fik en login-side retur – cookien er udløbet eller mangler');
@@ -2367,6 +2459,7 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
          * 3169 sider) kan tages i én omgang i stedet for kun de foerste 1000 */
         return send(res, 200, { urls: urls.slice(0, 5000), total: urls.length, robotsAdvarsel });
       } catch (e) {
+        if (e.kode) { netFejlLog('crawl', e); return err(res, 502, NET_FEJL_SIDE); }
         return err(res, 502, 'Kunne ikke hente: ' + e.message);
       }
     }
@@ -2397,6 +2490,7 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
         total: urls.length, done: 0, imported: 0, skipped: 0, failed: 0,
         current: '', error: '', urls,
         cookie: String(body.cookie || ''), userAgent: String(body.userAgent || ''),
+        tilladPrivat: !!user.is_admin,
         useAi: !!body.useAi && (setting('ai_provider', 'claude') === 'openai'
           ? !!setting('ai_url', '') : !!setting('ai_key', ''))
       });
@@ -2415,13 +2509,11 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
       try { target = new URL(String(body.url || '')); } catch (e) { return err(res, 400, 'Ugyldig URL'); }
       if (target.protocol !== 'https:' && target.protocol !== 'http:') return err(res, 400, 'Kun http/https');
       try {
-        const r = await fetch(target.href, {
-          headers: crawlHeaders(body), signal: AbortSignal.timeout(25000), redirect: 'follow'
+        const r = await netvagt.vagtFetch(target.href, {
+          headers: crawlHeaders(body), timeoutMs: 25000, maksBytes: 8e6, tilladPrivat: !!user.is_admin
         });
         if (!r.ok) return err(res, 502, 'Siden svarede ' + r.status);
-        const buf = Buffer.from(await r.arrayBuffer());
-        if (buf.length > 8e6) return err(res, 413, 'Siden er for stor');
-        const html = buf.toString('utf8');
+        const html = await r.text();
         if (looksLikeLogin(html)) return err(res, 401, 'Fik en login-side retur – cookien virker ikke længere');
         const recipe = extractRecipe(html, target.href);
         if (recipe) return send(res, 200, { recipe });
@@ -2435,6 +2527,7 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
           pageText: stripHtml(html).slice(0, 30000)
         });
       } catch (e) {
+        if (e.kode) { netFejlLog('crawl', e); return err(res, 502, NET_FEJL_SIDE); }
         return err(res, 502, 'Kunne ikke hente: ' + e.message);
       }
     }
@@ -2445,15 +2538,15 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
       try { target = new URL(String(u.searchParams.get('url') || '')); } catch (e) { return err(res, 400, 'Ugyldig URL'); }
       if (target.protocol !== 'https:' && target.protocol !== 'http:') return err(res, 400, 'Kun http/https-links');
       try {
-        const r = await fetch(target.href, { headers: FETCH_HEADERS, signal: AbortSignal.timeout(20000), redirect: 'follow' });
+        const r = await netvagt.vagtFetch(target.href, { headers: FETCH_HEADERS, timeoutMs: 20000, maksBytes: 10e6, tilladPrivat: !!user.is_admin });
         if (!r.ok) return err(res, 502, 'Billedet svarede ' + r.status);
         const type = r.headers.get('content-type') || '';
         if (!type.startsWith('image/')) return err(res, 415, 'Ikke et billede (' + type + ')');
         const buf = Buffer.from(await r.arrayBuffer());
-        if (buf.length > 10e6) return err(res, 413, 'Billedet er for stort');
         res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-store' });
         return res.end(buf);
       } catch (e) {
+        if (e.kode) { netFejlLog('billede', e); return err(res, 502, 'Kunne ikke hente billedet'); }
         return err(res, 502, 'Kunne ikke hente billedet: ' + e.message);
       }
     }
@@ -2555,14 +2648,14 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
       let ok = 0, failed = 0, lastErr = '';
       for (const it of items.slice(0, 200)) {
         try {
-          const r = await fetch(haUrl + '/api/services/todo/add_item', {
+          const r = await netvagt.vagtFetch(haUrl + '/api/services/todo/add_item', {
             method: 'POST',
             headers: { 'Authorization': 'Bearer ' + haToken, 'Content-Type': 'application/json' },
             body: JSON.stringify({ entity_id: haEntity, item: String(it.text || '').slice(0, 250) }),
-            signal: AbortSignal.timeout(10000)
+            timeoutMs: 10000, maksBytes: 1e6, tilladPrivat: adminSatte('ha_url')
           });
           if (r.ok) ok++; else { failed++; lastErr = 'HA svarede ' + r.status; }
-        } catch (e) { failed++; lastErr = e.message; }
+        } catch (e) { failed++; netFejlLog('ha', e); lastErr = 'Home Assistant kunne ikke nås'; }
         if (failed >= 3 && ok === 0) break; // giv op hurtigt hvis intet virker
       }
       if (!ok) return err(res, 502, 'Kunne ikke sende til Home Assistant: ' + lastErr);
@@ -2742,6 +2835,79 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
         });
       }
       return err(res, 404, 'Ukendt Cellarius-kald');
+    }
+
+    /* ---- huti (v55): fryser, koeleskab og spisekammer ----
+     * Faste fejlkoder udadtil (app/huti.js): bad_key -> 400, failed -> 424 (ikke 502:
+     * et 5xx ligner »Kokkeri er nede«), not_set -> 409, read_only -> 403. */
+    if (p.startsWith('/api/huti/')) {
+      const hutiFejl = r => send(res, { bad_url: 400, need_key: 400, bad_key: 400, not_set: 409, read_only: 403, refused: 409 }[r.kode] || 424,
+        { error: r.besked, kode: r.kode });
+      /* Forbindelsen er FAELLES for alle Kokkeri-konti, og registreringen er aaben som
+       * standard (sikkerhedsreviewet 14/10-2026): forbind/test/afbryd kraever admin.
+       * Laesning (beholdning, forslag, maerker, linjer) er faelles Kokkeri-data som
+       * opskrifterne - login er nok. »Tag ud« er begraenset i huti.js (kun madvarer). */
+      if ((p === '/api/huti/forbind' || p === '/api/huti/test' || p === '/api/huti/afbryd') && !user.is_admin) {
+        return send(res, 403, { error: 'Kun en administrator kan forbinde, teste eller afbryde huti', kode: 'admin_only' });
+      }
+      if (p === '/api/huti/forbind' && req.method === 'POST') {
+        /* Admin -> en intern adresse (huti paa samme LAN-server) er tilladt. */
+        const r = await hutiForb.forbind({ url: body.url, key: body.key, tilladPrivat: true });
+        if (!r.ok) return hutiFejl(r);
+        console.log(`[huti] ${user.username} forbandt Kokkeri til huti (${r.total} madvarer${r.canWrite ? ', kan tage ud' : ''})`);
+        return send(res, 200, Object.assign({ ok: true, total: r.total, eatSoon: r.eatSoon, canWrite: r.canWrite }, { settings: appSettingsJson() }));
+      }
+      if (p === '/api/huti/test' && req.method === 'POST') {
+        const r = await hutiForb.test();
+        if (!r.ok) return hutiFejl(r);
+        return send(res, 200, { ok: true, total: r.total, eatSoon: r.eatSoon, canWrite: r.canWrite, settings: appSettingsJson() });
+      }
+      if (p === '/api/huti/afbryd' && req.method === 'POST') {
+        hutiForb.afbryd();
+        console.log(`[huti] ${user.username} afbrød forbindelsen til huti`);
+        return send(res, 200, { ok: true, settings: appSettingsJson() });
+      }
+      /* Herfra skal forbindelsen findes. Beholdningen er cachet i 3 min (frisk: true springer den over). */
+      const b = await hutiForb.beholdning({ frisk: !!body.frisk });
+      if (!b.ok) return hutiFejl(b);
+      if (p === '/api/huti/beholdning' && req.method === 'POST') {
+        return send(res, 200, { items: b.items, total: b.total, eatSoon: b.eatSoon, at: b.at });
+      }
+      /* Forslag til madplanen: what_can_i_cook-matcheren paa hutis ord, spis snart foerst. */
+      if (p === '/api/huti/forslag' && req.method === 'POST') {
+        const kat = Array.isArray(body.categories) ? body.categories.map(x => String(x || '').slice(0, 80)).slice(0, 100) : null;
+        const f = mcpModul.hutiForslag(alleOpskrifter(), b.items, { kunFrokost: body.meal === 'lunch', kategorier: kat, limit: Math.min(60, +body.limit || 30) });
+        return send(res, 200, {
+          total: b.total, eatSoon: b.eatSoon, at: b.at,
+          words: f.ord.map(o => ({ word: o.ord, soon: o.soon, n: o.varer.length })),
+          recipes: f.retter.map(x => ({ id: x.r.id, title: x.r.title || '', category: x.r.category || '', rating: x.r.rating || 0,
+            matched: x.n, soon: x.snart, from: x.ramt.flatMap(o => o.varer).map(v => v.id) })),
+          items: b.items
+        });
+      }
+      /* »fra huti: …« paa madplanens retter: hvilke varer bruger hver ret? */
+      if (p === '/api/huti/opskrifter' && req.method === 'POST') {
+        const ids = (Array.isArray(body.ids) ? body.ids : []).map(String).filter(x => /^[0-9a-zA-Z-]{6,64}$/.test(x)).slice(0, 100);
+        const matches = {};
+        for (const id of ids) {
+          const r = hentOpskrift(id);
+          if (r) matches[id] = mcpModul.hutiVarerTil(r, b.items).map(v => v.id);
+        }
+        return send(res, 200, { matches, items: b.items });
+      }
+      /* Indkoebslisten: har huti det, linjen beder om? (strengere end opskrift-matcheren) */
+      if (p === '/api/huti/linjer' && req.method === 'POST') {
+        const linjer = (Array.isArray(body.lines) ? body.lines : []).map(x => String(x || '').slice(0, 300)).slice(0, 400);
+        return send(res, 200, { matches: linjer.map(l => mcpModul.hutiVarerTilLinje(l, b.items).map(v => v.id)), items: b.items });
+      }
+      /* »Tag ud i huti« - kun efter brugerens klik, kun med en skrivenoegle. */
+      if (p === '/api/huti/tag-ud' && req.method === 'POST') {
+        const r = await hutiForb.tagUd(body.stockId, body.amount);
+        if (!r.ok) return hutiFejl(r);
+        console.log(`[huti] ${user.username} tog vare #${+body.stockId} ud i huti`);
+        return send(res, 200, r);
+      }
+      return err(res, 404, 'Ukendt huti-kald');
     }
 
     /* ---- adgangsnoegler og forbundne apps (MCP) ----

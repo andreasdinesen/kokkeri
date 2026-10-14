@@ -105,7 +105,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 54;
+const APP_VERSION = 55;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -3018,7 +3018,7 @@ Findes der ingen opskrift i teksten, svar {"error": "ingen opskrift fundet"}.`;
 /* ---------------- indkoebsliste fra opskrift ---------------- */
 /* springer varer over, der ligger i forraadet, gaetter afdeling og laegger
  * ens varer sammen med det, der allerede staar paa listen */
-async function addRecipeToShopping(r, factor) {
+async function addRecipeToShopping(r, factor, opts) {
   const lines = (r.ingredients || []).filter(l => !/^##/.test(l));
   if (!lines.length) return toast('Opskriften har ingen ingredienser', true);
   let skipped = 0;
@@ -3031,10 +3031,15 @@ async function addRecipeToShopping(r, factor) {
       section: guessSection(text), done: false, createdAt: new Date().toISOString()
     });
   }
-  if (items.length) await saveBulk(items);
+  /* huti (v55, fra madplanen): det, huti har, vises - brugeren vaelger */
+  const valgt = opts && opts.huti ? await hutiFiltrerIndkoeb(items) : items;
+  if (!valgt) return;
+  const hutiSprunget = valgt.hutiSprunget || 0;
+  if (valgt.length) await saveBulk(valgt);
   const merged = await mergeShoppingItems();
-  toast(`${items.length} varer føjet til listen` +
+  toast(`${valgt.length} varer føjet til listen` +
     (skipped ? ` · ${skipped} sprunget over (i forråd)` : '') +
+    (hutiSprunget ? ` · ${hutiSprunget} har I i huti` : '') +
     (merged ? ` · ${merged} lagt sammen` : ''));
   renderNav();
 }
@@ -3722,6 +3727,7 @@ RENDER.plan = () => {
           title="Vis eller skjul billeder i ugeoversigten">🖼️ Billeder</button>
         <button class="btn danger" id="wkClear">🗑️ Ryd ugen</button>
         ${S.settings.aiKeySet ? '<button class="btn primary" id="wkAi">✨ Foreslå madplan (AI)</button>' : ''}
+        ${hutiSat() ? '<button class="btn primary" id="wkHuti" title="Forslag ud fra det, I har i fryseren, køleskabet og spisekammeret i huti">🧊 Brug det, vi har</button>' : ''}
       </div>`) + planFindHtml() + planArmHtml() + `
   <div class="weekgrid">
     ${dates.map((d, i) => `
@@ -3737,6 +3743,7 @@ RENDER.plan = () => {
             ${slotTag}${r ? esc(r.title) : esc(e.text || '')}
             ${r && recipeTotalMin(r) ? `<div class="pmeta">⏱ ${fmtMin(recipeTotalMin(r))}${e.servings ? ' · ' + e.servings + ' pers.' : ''}</div>` : (e.servings ? `<div class="pmeta">${e.servings} pers.</div>` : '')}
             ${e.wine ? `<div class="pmeta" title="Vin til retten">🍷 ${esc(e.wine)}</div>` : ''}
+            ${hutiPlanMaerke(e)}
           </div>`;
         }).join('')}
         <button class="dayadd${S.planArm ? ' arm' : ''}" data-date="${d}">${S.planArm ? '⬇ Læg her' : '+ tilføj'}</button>
@@ -3761,6 +3768,10 @@ RENDER.plan_bind = () => {
   };
   const ai = $('#wkAi');
   if (ai) ai.onclick = aiSuggestWeek;
+  const hb = $('#wkHuti');
+  if (hb) hb.onclick = hutiForslagModal;
+  /* »fra huti: …« paa ugens retter - hentes én gang pr. (uge, retter), se p5b_huti.js */
+  hutiOpdaterPlan(K('planEntry').filter(e => weekDatesOf(S.weekStart || mondayOf()).includes(e.date)));
   $('#wkFind').onclick = () => {
     S.planFind = !S.planFind;
     S.planFokus = S.planFind;
@@ -4134,6 +4145,7 @@ async function planQuickView(entry) {
     ${r.description ? `<p class="small muted" style="margin:12px 0 0">${esc(r.description.slice(0, 220))}${r.description.length > 220 ? '…' : ''}</p>` : ''}
     <h3 style="margin-bottom:2px">Ingredienser${factor !== 1 ? ' <span class="chip on small">skaleret</span>' : ''}</h3>
     <ul class="ings" style="max-height:230px;overflow:auto;margin-top:4px">${ings || '<li class="muted">Ingen ingredienser</li>'}</ul>
+    ${hutiSat() ? '<div id="qvHuti"></div>' : ''}
     <div class="actions" style="flex-wrap:wrap">
       <button class="btn" id="qvEdit">✏️ Redigér</button>
       <button class="btn danger" id="qvDel" style="margin-right:auto">🗑️ Fjern fra dagen</button>
@@ -4155,8 +4167,9 @@ async function planQuickView(entry) {
     m.querySelector('#qvOpen').onclick = () => { closeModal(); goto('recipeDetail', r.id); };
     m.querySelector('#qvShop').onclick = async () => {
       closeModal();
-      await addRecipeToShopping(r, factor);
+      await addRecipeToShopping(r, factor, { huti: true });
     };
+    hutiKvikVis(m, r);
   }, true);
 }
 
@@ -4255,10 +4268,14 @@ async function weekToShopping() {
       });
     }
   }
-  if (items.length) await saveBulk(items);
+  /* huti (v55): det, huti har, vises - brugeren vaelger, om det springes over */
+  const valgt = await hutiFiltrerIndkoeb(items);
+  if (!valgt) return;
+  const hutiSprunget = valgt.hutiSprunget || 0;
+  if (valgt.length) await saveBulk(valgt);
   const merged = await mergeShoppingItems();
-  toast(`${items.length} varer føjet til listen` +
-    (skipped ? ` · ${skipped} i forråd` : '') + (merged ? ` · ${merged} lagt sammen` : ''));
+  toast(`${valgt.length} varer føjet til listen` +
+    (skipped ? ` · ${skipped} i forråd` : '') + (hutiSprunget ? ` · ${hutiSprunget} har I i huti` : '') + (merged ? ` · ${merged} lagt sammen` : ''));
   goto('shopping');
 }
 
@@ -4298,20 +4315,24 @@ async function aiSuggestWeek() {
   if (recipes.length < 2) return toast('Tilføj nogle opskrifter først, så AI\'en har noget at vælge imellem', true);
 
   toast('AI\'en sammensætter en madplan …');
-  const list = recipes.map(r => ({
+  let list = recipes.map(r => ({
     id: r.id, title: r.title, category: r.category || '',
     min: recipeTotalMin(r),
     rating: r.rating || 0, lastCooked: r.lastCooked || null
   }));
+  /* huti (v55): hvad husstanden har - ét kald, og null (= som foer) hvis huti ikke
+   * er forbundet eller ikke svarer. Ingen nye forsoeg, ingen loekke. */
+  const huti = await hutiMadplanKontekst(list);
+  if (huti) list = huti.list;
   const sys = `Du sammensætter en ugentlig aftensmads-plan ud fra brugerens egne opskrifter.
 Vælg varieret (ikke to ens retter i træk, bland kategorier), foretræk højt vurderede opskrifter og
-retter der ikke er lavet for nylig. Hverdagsretter bør være hurtige; weekend må gerne tage længere tid.
+retter der ikke er lavet for nylig. Hverdagsretter bør være hurtige; weekend må gerne tage længere tid.${huti ? '\n' + HUTI_MADPLAN_REGEL : ''}
 Svar KUN med JSON: [{"date": "YYYY-MM-DD", "recipeId": "..."}] – én pr. dato, brug KUN de givne datoer og recipeId'er.`;
   try {
     const r = await api('/api/ai', {
       body: {
         system: sys,
-        messages: [{ role: 'user', content: `Datoer der skal fyldes: ${free.join(', ')}\n\nOpskrifter:\n` + JSON.stringify(list) }],
+        messages: [{ role: 'user', content: `Datoer der skal fyldes: ${free.join(', ')}\n\n${huti ? huti.tekst + '\n\n' : ''}Opskrifter:\n` + JSON.stringify(list) }],
         maxTokens: 2048
       }
     });
@@ -4325,11 +4346,327 @@ Svar KUN med JSON: [{"date": "YYYY-MM-DD", "recipeId": "..."}] – én pr. dato,
     }
     if (!items.length) throw new Error('AI\'en foreslog ingen brugbare dage');
     await saveBulk(items);
-    toast(`Madplan foreslået for ${items.length} dage – ret til som du vil`);
+    const medHuti = huti ? items.filter(i => huti.bruger[i.recipeId]).length : 0;
+    toast(`Madplan foreslået for ${items.length} dage${medHuti ? ` – ${medHuti} bruger noget fra huti` : ''} – ret til som du vil`);
     render();
   } catch (e) {
     toast('Kunne ikke lave madplan: ' + e.message, true);
   }
+}
+
+/* ---------------- huti: fryseren, koeleskabet og spisekammeret (v55) ----------------
+ * huti er husstandens inventar. Serveren (app/huti.js) spoerger hutis MCP-server med en
+ * personlig noegle, der aldrig forlader serveren; fladen ser kun de rensede varer.
+ * ALT fra huti escapes her alligevel - navne, steder og ord er utrovaerdigt input.
+ *
+ *  - Madplanen: knappen »🧊 Brug det, vi har« -> forslag (what_can_i_cook-matcheren paa
+ *    serveren, spis snart foerst) -> »Læg på …« med laegPaaDag(), den samme vej som
+ *    soegepanelet bruger. Hver ret paa madplanen faar maerket »fra huti: …«.
+ *  - Kvik-visningen: maerket + »Tag ud i huti« (kun med en skrivenoegle, kun efter klik).
+ *  - Indkoebslisten: linjer, huti har, vises i en dialog - brugeren vaelger, om de
+ *    springes over eller kommer med (saa med maerket »har i huti: …«). Intet fjernes stille.
+ *
+ * Kaldene rammer /api/huti/*. Fejl giver en toast eller en linje - ALDRIG en ny runde
+ * kald: S.hutiPlan husker noeglen for det, der er spurgt om, ogsaa naar det fejlede
+ * (huti-broen fik en kaldeloekke af praecis den slags, se huti/claude-noter/kokkeri-broen.md). */
+
+const hutiSat = () => !!(S.settings && S.settings.hutiSet);
+const hutiKanSkrive = () => !!(S.settings && S.settings.hutiCanWrite);
+
+/* Varerne (sidst hentede) slaas op pr. id - svarene har kun id'er pr. ret/linje. */
+function hutiHusk(items) {
+  S.hutiVarer = {};
+  for (const v of items || []) S.hutiVarer[v.id] = v;
+}
+const hutiVare = id => (S.hutiVarer || {})[id] || null;
+const hutiVarerAf = ids => (ids || []).map(hutiVare).filter(Boolean);
+
+/* »2 poser« / »1 stk« - tom, naar huti ikke kender maengden. */
+const HUTI_ENTAL = { poser: 'pose', portioner: 'portion', bokse: 'boks', pakker: 'pakke' };
+function hutiMaengde(v) {
+  if (v.quantity == null) return '';
+  const n = String(v.quantity).replace('.', ',');
+  const enhed = v.quantity === 1 && HUTI_ENTAL[v.unit] ? HUTI_ENTAL[v.unit] : v.unit;
+  return enhed ? `${n} ${enhed}` : `${n} ×`;
+}
+/* »hjortekølle (spis snart, Fryser › Skuffe 2)« - escapet. */
+function hutiVareTekst(v, medMaengde) {
+  const om = [v.soon ? (v.pastLimit ? 'spis nu' : 'spis snart') : '', v.place || ''].filter(Boolean).join(', ');
+  const m = medMaengde ? hutiMaengde(v) : '';
+  return `${m ? esc(m) + ' ' : ''}${esc(v.name)}${om ? ` <span class="muted">(${esc(om)})</span>` : ''}`;
+}
+/* Maerket »fra huti: …« under en ret (madplan, forslag, kvik-visning). */
+function hutiFraHtml(varer, maks) {
+  if (!varer || !varer.length) return '';
+  const vis = varer.slice(0, maks || 3);
+  const snart = varer.some(v => v.soon);
+  return `<div class="pmeta hutifra${snart ? ' snart' : ''}" title="Det har I i huti">🧊 fra huti: ${vis.map(v => hutiVareTekst(v)).join('; ')}`
+    + `${varer.length > vis.length ? ` <span class="muted">+${varer.length - vis.length}</span>` : ''}</div>`;
+}
+
+/* ---------- madplanens maerker ---------- */
+
+/* Hvilke af ugens retter bruger noget fra huti? Hentes én gang pr. (uge, retter) - ogsaa ved fejl. */
+function hutiPlanNoegle(entries) {
+  return [...new Set(entries.filter(e => e.recipeId).map(e => e.recipeId))].sort().join(',');
+}
+function hutiPlanMaerke(e) {
+  if (!hutiSat() || !e.recipeId || !S.hutiPlan || !S.hutiPlan.matches) return '';
+  return hutiFraHtml(hutiVarerAf(S.hutiPlan.matches[e.recipeId]), 2);
+}
+async function hutiOpdaterPlan(entries) {
+  if (!hutiSat()) return;
+  const noegle = hutiPlanNoegle(entries);
+  if (!noegle || (S.hutiPlan && S.hutiPlan.noegle === noegle)) return;
+  S.hutiPlan = { noegle, matches: null, henter: true };
+  try {
+    const d = await api('/api/huti/opskrifter', { body: { ids: noegle.split(',') } });
+    hutiHusk(d.items);
+    S.hutiPlan = { noegle, matches: d.matches || {} };
+  } catch (e) {
+    S.hutiPlan = { noegle, matches: null, fejl: e.message };
+    return;                          // ingen render: siden er tegnet, og vi spoerger ikke igen
+  }
+  if (S.view === 'plan') render();
+}
+
+/* ---------- »Brug det, vi har« ---------- */
+
+function hutiFrieDage(dates, slot) {
+  return dates.filter(d => !K('planEntry').some(e => e.date === d && slotOf(e) === slot));
+}
+async function hutiForslagModal() {
+  const monday = S.weekStart || mondayOf();
+  const dates = weekDatesOf(monday);
+  const st = { slot: lsGet('kk_hutislot', 'dinner') === 'lunch' ? 'lunch' : 'dinner', kunKat: lsGet('kk_hutikat', '1') === '1', d: null, fejl: '', lagt: {} };
+  const tegn = m => {
+    const d = st.d;
+    const frie = hutiFrieDage(dates, st.slot);
+    const dagValg = valgt => dates.map(x => `<option value="${x}"${x === valgt ? ' selected' : ''}>${esc(WEEKDAYS_DA[ugedagNr(x)])} ${esc(fmtDate(x))}${frie.includes(x) ? '' : ' (optaget)'}</option>`).join('');
+    let krop;
+    if (st.fejl) krop = `<p class="warn">${esc(st.fejl)}</p><div class="rowflex"><button class="btn small" id="hfIgen">Prøv igen</button></div>`;
+    else if (!d) krop = '<p class="muted">Henter fra huti …</p>';
+    else {
+      const snartOrd = d.words.filter(w => w.soon);
+      krop = `<p class="small" style="margin:0 0 8px"><b>${d.total}</b> madvarer i huti, <b>${d.eatSoon}</b> skal spises snart.`
+        + `${snartOrd.length ? ` Spis snart: ${snartOrd.slice(0, 8).map(w => `<span class="chip small hutichip snart">${esc(w.word)}</span>`).join(' ')}` : ''}</p>`
+        + (d.recipes.length ? `<div class="hutiforslag">${d.recipes.map(r => {
+          const lokal = recipeById(r.id);
+          const tid = lokal ? recipeTotalMin(lokal) : 0;
+          const lagt = st.lagt[r.id];
+          return `<div class="hutiret" data-hr="${esc(r.id)}">
+            <div class="grow" style="min-width:0">
+              <b>${esc(r.title || '(uden titel)')}</b>
+              <span class="small muted">${[r.category, tid ? fmtMin(tid) : '', `bruger ${r.matched} af jeres varer`].filter(Boolean).map(esc).join(' · ')}</span>
+              ${r.soon ? '<span class="chip small hutichip snart">spis snart</span>' : ''}
+              ${hutiFraHtml(hutiVarerAf(r.from), 3)}
+            </div>
+            <div class="rowflex hutilaeg">
+              ${lagt ? `<span class="good small">✓ lagt på ${esc(lagt)}</span>` : `<select data-hd="${esc(r.id)}" aria-label="Dag">${dagValg(frie.find(x => x >= isoDate()) || frie[0] || dates[0])}</select>
+              <button class="btn small primary" data-hl="${esc(r.id)}">Læg på</button>`}
+            </div>
+          </div>`;
+        }).join('')}</div>`
+          : '<p class="muted">Ingen opskrifter i biblioteket bruger det, der er i huti' + (st.kunKat && st.slot !== 'lunch' ? ' – prøv uden kategorifilteret' : '') + '.</p>');
+    }
+    m.querySelector('#hfKrop').innerHTML = krop;
+    const igen = m.querySelector('#hfIgen');
+    if (igen) igen.onclick = () => hent(m, true);
+    m.querySelectorAll('[data-hl]').forEach(b => b.onclick = async () => {
+      const id = b.dataset.hl;
+      const dag = m.querySelector(`[data-hd="${CSS.escape(id)}"]`).value;
+      await laegPaaDag(dag, { recipeId: id }, st.slot);   // samme vej som soegepanelet
+      st.lagt[id] = WEEKDAYS_DA[ugedagNr(dag)].toLowerCase() + ' ' + fmtDate(dag);
+      tegn(m);
+    });
+  };
+  const hent = async (m, frisk) => {
+    st.fejl = ''; st.d = null; tegn(m);
+    try {
+      st.d = await api('/api/huti/forslag', { body: { meal: st.slot === 'lunch' ? 'lunch' : '', categories: st.kunKat ? fillCats() : null, frisk: !!frisk } });
+      hutiHusk(st.d.items);
+    } catch (e) { st.fejl = 'huti: ' + e.message; }
+    if (document.body.contains(m)) tegn(m);
+  };
+  const kat = fillCats();
+  openModal(`<h2>🧊 Brug det, vi har</h2>
+    <p class="small muted" style="margin-top:0">Retter fra biblioteket, der bruger det, I har i fryseren, køleskabet og spisekammeret i huti –
+      dem med noget, der skal spises snart, øverst. Vælg en dag, og læg retten på madplanen for uge ${isoWeekNo(monday)}.</p>
+    <div class="rowflex" style="margin-bottom:8px">
+      <select id="hfSlot" aria-label="Måltid">${SLOTS.filter(s => s.id === 'dinner' || s.id === 'lunch').map(s => `<option value="${s.id}"${st.slot === s.id ? ' selected' : ''}>${s.ico} ${s.label}</option>`).join('')}</select>
+      <label class="chk"><input type="checkbox" id="hfKat"${st.kunKat ? ' checked' : ''}>
+        <span class="small">Kun ${esc(kat.length ? kat.slice(0, 3).join(', ') + (kat.length > 3 ? ' …' : '') : 'de valgte kategorier')}</span></label>
+      <button class="btn small" id="hfFrisk" title="Hent beholdningen fra huti igen">↻ Hent igen</button>
+    </div>
+    <div id="hfKrop"></div>
+    <div class="actions"><button class="btn primary" id="hfLuk">Færdig</button></div>`, m => {
+    m.querySelector('#hfLuk').onclick = () => { closeModal(); render(); };
+    m.querySelector('#hfSlot').onchange = e => { st.slot = e.target.value; lsSet('kk_hutislot', st.slot); hent(m); };
+    m.querySelector('#hfKat').onchange = e => { st.kunKat = e.target.checked; lsSet('kk_hutikat', st.kunKat ? '1' : '0'); hent(m); };
+    m.querySelector('#hfFrisk').onclick = () => hent(m, true);
+    hent(m);
+  }, true);
+}
+
+/* ---------- »✨ Foreslå madplan (AI)« med hutis beholdning ----------
+ * Madplan-AI'en er ét /api/ai-kald uden vaerktoejer (opskriftslisten staar i prompten),
+ * saa huti kommer med som KONTEKST: beholdningen som tekst, og hver opskrift, der bruger
+ * noget fra huti, faar feltet `huti` (raavareordene, »(spis snart)« paa dem, der haster).
+ * Matchet er serverens (/api/huti/forslag = what_can_i_cook-matcheren), saa AI'en ser
+ * det samme som »Brug det, vi har«. Maerkerne paa de lagte dage kommer af sig selv
+ * (hutiPlanMaerke), fordi retterne nu staar paa madplanen. */
+const HUTI_MADPLAN_REGEL = `Husstanden har mad i fryseren, køleskabet og spisekammeret (appen huti) – den står over opskrifterne.
+Opskrifter med feltet "huti" bruger noget af det. Prioritér FØRST opskrifter, der bruger varer markeret "(spis snart)",
+dernæst andre opskrifter med "huti", og fyld resten op med andre retter. Brug hver vare, der skal spises snart, højst
+én gang, med mindre der er meget af den. Vælg stadig kun opskrifter fra listen, og hold variationen.`;
+async function hutiMadplanKontekst(list) {
+  if (!hutiSat()) return null;
+  let d;
+  /* ét klik = ét friskt opslag */
+  try { d = await api('/api/huti/forslag', { body: { limit: 60, frisk: true } }); } catch (e) {
+    console.warn('huti svarede ikke - madplanen laves uden:', e.message);
+    return null;
+  }
+  hutiHusk(d.items);
+  const bruger = {};
+  for (const r of d.recipes || []) {
+    const ord = [...new Set(hutiVarerAf(r.from).map(v => (v.word || v.name) + (v.soon ? ' (spis snart)' : '')))];
+    if (ord.length) bruger[r.id] = ord;
+  }
+  const varer = (d.items || []).slice(0, 60).map(v => `- ${v.name}${hutiMaengde(v) ? ', ' + hutiMaengde(v) : ''}${v.soon ? ' – SPIS SNART' : ''}`);
+  return {
+    bruger,
+    list: list.map(x => (bruger[x.id] ? Object.assign({}, x, { huti: bruger[x.id] }) : x)),
+    tekst: `I huti (${d.total} madvarer, ${d.eatSoon} skal spises snart):\n${varer.join('\n')}`
+  };
+}
+
+/* ---------- kvik-visningen: maerke + »Tag ud i huti« ---------- */
+
+async function hutiKvikVis(m, r) {
+  const boks = m.querySelector('#qvHuti');
+  if (!boks || !hutiSat()) return;
+  boks.innerHTML = '<p class="small muted" style="margin:8px 0 0">🧊 Spørger huti …</p>';
+  let varer = [];
+  try {
+    const d = await api('/api/huti/opskrifter', { body: { ids: [r.id] } });
+    hutiHusk(d.items);
+    varer = hutiVarerAf((d.matches || {})[r.id]);
+  } catch (e) {
+    boks.innerHTML = `<p class="small warn" style="margin:8px 0 0">🧊 huti: ${esc(e.message)}</p>`;
+    return;
+  }
+  if (!varer.length) { boks.innerHTML = '<p class="small muted" style="margin:8px 0 0">🧊 Intet fra huti i den her ret.</p>'; return; }
+  boks.innerHTML = hutiFraHtml(varer, 6) + (hutiKanSkrive()
+    ? `<div class="rowflex" style="margin-top:6px">${varer.slice(0, 6).map(v => `<button class="btn small" data-tagud="${v.id}"
+        title="Træk én portion/pose fra i huti, når retten laves">➖ Tag ud i huti: ${esc(v.name)}</button>`).join('')}</div>`
+    : '');
+  boks.querySelectorAll('[data-tagud]').forEach(b => b.onclick = async () => {
+    const v = hutiVare(+b.dataset.tagud);
+    if (!v) return;
+    if (!await confirmBox(`Tæl »${v.name}« én ned i huti (én portion/pose/stk – ${v.place || 'huti'})?`, 'Tag ud')) return;
+    b.disabled = true;
+    try {
+      const svar = await api('/api/huti/tag-ud', { body: { stockId: v.id } });
+      const rest = svar.stock && svar.stock.quantity != null ? ` – ${hutiMaengde(svar.stock)} tilbage` : '';
+      toast(`Taget ud i huti: ${v.name}${rest}`);
+      b.textContent = '✓ Taget ud';
+      S.hutiPlan = null;               // maerkerne hentes igen naeste gang
+    } catch (e) { b.disabled = false; toast('huti: ' + e.message, true); }
+  });
+}
+
+/* ---------- indkoebslisten: har huti det? ---------- */
+
+/* items: shopItem-udkast. -> de items, der skal gemmes (nogle med `huti`-maerket), eller
+ * null, hvis brugeren fortryder. Uden huti, eller hvis huti ikke svarer, kommer alt med. */
+async function hutiFiltrerIndkoeb(items) {
+  if (!hutiSat() || !items.length) return items;
+  let d;
+  try { d = await api('/api/huti/linjer', { body: { lines: items.map(i => i.text) } }); } catch (e) {
+    toast('huti kunne ikke spørges – alt kommer på listen (' + e.message + ')', true);
+    return items;
+  }
+  hutiHusk(d.items);
+  const ramt = items.map((it, i) => ({ it, varer: hutiVarerAf((d.matches || [])[i]) })).filter(x => x.varer.length);
+  if (!ramt.length) return items;
+  const harTekst = varer => 'har i huti: ' + varer.slice(0, 3).map(v => (hutiMaengde(v) ? hutiMaengde(v) + ' ' : '') + v.name).join(', ');
+  return new Promise(resolve => {
+    let svaret = false;
+    const svar = v => { if (!svaret) { svaret = true; resolve(v); } };
+    openModal(`<h2>🧊 Det har I allerede i huti</h2>
+      <p class="small muted" style="margin-top:0">${ramt.length} af ${items.length} varer ligger i huti. Sæt flueben ved dem, der skal
+        springes over – resten kommer på listen med et mærke, så I kan se, at de findes.</p>
+      <ul class="hutilinjer">${ramt.map((x, i) => `<li><label class="chk">
+        <input type="checkbox" data-hs="${i}" checked>
+        <span><b>${esc(x.it.text)}</b><br><span class="small">🧊 ${x.varer.slice(0, 3).map(v => hutiVareTekst(v, true)).join('; ')}</span></span>
+      </label></li>`).join('')}</ul>
+      <div class="rowflex"><button class="btn small" id="hsAlle">Spring alle over</button><button class="btn small" id="hsIngen">Tag alle med</button></div>
+      <div class="actions">
+        <button class="btn" id="hsAnnuller">Annullér</button>
+        <button class="btn primary" id="hsOk">Læg på listen</button>
+      </div>`, m => {
+      const bokse = () => [...m.querySelectorAll('[data-hs]')];
+      m.querySelector('#hsAlle').onclick = () => bokse().forEach(b => { b.checked = true; });
+      m.querySelector('#hsIngen').onclick = () => bokse().forEach(b => { b.checked = false; });
+      m.querySelector('#hsAnnuller').onclick = () => { closeModal(); svar(null); };
+      m.querySelector('#hsOk').onclick = () => {
+        const spring = new Set();
+        bokse().forEach(b => {
+          const x = ramt[+b.dataset.hs];
+          if (b.checked) spring.add(x.it);
+          else x.it.huti = harTekst(x.varer).slice(0, 200);
+        });
+        closeModal();
+        const ud = items.filter(it => !spring.has(it));
+        ud.hutiSprunget = spring.size;
+        svar(ud);
+      };
+    });
+    /* lukkes modalen paa anden vis (klik udenfor), er det en fortrydelse */
+    const vagt = setInterval(() => { if (!document.querySelector('#hsOk')) { clearInterval(vagt); svar(null); } }, 400);
+  });
+}
+
+/* ---------- indstillinger ---------- */
+
+/* Panelet selv staar i p9_settings.js (fanen Integrationer) - tests/faner.test.mjs
+ * tegner skabelonen alene og vil se hvert afsnit dér. Her er kun bindingerne. */
+function hutiIndstillingerBind() {
+  const msg = t => { const el = $('#hutiMsg'); if (el) el.textContent = t; };
+  const efter = d => { if (d && d.settings) S.settings = Object.assign(S.settings, d.settings); S.hutiPlan = null; };
+  const tal = d => `${d.total} madvarer, ${d.eatSoon} skal spises snart${d.canWrite ? ' · nøglen kan tage ud' : ''}`;
+  const gem = $('#hutiSave');
+  if (gem) gem.onclick = async () => {
+    gem.disabled = true; msg('Prøver huti …');
+    try {
+      const d = await api('/api/huti/forbind', { body: { url: $('#hutiUrl').value.trim(), key: $('#hutiKey').value.trim() } });
+      efter(d);
+      toast('huti er forbundet ✓ – ' + tal(d));
+      render();
+    } catch (e) { gem.disabled = false; msg(''); toast('huti: ' + e.message, true); }
+  };
+  const test = $('#hutiTest');
+  if (test) test.onclick = async () => {
+    test.disabled = true; msg('Prøver huti …');
+    try {
+      const d = await api('/api/huti/test', { body: {} });
+      efter(d);
+      toast('huti svarer ✓ – ' + tal(d));
+      render();
+    } catch (e) {
+      test.disabled = false; msg('');
+      toast('huti: ' + e.message, true);
+      try { S.settings = Object.assign(S.settings, await api('/api/settings')); } catch (e2) {}
+      render();
+    }
+  };
+  const ryd = $('#hutiClear');
+  if (ryd) ryd.onclick = async () => {
+    if (!await confirmBox('Afbryd forbindelsen til huti? Nøglen slettes i Kokkeri, og knappen »Brug det, vi har« forsvinder.', 'Afbryd')) return;
+    try { efter(await api('/api/huti/afbryd', { body: {} })); toast('Forbindelsen til huti er afbrudt'); } catch (e) { toast(e.message, true); }
+    render();
+  };
 }
 
 /* ---------------- Indkøbsliste ---------------- */
@@ -4442,6 +4779,7 @@ RENDER.shopping = () => {
         <span class="shopmain">
           <span class="txt">${esc(i.text)}</span>
           ${bySection && i.group && visGruppe ? `<span class="grp">${esc(i.group)}</span>` : ''}
+          ${i.huti && !i.done ? `<span class="hutimaerke" title="Lagt på listen, selv om huti har det">🧊 ${esc(i.huti)}</span>` : ''}
         </span>
         ${tilbudChipHtml(i)}
         <button class="iconbtn" data-del="${i.id}" title="Fjern">✕</button>
@@ -5469,6 +5807,35 @@ RENDER.settings = () => {
   </div>
 
   <div class="panelbox">
+    <h2 style="margin-top:0">🧊 huti (fryser, køleskab og spisekammer)</h2>
+    <p class="small muted">Lad madplanen se, hvad I har i huti: knappen <b>🧊 Brug det, vi har</b> på madplanen foreslår retter,
+      der bruger det – det, der skal spises snart, først – og indkøbslisten viser, hvad I allerede har.
+      Lav en personlig nøgle i huti under Settings → Connections → Claude / MCP. Vi anbefaler en <b><i>Read</i>-nøgle</b>.
+      En <i>Read and change</i>-nøgle giver Kokkeris server alle hutis skriveværktøjer, selv om Kokkeri kun bruger
+      <code>take_stock</code> til »tage ud i huti« (kun madvarer, kun når nogen klikker) – vælg den kun, hvis I vil have den knap.
+      Forbindelsen er fælles for alle Kokkeris brugere, og kun en administrator kan forbinde, teste og afbryde.
+      Nøglen bliver på Kokkeris server. Status: ${!S.settings.hutiSet ? '<span class="warn">ikke forbundet</span>'
+        : S.settings.hutiStatus && S.settings.hutiStatus.ok
+          ? `<span class="good">forbundet ✓</span> – ${+S.settings.hutiStatus.total || 0} madvarer, ${+S.settings.hutiStatus.eatSoon || 0} skal spises snart${S.settings.hutiStatus.canWrite ? ' · kan tage ud' : ' · kun læse'}`
+          : S.settings.hutiStatus && S.settings.hutiStatus.kode ? '<span class="warn">forbundet, men sidste test fejlede</span>' : '<span class="good">forbundet</span>'}</p>
+    ${S.me.isAdmin ? `<div class="formgrid">
+      <label class="fld"><span>hutis adresse</span>
+        <input id="hutiUrl" value="${esc(S.settings.hutiUrl || '')}" placeholder="https://huti.example.dk" inputmode="url" autocapitalize="none" spellcheck="false"></label>
+      <label class="fld"><span>Nøgle (huti_…) ${S.settings.hutiKeySet ? '(udfyld kun for at skifte – en ny adresse kræver den igen)' : ''}</span>
+        <input id="hutiKey" type="password" autocomplete="off" placeholder="huti_…"></label>
+    </div>
+    <div class="rowflex">
+      <button class="btn primary" id="hutiSave">${S.settings.hutiSet ? 'Gem huti' : 'Forbind huti'}</button>
+      ${S.settings.hutiSet ? '<button class="btn" id="hutiTest">Test</button><button class="btn small danger" id="hutiClear">Afbryd</button>' : ''}
+      <span class="small" id="hutiMsg"></span>
+    </div>` : `<div class="formgrid">
+      <label class="fld"><span>hutis adresse</span>
+        <input id="hutiUrl" value="${esc(S.settings.hutiUrl || '')}" placeholder="ikke forbundet" disabled></label>
+    </div>
+    <p class="small muted">Kun en administrator kan ændre forbindelsen til huti.</p>`}
+  </div>
+
+  <div class="panelbox">
     <h2 style="margin-top:0">📅 Madplan i din kalender</h2>
     <p class="small muted">Abonnér på madplanen i Apple/Google Kalender med dette link:</p>
     <div class="rowflex">
@@ -5805,6 +6172,8 @@ RENDER.settings_bind = () => {
     render();
   };
 
+  if ($('#hutiUrl')) hutiIndstillingerBind();
+
   const wipeBtn = $('#wipeOpen');
   if (wipeBtn) wipeBtn.onclick = wipeModal;
 
@@ -5904,6 +6273,8 @@ async function loadAdminUsers() {
     host.innerHTML = `
       <label class="chk" style="margin-bottom:10px"><input type="checkbox" id="admAllowReg" ${r.allowRegistration ? 'checked' : ''}>
         Tillad registrering af nye brugere</label>
+      ${r.allowRegistration ? `<p class="small warn" id="admRegAdvarsel">⚠️ Registreringen er åben: enhver kan oprette en konto og se/bruge huti-forbindelsen
+        (og de andre fælles integrationer). Slå den fra, når husstanden er oprettet.</p>` : ''}
       <div class="tablewrap"><table class="data"><thead>
         <tr><th>Bruger</th><th>Oprettet</th><th>Passkeys</th><th>Rolle</th><th></th></tr></thead><tbody>
         ${r.users.map(u => `<tr>
@@ -5920,6 +6291,7 @@ async function loadAdminUsers() {
     $('#admAllowReg').onchange = async e => {
       await api('/api/admin/settings', { body: { allowRegistration: e.target.checked } });
       toast('Gemt');
+      loadAdminUsers();                 // advarslen foelger med
     };
     $$('[data-admpw]').forEach(b => b.onclick = async () => {
       const pw = prompt('Nyt kodeord (mindst 8 tegn):');

@@ -199,6 +199,82 @@ function tilbudForVarer(varer, tilbud) {
   return ud;
 }
 
+/* ------------------------------------------------- matcheren (what_can_i_cook)
+ * Flyttet ud af opret() i v55, saa madplanens huti-forslag (hutiForslag nedenfor)
+ * matcher PRAECIS som what_can_i_cook - samme ord giver samme raekkefoelge. */
+const erFrokost = r => norm(r.category) === 'frokost' ||
+  FROKOST_RE.test(norm([r.sourceCategory || '', (r.tags || []).join(' '), r.title || ''].join(' ')));
+const linjer = r => (r.ingredients || []).filter(l => !/^##/.test(l)).map(norm);
+/* Findes der en gruppe for ordet, bruges dens regex ("svampe" skal ogsaa
+ * finde champignon). Ellers delstreng - ikke praefiks, for paa dansk staar
+ * hovedordet tit sidst i et sammensat ord ("koed" i oksekoed, hakkekoed). */
+const raavareRe = ord => {
+  const g = RAAVARE_GRUPPER.find(([navn, re]) => navn === ord || navn.includes(ord) || re.test(ord));
+  return g ? g[1] : null;
+};
+const harRaavare = (r, ord) => {
+  const re = raavareRe(ord);
+  const t = linjer(r).filter(l => (re ? re.test(l) : l.includes(ord)));
+  return t.length > 0 && !t.every(l => SMAGSORD.test(l));
+};
+/* Samme ordfilter som what_can_i_cook: tre bogstaver, eller to for en kendt gruppe (æg). */
+const brugbartOrd = x => x.length >= 3 || (x.length >= 2 && RAAVARE_GRUPPER.some(([navn]) => navn === x));
+
+/* ------------------------------------------------- huti -> madplanen (v55)
+ * hutis varer (app/huti.js, renset) har hvert et dansk raavareord (`word`, lavet af
+ * hutis mkRaavareOrd). Samme ord fra flere varer er ét ord - »spis snart«, hvis bare
+ * én af varerne er det. */
+function hutiOrd(varer) {
+  const m = new Map();
+  for (const v of varer || []) {
+    const ord = norm(v && v.word);
+    if (!ord || !brugbartOrd(ord)) continue;
+    const g = m.get(ord);
+    if (g) { g.varer.push(v); g.soon = g.soon || !!v.soon; continue; }
+    m.set(ord, { ord, soon: !!v.soon, varer: [v] });
+  }
+  return [...m.values()];
+}
+/** Retter til madplanen ud fra hutis varer. Taellingen er what_can_i_cook's (antal
+ * ord, retten bruger - harRaavare), og raekkefoelgen ogsaa (flest ord, saa rating) -
+ * bortset fra at retter, der bruger noget, der skal SPISES SNART, kommer foerst
+ * (flest snart-ord foerst). Uden snart-varer er raekkefoelgen what_can_i_cook's. */
+function hutiForslag(opskrifter, varer, { kunFrokost, kategorier, limit } = {}) {
+  const ord = hutiOrd(varer);
+  const kat = Array.isArray(kategorier) ? new Set(kategorier.map(k => String(k || ''))) : null;
+  const scoret = [];
+  for (const r of opskrifter || []) {
+    if (kunFrokost && !erFrokost(r)) continue;
+    if (!kunFrokost && kat && !kat.has(r.category || '')) continue;
+    const ramt = ord.filter(o => harRaavare(r, o.ord));
+    if (!ramt.length) continue;
+    scoret.push({ r, n: ramt.length, snart: ramt.filter(o => o.soon).length, ramt });
+  }
+  scoret.sort((x, y) => y.snart - x.snart || y.n - x.n || (y.r.rating || 0) - (x.r.rating || 0));
+  return { ord, retter: scoret.slice(0, Math.min(100, Math.max(1, +limit || 30))) };
+}
+/** Hvilke af hutis varer bruger DENNE ret? (maerket »fra huti: …« paa madplanen) */
+function hutiVarerTil(r, varer) {
+  const ud = [];
+  for (const o of hutiOrd(varer)) if (harRaavare(r, o.ord)) ud.push(...o.varer);
+  return ud;
+}
+/** Har huti det, en ingredienslinje paa indkoebslisten beder om? Strengere end
+ * opskrift-matcheren (Andreas: hellere praecis end mange maerker): raavareordet skal
+ * staa i linjen - hele ordet som delstreng, eller alle ord i et flerordsnavn - og
+ * linjen maa ikke vaere en smagsgiver (bouillon, fond ...). */
+function hutiVarerTilLinje(linje, varer) {
+  const l = norm(linje);
+  if (!l || SMAGSORD.test(l)) return [];
+  const ud = [];
+  for (const o of hutiOrd(varer)) {
+    const dele = o.ord.split(' ');
+    const ja = l.includes(o.ord) || (dele.length > 1 && dele.every(d => d.length >= 3 && l.includes(d)));
+    if (ja) ud.push(...o.varer);
+  }
+  return ud;
+}
+
 function opret(srv) {
   /* ------------------------------------------------------------ hjaelpere */
 
@@ -216,21 +292,8 @@ function opret(srv) {
     want_to_try: !!r.toTry,
     timesCooked: r.timesCooked || 0, lastCooked: r.lastCooked || null
   });
-  const erFrokost = r => norm(r.category) === 'frokost' ||
-    FROKOST_RE.test(norm([r.sourceCategory || '', (r.tags || []).join(' '), r.title || ''].join(' ')));
-  const linjer = r => (r.ingredients || []).filter(l => !/^##/.test(l)).map(norm);
-  /* Findes der en gruppe for ordet, bruges dens regex ("svampe" skal ogsaa
-   * finde champignon). Ellers delstreng - ikke praefiks, for paa dansk staar
-   * hovedordet tit sidst i et sammensat ord ("koed" i oksekoed, hakkekoed). */
-  const raavareRe = ord => {
-    const g = RAAVARE_GRUPPER.find(([navn, re]) => navn === ord || navn.includes(ord) || re.test(ord));
-    return g ? g[1] : null;
-  };
-  const harRaavare = (r, ord) => {
-    const re = raavareRe(ord);
-    const t = linjer(r).filter(l => (re ? re.test(l) : l.includes(ord)));
-    return t.length > 0 && !t.every(l => SMAGSORD.test(l));
-  };
+  /* erFrokost, raavareRe og harRaavare bor nu paa modulniveau (v55), saa
+   * huti-forslagene til madplanen bruger PRAECIS samme matcher. */
   const dato = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || '')) ? String(s) : null;
   /* Vinen til en ret paa madplanen (v54): fri tekst, én linje, hoejst 120 tegn. */
   const vinTekst = v => String(v || '').replace(/\s+/g, ' ').trim().slice(0, 120);
@@ -337,7 +400,7 @@ function opret(srv) {
          * "ost" og "ris" er rigtige danske raavarer. Ellers kraeves tre, saa et
          * tilfaeldigt "af" ikke matcher det halve bibliotek. */
         const ord = (Array.isArray(a.ingredients) ? a.ingredients : []).map(norm)
-          .filter(x => x.length >= 3 || (x.length >= 2 && RAAVARE_GRUPPER.some(([navn]) => navn === x)));
+          .filter(brugbartOrd);
         if (!ord.length) return { fejl: 'Angiv mindst én råvare (mindst to bogstaver for kendte råvarer som æg, ost og ris).' };
         const grænse = Math.min(50, Math.max(1, +a.limit || 15));
         const scoret = [];
@@ -497,6 +560,47 @@ function opret(srv) {
           data: { source: 'cellar', dish: ret || null, wines: vine.slice(0, 150).map(({ vindue, naa, linje, ...v }) =>
             Object.assign(v, { window: vindue ? vindue.tekst : null, hard_to_reach: naa > 0 })) }
         };
+      }
+    },
+    {
+      /* v55: husstandens madvarer i huti (fryser, koeleskab, spisekammer) - noeglen bliver
+       * paa serveren (app/huti.js). Med suggest_recipes ogsaa retter fra biblioteket,
+       * matchet som what_can_i_cook, med det der skal spises snart foerst. */
+      name: 'huti_pantry',
+      scope: 'read',
+      description: 'The food the household has in the freezer, fridge and pantry, from the huti app: name, the plain '
+        + 'Danish ingredient word, amount, where it is (e.g. "Fryser › Skuffe 2"), and whether it should be eaten soon '
+        + '(SPIS SNART), with best-before date or age and origin (game). Eat-soon food comes first. '
+        + 'Set suggest_recipes to also get recipes from the library that use this food, eat-soon first - use it for '
+        + '"make a meal plan from what is in the freezer", then add the dishes with add_to_meal_plan.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          eat_soon_only: { type: 'boolean', description: 'Only food that should be eaten soon.' },
+          suggest_recipes: { type: 'boolean', description: 'Also suggest recipes from the library that use the food.' },
+          meal: { type: 'string', description: 'With suggest_recipes: "lunch" for lunch-friendly recipes only.' },
+          limit: { type: 'number', description: 'Max recipes, default 15, max 40.' }
+        }
+      },
+      async kald(a) {
+        if (!srv.huti) return { fejl: 'huti er ikke tilgængelig her.' };
+        const b = await srv.huti.beholdning();
+        if (!b.ok) return { fejl: b.besked };
+        const varer = a.eat_soon_only ? b.items.filter(v => v.soon) : b.items;
+        const hoved = `${b.total} madvarer i huti, ${b.eatSoon} skal spises snart`
+          + (b.items.length < b.total ? ` (viser ${b.items.length})` : '') + ':';
+        let tekst = tekstliste(hoved, varer.map(v => srv.huti.linje(v)));
+        const data = { total: b.total, eat_soon: b.eatSoon, items: varer.map(v => ({ id: v.id, name: v.name, word: v.word,
+          quantity: v.quantity, unit: v.unit, place: v.place, eat_soon: v.soon, best_before: v.bestBefore, age_days: v.ageDays,
+          origin: v.origin })) };
+        if (a.suggest_recipes) {
+          const f = hutiForslag(opskrifter(), b.items, { kunFrokost: /lunch|frokost/i.test(String(a.meal || '')),
+            limit: Math.min(40, Math.max(1, +a.limit || 15)) });
+          tekst += '\n\n' + tekstliste(`Retter fra biblioteket, der bruger det (spis snart først):`,
+            f.retter.map(x => `- ${x.r.title} [${x.r.id}] · bruger ${x.ramt.map(o => o.ord + (o.soon ? ' (spis snart)' : '')).join(', ')}`));
+          data.recipes = f.retter.map(x => Object.assign(kort(x.r), { matched: x.n, eat_soon: x.snart, uses: x.ramt.map(o => o.ord) }));
+        }
+        return { tekst, data };
       }
     },
     {
@@ -867,4 +971,4 @@ function opret(srv) {
   return { haandter, behandl, VAERKTOEJER };
 }
 
-module.exports = { opret, PROTOKOL, tilbudForVarer, vareNoegleord };
+module.exports = { opret, PROTOKOL, tilbudForVarer, vareNoegleord, hutiForslag, hutiVarerTil, hutiVarerTilLinje, hutiOrd, harRaavare };

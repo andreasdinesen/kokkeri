@@ -48,6 +48,12 @@ SQLite. **Ingen npm-afhængigheder, ingen CDN – alt kører lokalt.**
 - **Vinforslag fra Cellarius**: knappen *🍷 Vinforslag* på en opskrift finder
   flasker i din egen vinkælder i Cellarius, der passer til retten – og
   AI-assistenten (og Claude via MCP) kan selv kigge i kælderen.
+- **Fryseren i huti** 🧊: forbind Kokkeri med husstandens inventar i
+  huti med en personlig nøgle. Madplanens
+  knap *Brug det, vi har* foreslår retter, der bruger det, I har – det, der skal
+  spises snart, først – hver ret viser »fra huti: …«, indkøbslisten spørger, før
+  den lægger noget på, som I allerede har, og med en skrivenøgle kan en ret
+  »tage ud i huti«. AI-assistenten (og Claude via MCP) kan se fryseren.
 - **Timere**: flere navngivne køkkentimere med forvalg, pause og +1 min – de
   overlever sideskift og genindlæsning, ringer med lyd og notifikation.
   Klik på et minuttal inde i en fremgangsmåde for at starte en timer direkte.
@@ -113,6 +119,24 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v55**: **Fryseren i huti.** Forbind huti under
+  Indstillinger → Integrationer med en personlig huti-nøgle (læse er nok; nøglen
+  bliver på serveren). Madplanen får *🧊 Brug det, vi har*: retter fra biblioteket,
+  der bruger det, I har i fryseren, køleskabet og spisekammeret – det, der skal
+  spises snart, først – med »Læg på« til en dag. Retterne på madplanen viser
+  »fra huti: hjortekølle (spis snart, Fryser › Skuffe 2)«. Lægges en ret på
+  indkøbslisten, vises det, huti har, og du vælger selv, om det springes over
+  eller kommer med (med mærket »har i huti: …«). Med en skrivenøgle kan rettens
+  vindue »tage ud i huti« – kun når du klikker. *✨ Foreslå madplan (AI)* bruger
+  også det, I har i huti – det, der skal spises snart, først – og dagene viser
+  »fra huti: …«. Nyt værktøj `huti_pantry` til assistenten og Claude via MCP.
+  **Sikkerhed:** kun en administrator kan forbinde, teste og afbryde huti (andre ser
+  panelet skrivebeskyttet), »tag ud« rammer kun madvarer, og admin-panelet advarer,
+  når registreringen er åben. Alle kald til en adresse, en bruger har angivet
+  (opskriftsimport, crawl, billeder, huti, egen AI-server, Home Assistant, doda,
+  Cellarius), går gennem en netvagt: interne adresser kun for en administrator.
+  En ikke-administrator kan ikke flytte en integration til en ny adresse uden at
+  angive nøglen igen.
 - **v54** (oktober 2026): **Vin til retten på madplanen – og pænere lister fra
   assistenten.** En ret på madplanen kan få en vin (felt i *Redigér*); den
   vises under retten, i rettens vindue og i kalenderen. Assistenten kan sætte

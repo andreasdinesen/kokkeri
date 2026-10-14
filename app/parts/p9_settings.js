@@ -203,6 +203,35 @@ RENDER.settings = () => {
   </div>
 
   <div class="panelbox">
+    <h2 style="margin-top:0">🧊 huti (fryser, køleskab og spisekammer)</h2>
+    <p class="small muted">Lad madplanen se, hvad I har i huti: knappen <b>🧊 Brug det, vi har</b> på madplanen foreslår retter,
+      der bruger det – det, der skal spises snart, først – og indkøbslisten viser, hvad I allerede har.
+      Lav en personlig nøgle i huti under Settings → Connections → Claude / MCP. Vi anbefaler en <b><i>Read</i>-nøgle</b>.
+      En <i>Read and change</i>-nøgle giver Kokkeris server alle hutis skriveværktøjer, selv om Kokkeri kun bruger
+      <code>take_stock</code> til »tage ud i huti« (kun madvarer, kun når nogen klikker) – vælg den kun, hvis I vil have den knap.
+      Forbindelsen er fælles for alle Kokkeris brugere, og kun en administrator kan forbinde, teste og afbryde.
+      Nøglen bliver på Kokkeris server. Status: ${!S.settings.hutiSet ? '<span class="warn">ikke forbundet</span>'
+        : S.settings.hutiStatus && S.settings.hutiStatus.ok
+          ? `<span class="good">forbundet ✓</span> – ${+S.settings.hutiStatus.total || 0} madvarer, ${+S.settings.hutiStatus.eatSoon || 0} skal spises snart${S.settings.hutiStatus.canWrite ? ' · kan tage ud' : ' · kun læse'}`
+          : S.settings.hutiStatus && S.settings.hutiStatus.kode ? '<span class="warn">forbundet, men sidste test fejlede</span>' : '<span class="good">forbundet</span>'}</p>
+    ${S.me.isAdmin ? `<div class="formgrid">
+      <label class="fld"><span>hutis adresse</span>
+        <input id="hutiUrl" value="${esc(S.settings.hutiUrl || '')}" placeholder="https://huti.example.dk" inputmode="url" autocapitalize="none" spellcheck="false"></label>
+      <label class="fld"><span>Nøgle (huti_…) ${S.settings.hutiKeySet ? '(udfyld kun for at skifte – en ny adresse kræver den igen)' : ''}</span>
+        <input id="hutiKey" type="password" autocomplete="off" placeholder="huti_…"></label>
+    </div>
+    <div class="rowflex">
+      <button class="btn primary" id="hutiSave">${S.settings.hutiSet ? 'Gem huti' : 'Forbind huti'}</button>
+      ${S.settings.hutiSet ? '<button class="btn" id="hutiTest">Test</button><button class="btn small danger" id="hutiClear">Afbryd</button>' : ''}
+      <span class="small" id="hutiMsg"></span>
+    </div>` : `<div class="formgrid">
+      <label class="fld"><span>hutis adresse</span>
+        <input id="hutiUrl" value="${esc(S.settings.hutiUrl || '')}" placeholder="ikke forbundet" disabled></label>
+    </div>
+    <p class="small muted">Kun en administrator kan ændre forbindelsen til huti.</p>`}
+  </div>
+
+  <div class="panelbox">
     <h2 style="margin-top:0">📅 Madplan i din kalender</h2>
     <p class="small muted">Abonnér på madplanen i Apple/Google Kalender med dette link:</p>
     <div class="rowflex">
@@ -539,6 +568,8 @@ RENDER.settings_bind = () => {
     render();
   };
 
+  if ($('#hutiUrl')) hutiIndstillingerBind();
+
   const wipeBtn = $('#wipeOpen');
   if (wipeBtn) wipeBtn.onclick = wipeModal;
 
@@ -638,6 +669,8 @@ async function loadAdminUsers() {
     host.innerHTML = `
       <label class="chk" style="margin-bottom:10px"><input type="checkbox" id="admAllowReg" ${r.allowRegistration ? 'checked' : ''}>
         Tillad registrering af nye brugere</label>
+      ${r.allowRegistration ? `<p class="small warn" id="admRegAdvarsel">⚠️ Registreringen er åben: enhver kan oprette en konto og se/bruge huti-forbindelsen
+        (og de andre fælles integrationer). Slå den fra, når husstanden er oprettet.</p>` : ''}
       <div class="tablewrap"><table class="data"><thead>
         <tr><th>Bruger</th><th>Oprettet</th><th>Passkeys</th><th>Rolle</th><th></th></tr></thead><tbody>
         ${r.users.map(u => `<tr>
@@ -654,6 +687,7 @@ async function loadAdminUsers() {
     $('#admAllowReg').onchange = async e => {
       await api('/api/admin/settings', { body: { allowRegistration: e.target.checked } });
       toast('Gemt');
+      loadAdminUsers();                 // advarslen foelger med
     };
     $$('[data-admpw]').forEach(b => b.onclick = async () => {
       const pw = prompt('Nyt kodeord (mindst 8 tegn):');
