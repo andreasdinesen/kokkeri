@@ -448,6 +448,56 @@ function opret(srv) {
       }
     },
     {
+      name: 'get_wine_cellar',
+      scope: 'read',
+      description: 'The wines in the user\'s wine cellar (the Cellarius app): producer, wine, vintage, colour, region, '
+        + 'number of bottles, where they are placed and the drinking window (ready / drink soon / too young). '
+        + 'Use it for wine pairing: give `dish` or `recipe_id`, and you get Cellarius\' own suggestions when it allows that - '
+        + 'otherwise the whole cellar, and you pick the bottles yourself. Only ever suggest wines from this list.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          dish: { type: 'string', description: 'The dish in plain words, e.g. "lammeskank med svampe".' },
+          recipe_id: { type: 'string', description: 'A recipe id from search_recipes - its title and ingredients are used as the dish.' },
+          colour: { type: 'string', description: 'Only this colour: red, white, rose, sparkling, sweet, fortified.' }
+        }
+      },
+      async kald(a) {
+        if (!srv.cellarius) return { fejl: 'Vinkælderen er ikke tilgængelig her.' };
+        let ret = String(a.dish || '').trim().slice(0, 500);
+        if (a.recipe_id) {
+          const r = srv.getItem(a.recipe_id);
+          if (!r || r.kind !== 'recipe') return { fejl: 'Ingen opskrift med id ' + a.recipe_id };
+          ret = srv.cellarius.retTekst(r);
+        }
+        if (ret) {
+          const p = await srv.cellarius.parring(ret, 5);
+          if (p.ok && p.data && Array.isArray(p.data.suggestions)) {
+            const forslag = p.data.suggestions.map(x => `- ${[x.producer, x.name, x.vintage].filter(Boolean).join(' ')}`
+              + ` · ${x.bottles === 1 ? '1 flaske' : (+x.bottles || 0) + ' flasker'}`
+              + `${Array.isArray(x.places) && x.places.length ? ' · ' + x.places.join(', ') : ''}`
+              + `${Array.isArray(x.reasons) && x.reasons.length ? ' · ' + x.reasons.join(', ') : ''}`);
+            return {
+              tekst: tekstliste(`Cellarius' forslag til "${ret}" (læst som: ${(p.data.foods || []).join(', ') || '?'}):`, forslag),
+              data: { source: 'cellarius', dish: ret, foods: p.data.foods || [], suggestions: p.data.suggestions }
+            };
+          }
+          if (!p.ok && p.kode !== 'not_allowed') return { fejl: p.besked };
+        }
+        const k = await srv.cellarius.kaelder();
+        if (!k.ok) return { fejl: k.besked };
+        let vine = k.vine;
+        if (a.colour) vine = vine.filter(v => norm(v.colour) === norm(a.colour));
+        const hoved = `${vine.length} vine i kælderen${a.colour ? ' (' + a.colour + ')' : ''}`
+          + (ret ? ` – vælg selv dem, der passer til "${ret}"` : '') + ':';
+        return {
+          tekst: tekstliste(hoved, vine.slice(0, 150).map(v => '- ' + v.linje)),
+          data: { source: 'cellar', dish: ret || null, wines: vine.slice(0, 150).map(({ vindue, naa, linje, ...v }) =>
+            Object.assign(v, { window: vindue ? vindue.tekst : null, hard_to_reach: naa > 0 })) }
+        };
+      }
+    },
+    {
       name: 'get_meal_plan',
       scope: 'read',
       description: 'Read the meal plan between two dates (YYYY-MM-DD, inclusive).',

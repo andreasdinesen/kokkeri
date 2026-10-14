@@ -46,7 +46,8 @@ SQLite. **Ingen npm-afhængigheder, ingen CDN – alt kører lokalt.**
   med ét klik, grupperet pr. opskrift, afkrydsning, print. Send den videre til
   Home Assistant, Todoist eller doda med ét klik.
 - **Vinforslag fra Cellarius**: knappen *🍷 Vinforslag* på en opskrift finder
-  flasker i din egen vinkælder i Cellarius, der passer til retten.
+  flasker i din egen vinkælder i Cellarius, der passer til retten – og
+  AI-assistenten (og Claude via MCP) kan selv kigge i kælderen.
 - **Timere**: flere navngivne køkkentimere med forvalg, pause og +1 min – de
   overlever sideskift og genindlæsning, ringer med lyd og notifikation.
   Klik på et minuttal inde i en fremgangsmåde for at starte en timer direkte.
@@ -112,6 +113,12 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v53** (oktober 2026): **AI-assistenten kan kigge i vinkælderen.** Nyt
+  læseværktøj `get_wine_cellar` – også i Claude-connectoren – viser vinene i
+  Cellarius med antal, plads og drikkevindue. Spørg assistenten »hvilken vin til
+  …?« eller »kig i Cellarius«, så foreslår den kun flasker, der faktisk ligger i
+  kælderen, og siger, hvor de står. Med en ret eller opskrift bruges Cellarius'
+  egne forslag, når Cellarius tillader det; ellers vælger assistenten selv.
 - **v52** (oktober 2026): **Cellarius er flyttet.** Standardadressen er nu
   `app.getcellarius.com`; en gemt gammel adresse (`cellarius.yggdrasilpanel.com`)
   flyttes af sig selv ved opstart. Vinforslagene viser, hvor flasken står

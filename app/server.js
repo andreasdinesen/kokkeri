@@ -1097,7 +1097,9 @@ function cellariusVindue(w) {
   const top = w.peak_from && w.peak_to ? `, top ${w.peak_from}–${w.peak_to}` : '';
   return { kode, tekst: `drikkevindue ${fra || '?'}–${til || '?'}${top}: ${ord}` };
 }
-async function cellariusAiForslag(base, key, konto, tekst, limit) {
+/* Kaelderens vine - delt af AI-reserven paa knappen og MCP-vaerktoejet
+ * get_wine_cellar (v53), saa begge ser praecis det samme. */
+async function cellariusKaelder(base, key, konto) {
   const r = await cellariusKald(base, key, 'GET', '/accounts/' + encodeURIComponent(konto) + '/bottles');
   if (!r.ok) return r;
   /* én linje pr. AARGANG (vintage_id) - ikke pr. flaske, og ikke pr. vin:
@@ -1118,7 +1120,12 @@ async function cellariusAiForslag(base, key, konto, tekst, limit) {
     v.bottles++;
     if (plads && !v.places.includes(plads) && v.places.length < 4) v.places.push(plads);
   }
-  const liste = [...vine.values()].slice(0, 200);
+  return { ok: true, vine: [...vine.values()].slice(0, 200) };
+}
+async function cellariusAiForslag(base, key, konto, tekst, limit) {
+  const k = await cellariusKaelder(base, key, konto);
+  if (!k.ok) return k;
+  const liste = k.vine;
   if (!liste.length) return { ok: true, data: { foods: [], suggestions: [], tom: true } };
   let out;
   try {
@@ -1153,6 +1160,25 @@ Brug kun numre fra listen. Passer intet rigtigt, så svar med tom "suggestions".
     suggestions: forslag
   } };
 }
+/* Adresse, noegle og konto i ét - { ok, base, key, konto } eller { ok: false, kode, besked }. */
+async function cellariusForbindelse() {
+  const base = cellariusBase();
+  const key = setting('cellarius_key', '');
+  if (!base || !key) return { ok: false, kode: 'not_set', besked: 'Cellarius er ikke sat op – angiv nøglen under Indstillinger → Integrationer' };
+  const konto = await cellariusKonto(base, key);
+  if (!konto.ok) return konto;
+  return { ok: true, base, key, konto: konto.konto };
+}
+/* En vin som én linje til en AI (assistenten, MCP). */
+function cellariusVinLinje(v) {
+  return [[v.producer, v.name, v.vintage].filter(Boolean).join(' '),
+    [v.colour, v.region, v.country].filter(Boolean).join(', '),
+    v.bottles === 1 ? '1 flaske' : v.bottles + ' flasker',
+    v.places.length ? v.places.join(' / ') : 'ingen plads',
+    v.vindue ? v.vindue.tekst : '',
+    v.naa > 0 ? 'svær at nå' : ''].filter(Boolean).join(' · ');
+}
+
 /* Retten som Cellarius' fritekst: titel + kategori + ingrediensernes navne
  * uden maengder. Cellarius laeser selv hovedingredienserne ud af teksten. */
 function cellariusRetTekst(r) {
@@ -1512,6 +1538,9 @@ Brug værktøjerne til at slå op i biblioteket – gæt aldrig på, hvad det in
   brugerens egne opskrifter, hvis hovedråvarer er på tilbud. Brug dem, når brugeren spørger til tilbud,
   eller vil have en billig madplan/madplan ud fra tilbuddene – nævn butik og pris, og at tilbuddet gælder til en dato.
 ${tilbudLinjeTilPrompt()}
+- get_wine_cellar viser vinene i brugerens vinkælder i Cellarius (plads, antal, drikkevindue).
+  Brug det, når brugeren spørger til vin – også "kig i Cellarius" eller "hvilken vin til …". Foreslå kun
+  vine, der faktisk ligger i kælderen, nævn pladsen, og foretræk vine der er klar eller bør drikkes snart.
 
 Foreslå brugerens EGNE opskrifter frem for at skrive nye. Henvis altid til en opskrift som et link
 i formatet [Titel](/opskrift/<id>) – fx [Lasagne](/opskrift/abc123) – så kan brugeren klikke direkte til den.
@@ -1685,7 +1714,24 @@ const mcp = require('./mcp.js').opret({
    * lader feltet staa tomt - listen viser den saa under "Andet". */
   gaetAfdeling: () => '',
   /* Tilbud fra eTilbudsavis (v44) - asynkrone, kaster med status ved fejl. */
-  tilbud: { opsaetning: () => tilbudOpsaetning(), soeg: (q2, butik, rel) => tilbudSoeg(q2, butik, rel), alle: () => tilbudAlle() }
+  tilbud: { opsaetning: () => tilbudOpsaetning(), soeg: (q2, butik, rel) => tilbudSoeg(q2, butik, rel), alle: () => tilbudAlle() },
+  /* Vinkaelderen i Cellarius (v53) - kun laesning; noeglen bliver her. */
+  cellarius: {
+    retTekst: r => cellariusRetTekst(r),
+    async kaelder() {
+      const f = await cellariusForbindelse();
+      if (!f.ok) return f;
+      const k = await cellariusKaelder(f.base, f.key, f.konto);
+      return k.ok ? { ok: true, vine: k.vine.map(v => Object.assign({}, v, { linje: cellariusVinLinje(v) })), url: f.base } : k;
+    },
+    /* Cellarius' egen madparring - svarer { ok: false, kode: 'not_allowed' }, saa laenge
+     * Cellarius lukker den for integrationsnoegler; saa vaelger kalderen selv. */
+    async parring(tekst, limit) {
+      const f = await cellariusForbindelse();
+      if (!f.ok) return f;
+      return cellariusKald(f.base, f.key, 'POST', '/accounts/' + encodeURIComponent(f.konto) + '/pairings', { recipe: tekst, limit });
+    }
+  }
 });
 
 /* De offentlige OAuth-ruter skal kunne naas fra claude.ai's oprindelse. */
@@ -2645,11 +2691,10 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
      * `recipeId` slaar opskriften op her paa serveren; `text` er fri tekst
      * (madplanen, eller en ret uden opskrift). */
     if (p.startsWith('/api/cellarius/')) {
-      const base = cellariusBase();
-      const key = setting('cellarius_key', '');
-      if (!base || !key) return err(res, 400, 'Cellarius er ikke sat op – angiv nøglen under Indstillinger');
-      const konto = await cellariusKonto(base, key);
-      if (!konto.ok) return err(res, konto.kode === 'bad_key' ? 401 : 502, konto.besked);
+      const forb = await cellariusForbindelse();
+      if (!forb.ok) return err(res, forb.kode === 'not_set' ? 400 : forb.kode === 'bad_key' ? 401 : 502, forb.besked);
+      const { base, key } = forb;
+      const konto = { konto: forb.konto };
 
       if (p === '/api/cellarius/test' && req.method === 'POST') {
         const r = await cellariusKald(base, key, 'POST', '/accounts/' + encodeURIComponent(konto.konto) + '/pairings', { recipe: 'oksemørbrad', limit: 1 });
