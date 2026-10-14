@@ -113,6 +113,14 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v54** (oktober 2026): **Vin til retten på madplanen – og pænere lister fra
+  assistenten.** En ret på madplanen kan få en vin (felt i *Redigér*); den
+  vises under retten, i rettens vindue og i kalenderen. Assistenten kan sætte
+  den selv, når du beder om det – med det nye værktøj `set_wine_for_meal` eller
+  feltet `wine` i `add_to_meal_plan` – og ser vinen i `get_meal_plan`.
+  Assistentens svar viser nu indrykkede underpunkter og nummererede lister
+  rigtigt (før stod »- Placering: …« som tekst med bindestreg), og værktøjerne
+  har danske navne i panelet (»Kiggede i vinkælderen«).
 - **v53** (oktober 2026): **AI-assistenten kan kigge i vinkælderen.** Nyt
   læseværktøj `get_wine_cellar` – også i Claude-connectoren – viser vinene i
   Cellarius med antal, plads og drikkevindue. Spørg assistenten »hvilken vin til

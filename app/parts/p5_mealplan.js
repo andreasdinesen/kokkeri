@@ -210,6 +210,7 @@ RENDER.plan = () => {
             ${visBilleder ? planBilledeHtml(e, r) : ''}
             ${slotTag}${r ? esc(r.title) : esc(e.text || '')}
             ${r && recipeTotalMin(r) ? `<div class="pmeta">⏱ ${fmtMin(recipeTotalMin(r))}${e.servings ? ' · ' + e.servings + ' pers.' : ''}</div>` : (e.servings ? `<div class="pmeta">${e.servings} pers.</div>` : '')}
+            ${e.wine ? `<div class="pmeta" title="Vin til retten">🍷 ${esc(e.wine)}</div>` : ''}
           </div>`;
         }).join('')}
         <button class="dayadd${S.planArm ? ' arm' : ''}" data-date="${d}">${S.planArm ? '⬇ Læg her' : '+ tilføj'}</button>
@@ -599,6 +600,7 @@ async function planQuickView(entry) {
           ${r.category ? `<span class="chip">${esc(r.category)}</span>` : ''}
           ${tid ? `<span class="timechip">⏱ ${fmtMin(tid)}</span>` : ''}
           <span class="timechip">🍽 ${pers} pers.</span>
+          ${entry.wine ? `<span class="timechip" title="Vin til retten">🍷 ${esc(entry.wine)}</span>` : ''}
           ${r.rating ? starsHtml(r.rating) : ''}
         </div>
       </div>
@@ -663,6 +665,8 @@ function planEntryModal(entry, prefill) {
     <div class="rowflex" style="margin-top:6px">
       <button type="button" class="btn small" id="pmRester">🍲 Rester</button>
     </div>
+    <label class="fld"><span>🍷 Vin til retten (valgfrit)</span>
+      <input id="pmWine" value="${esc(d.wine || '')}" maxlength="120" placeholder="fx Terre del Barolo Barolo 2020"></label>
     <div class="actions">
       ${isNew ? '' : '<button class="btn danger" id="pmDelete" style="margin-right:auto">Fjern</button>'}
       <button class="btn" id="pmCancel">Annullér</button>
@@ -674,6 +678,8 @@ function planEntryModal(entry, prefill) {
         d.slot = m.querySelector('#pmSlot').value;
         d.text = m.querySelector('#pmText').value.trim();
         d.servings = parseInt(m.querySelector('#pmServ').value, 10) || null;
+        d.wine = m.querySelector('#pmWine').value.trim().slice(0, 120);
+        if (!d.wine) delete d.wine;
       };
       m.querySelector('#pmCancel').onclick = closeModal;
       m.querySelector('#pmPick').onclick = () => {

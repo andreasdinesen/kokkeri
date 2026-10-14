@@ -232,6 +232,8 @@ function opret(srv) {
     return t.length > 0 && !t.every(l => SMAGSORD.test(l));
   };
   const dato = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || '')) ? String(s) : null;
+  /* Vinen til en ret paa madplanen (v54): fri tekst, én linje, hoejst 120 tegn. */
+  const vinTekst = v => String(v || '').replace(/\s+/g, ' ').trim().slice(0, 120);
   const kr = v => (v == null ? '?' : String(v).replace('.', ',')) + ' kr';
   const tilbudKort = o => `${o.butik}: ${o.titel} ${kr(o.pris)}`;
   const tilbudLinje = o => `- ${o.butik}: ${o.titel} · ${kr(o.pris)}${o.foerpris ? ' (før ' + kr(o.foerpris) + ')' : ''}`
@@ -516,12 +518,12 @@ function opret(srv) {
         return {
           tekst: tekstliste(`Madplan ${fra} – ${til}:`, poster.map(e =>
             `- ${e.date} ${e.slot || 'dinner'}: ${e.recipeId ? (navne.get(e.recipeId) || '(slettet opskrift)') : (e.text || '')}`
-            + (e.recipeId ? ` [${e.recipeId}]` : ''))),
+            + (e.recipeId ? ` [${e.recipeId}]` : '') + (e.wine ? ` · vin: ${e.wine}` : '') + ` (entry ${e.id})`)),
           data: {
             entries: poster.map(e => ({
               id: e.id, date: e.date, slot: e.slot || 'dinner',
               recipe_id: e.recipeId || null, title: e.recipeId ? (navne.get(e.recipeId) || null) : (e.text || null),
-              servings: e.servings || null
+              servings: e.servings || null, wine: e.wine || null
             }))
           }
         };
@@ -539,7 +541,9 @@ function opret(srv) {
           recipe_id: { type: 'string' },
           text: { type: 'string', description: 'Free text, when it is not a recipe in the library.' },
           slot: { type: 'string', description: 'breakfast, lunch, dinner (default) or other.' },
-          servings: { type: 'number' }
+          servings: { type: 'number' },
+          wine: { type: 'string', description: 'Optional wine to drink with it, e.g. "Terre del Barolo Barolo 2020" - '
+            + 'preferably a bottle from get_wine_cellar.' }
         },
         required: ['date']
       },
@@ -560,9 +564,35 @@ function opret(srv) {
           recipeId: id || null, text: id ? '' : String(a.text).trim().slice(0, 200),
           servings: +a.servings || null, createdAt: new Date().toISOString()
         };
+        const vin = vinTekst(a.wine);
+        if (vin) post.wine = vin;
         if (!srv.gemItem(post)) return { fejl: 'Kunne ikke gemme posten.' };
         const navn = id ? srv.getItem(id).title : post.text;
-        return { tekst: `Lagt på madplanen ${d} (${post.slot}): ${navn}`, data: { id: post.id } };
+        return { tekst: `Lagt på madplanen ${d} (${post.slot}): ${navn}${vin ? ' med ' + vin : ''}`, data: { id: post.id } };
+      }
+    },
+    {
+      name: 'set_wine_for_meal',
+      scope: 'full',
+      description: 'Set (or clear) the wine to drink with a meal that is already on the meal plan. '
+        + 'Get the entry id from get_meal_plan. Only the wine is changed - the meal itself is left alone. '
+        + 'Prefer a bottle from get_wine_cellar. An empty wine removes it.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          entry_id: { type: 'string', description: 'The meal plan entry id from get_meal_plan.' },
+          wine: { type: 'string', description: 'E.g. "Terre del Barolo Barolo 2020". Empty = remove.' }
+        },
+        required: ['entry_id']
+      },
+      kald(a) {
+        const e = srv.getItem(a.entry_id);
+        if (!e || e.kind !== 'planEntry') return { fejl: 'Ingen ret på madplanen med det id. Brug get_meal_plan først.' };
+        const vin = vinTekst(a.wine);
+        if (vin) e.wine = vin; else delete e.wine;
+        if (!srv.gemItem(e)) return { fejl: 'Kunne ikke gemme.' };
+        const navn = e.recipeId ? ((srv.getItem(e.recipeId) || {}).title || 'retten') : (e.text || 'retten');
+        return { tekst: vin ? `${vin} sat til ${navn} ${e.date}` : `Vinen fjernet fra ${navn} ${e.date}`, data: { id: e.id, wine: vin || null } };
       }
     },
     {

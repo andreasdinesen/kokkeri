@@ -539,7 +539,8 @@ main { position: relative; }
 .msg.ai { align-self: flex-start; background: var(--card); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
 .msg.ai.thinking { color: var(--muted); font-style: italic; }
 .msg.ai.fejl { color: var(--red); }
-.msg.ai ul { margin: 4px 0; padding-left: 20px; }
+.msg.ai ul, .msg.ai ol { margin: 4px 0; padding-left: 20px; }
+.msg.ai li > ul, .msg.ai li > ol { margin: 2px 0; }
 .msg.ai code { font-size: .9em; background: var(--card2); padding: 1px 4px; border-radius: 4px; }
 .msg.ai a { color: var(--accent); }
 .msg.ai a.ai-opskrift { font-weight: 600; text-decoration: none; border-bottom: 1px solid currentColor; }

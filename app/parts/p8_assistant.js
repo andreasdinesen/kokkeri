@@ -191,16 +191,56 @@ function aiTekst(s) {
   h = h.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   h = h.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>');
   h = h.replace(/^#{1,4} (.+)$/gm, '<strong>$1</strong>');
-  h = h.replace(/(?:^|\n)((?:[-*] .+(?:\n|$))+)/g, (m, liste) =>
-    `\n<ul>${liste.trim().split('\n').map(l => `<li>${l.replace(/^[-*] /, '')}</li>`).join('')}</ul>\n`);
-  return h.trim().replace(/\n{2,}/g, '<br><br>').replace(/\n/g, '<br>').replace(/<br>(<ul>)|(<\/ul>)<br>/g, '$1$2');
+  h = aiLister(h);
+  return h.trim().replace(/\n{2,}/g, '<br><br>').replace(/\n/g, '<br>').replace(/<br>(<[uo]l[ >])|(<\/[uo]l>)<br>/g, '$1$2');
+}
+
+/* Lister i modellens tekst (v54): punkter (- * •) og numre (1. 2)) - ogsaa
+ * INDRYKKEDE underpunkter. Foer blev kun punkter helt ude i venstre kant til
+ * en liste, saa "  - Placering: …" under en vin stod som tekst med bindestreg.
+ * Hver blok af listelinjer bliver én (evt. indlejret) liste paa én linje, saa
+ * linjeskiftene ikke bliver til <br> inde i den. */
+const AI_LISTELINJE = /^( *)([-*•]|(\d{1,3})[.)]) +(.*)$/;
+function aiLister(h) {
+  const linjer = h.split('\n'), ud = [];
+  for (let i = 0; i < linjer.length;) {
+    if (!AI_LISTELINJE.test(linjer[i])) { ud.push(linjer[i++]); continue; }
+    const blok = [];
+    for (; i < linjer.length && AI_LISTELINJE.test(linjer[i]); i++) {
+      const m = linjer[i].match(AI_LISTELINJE);
+      blok.push({ ind: m[1].length, nr: m[3] ? +m[3] : 0, tekst: m[4] });
+    }
+    ud.push(aiListeHtml(blok));
+  }
+  return ud.join('\n');
+}
+function aiListeHtml(blok) {
+  let html = '';
+  const stak = [];                               // aabne lister: { ind, tag }
+  for (const p of blok) {
+    const tag = p.nr ? 'ol' : 'ul';
+    while (stak.length && p.ind < stak[stak.length - 1].ind) html += '</li></' + stak.pop().tag + '>';
+    /* samme niveau, anden slags liste (1. -> -): luk den gamle */
+    if (stak.length && p.ind === stak[stak.length - 1].ind && stak[stak.length - 1].tag !== tag) html += '</li></' + stak.pop().tag + '>';
+    const top = stak[stak.length - 1];
+    if (!top || p.ind > top.ind) {
+      /* "2." efter en tom linje skal hedde 2, ikke starte forfra paa 1 */
+      html += p.nr > 1 ? `<ol start="${p.nr}">` : `<${tag}>`;
+      stak.push({ ind: p.ind, tag });
+    } else html += '</li>';
+    html += '<li>' + p.tekst;
+  }
+  while (stak.length) html += '</li></' + stak.pop().tag + '>';
+  return html;
 }
 
 const AI_VAERKTOEJ_NAVN = {
   search_recipes: 'Søgte i opskrifterne', get_recipe: 'Læste opskriften',
   what_can_i_cook: 'Søgte efter råvarer', get_meal_plan: 'Læste madplanen',
   get_shopping_list: 'Læste indkøbslisten',
-  add_to_meal_plan: 'Lagde på madplanen', add_to_shopping_list: 'Føjede til indkøbslisten'
+  add_to_meal_plan: 'Lagde på madplanen', add_to_shopping_list: 'Føjede til indkøbslisten',
+  get_offers: 'Kiggede på tilbud', recipes_on_offer: 'Fandt opskrifter på tilbud',
+  get_wine_cellar: 'Kiggede i vinkælderen', set_wine_for_meal: 'Satte vin til retten'
 };
 const AI_SKRIVER = new Set(['add_to_meal_plan', 'add_to_shopping_list']);
 function aiKaldHtml(k) {

@@ -1493,12 +1493,13 @@ async function aiMessage(body) {
  * for en titelliste i systemprompten, som blev klippet ved 20.000 tegn.
  * Vaerktoejerne er de samme objekter som /mcp bruger: én implementering.
  * De to skrivende kun TILFOEJER - intet kan slettes eller overskrives herfra,
- * og create_recipe/update_recipe er bevidst udeladt. De koeres uden
+ * og create_recipe/update_recipe er bevidst udeladt. Undtagelsen (v54) er
+ * set_wine_for_meal, der kun roerer `wine`-feltet paa en ret paa madplanen. De koeres uden
  * godkendelse; panelet viser bagefter, hvad der blev lagt ind, og svaret
  * fortaeller frontenden, hvilke datatyper der skal hentes igen (`aendret`).
  * Samtalen er tilstandsloes: frontenden sender teksthistorikken hver gang. */
 const AI_MAKS_RUNDER = 8;
-const AI_SKRIVER = { add_to_meal_plan: 'planEntry', add_to_shopping_list: 'shopItem' };
+const AI_SKRIVER = { add_to_meal_plan: 'planEntry', add_to_shopping_list: 'shopItem', set_wine_for_meal: 'planEntry' };
 const aiVaerktoejer = () => mcp.VAERKTOEJER.filter(v => v.scope === 'read' || AI_SKRIVER[v.name]);
 
 function tilbudLinjeTilPrompt() {
@@ -1541,6 +1542,8 @@ ${tilbudLinjeTilPrompt()}
 - get_wine_cellar viser vinene i brugerens vinkælder i Cellarius (plads, antal, drikkevindue).
   Brug det, når brugeren spørger til vin – også "kig i Cellarius" eller "hvilken vin til …". Foreslå kun
   vine, der faktisk ligger i kælderen, nævn pladsen, og foretræk vine der er klar eller bør drikkes snart.
+- Vinen kan kobles til en ret på madplanen: set_wine_for_meal (entry-id fra get_meal_plan) for en ret,
+  der allerede står der, eller feltet wine i add_to_meal_plan. Kun når brugeren beder om det.
 
 Foreslå brugerens EGNE opskrifter frem for at skrive nye. Henvis altid til en opskrift som et link
 i formatet [Titel](/opskrift/<id>) – fx [Lasagne](/opskrift/abc123) – så kan brugeren klikke direkte til den.
@@ -2014,7 +2017,9 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
         lines.push('BEGIN:VEVENT', `UID:${e.id}@kokkeri`, 'DTSTAMP:' + stamp,
           `DTSTART;VALUE=DATE:${e.date.replace(/-/g, '')}`,
           'SUMMARY:' + icsEsc('🍽 ' + title));
-        if (rec && rec.url) lines.push('DESCRIPTION:' + icsEsc(rec.url));
+        /* v54: vinen til retten staar ogsaa i kalenderen */
+        const beskr = [e.wine ? '🍷 ' + e.wine : '', rec && rec.url ? rec.url : ''].filter(Boolean).join('\n');
+        if (beskr) lines.push('DESCRIPTION:' + icsEsc(beskr));
         lines.push('END:VEVENT');
       }
       lines.push('END:VCALENDAR');
