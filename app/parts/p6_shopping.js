@@ -109,6 +109,7 @@ RENDER.shopping = () => {
           <span class="txt">${esc(i.text)}</span>
           ${bySection && i.group && visGruppe ? `<span class="grp">${esc(i.group)}</span>` : ''}
           ${i.huti && !i.done ? `<span class="hutimaerke" title="Lagt på listen, selv om huti har det">🧊 ${esc(i.huti)}</span>` : ''}
+          ${i.kilde === 'huti' && bySection && !visGruppe ? '<span class="grp hutikilde" title="Kopieret fra hutis indkøbsliste">🧊 fra huti</span>' : ''}
         </span>
         ${tilbudChipHtml(i)}
         <button class="iconbtn" data-del="${i.id}" title="Fjern">✕</button>
@@ -127,6 +128,7 @@ RENDER.shopping = () => {
         <button class="btn" id="shopPrint">🖨️ Print</button>
         <button class="btn" id="shopMerge" ${open.length > 1 ? '' : 'disabled'}>🧮 Læg ens varer sammen</button>
         ${S.settings.aiKeySet && open.length ? `<button class="btn" id="shopAiSort" title="AI gennemgår alle ${open.length} varer og flytter dem, der ligger i en forkert afdeling">✨ Sortér med AI</button>` : ''}
+        ${hutiSat() ? '<button class="btn" id="shopHuti" title="Kopiér posterne fra hutis indkøbsliste hertil">🧊 Hent fra huti</button>' : ''}
         ${S.settings.haSet ? '<button class="btn" id="shopHa">🏠 Send til Home Assistant</button>' : ''}
         ${S.settings.todoistSet ? '<button class="btn" id="shopTd">✅ Send til Todoist</button>' : ''}
         ${S.settings.dodaSet ? '<button class="btn" id="shopDoda">☑️ Send til doda</button>' : ''}
@@ -227,6 +229,8 @@ RENDER.shopping_bind = () => {
   };
   const aiSort = $('#shopAiSort');
   if (aiSort) aiSort.onclick = () => aiSortSections(aiSort);
+  const hh = $('#shopHuti');
+  if (hh) hh.onclick = () => hutiHentIndkoebModal();
   const ha = $('#shopHa');
   if (ha) ha.onclick = async () => {
     ha.disabled = true;

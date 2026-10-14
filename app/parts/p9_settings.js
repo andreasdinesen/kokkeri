@@ -204,13 +204,19 @@ RENDER.settings = () => {
 
   <div class="panelbox">
     <h2 style="margin-top:0">🧊 huti (fryser, køleskab og spisekammer)</h2>
-    <p class="small muted">Lad madplanen se, hvad I har i huti: knappen <b>🧊 Brug det, vi har</b> på madplanen foreslår retter,
-      der bruger det – det, der skal spises snart, først – og indkøbslisten viser, hvad I allerede har.
-      Lav en personlig nøgle i huti under Settings → Connections → Claude / MCP. Vi anbefaler en <b><i>Read</i>-nøgle</b>.
-      En <i>Read and change</i>-nøgle giver Kokkeris server alle hutis skriveværktøjer, selv om Kokkeri kun bruger
-      <code>take_stock</code> til »tage ud i huti« (kun madvarer, kun når nogen klikker) – vælg den kun, hvis I vil have den knap.
-      Forbindelsen er fælles for alle Kokkeris brugere, og kun en administrator kan forbinde, teste og afbryde.
-      Nøglen bliver på Kokkeris server. Status: ${!S.settings.hutiSet ? '<span class="warn">ikke forbundet</span>'
+    <ul class="small muted hutipunkter">
+      <li><b>Madplanen</b> kan bruge det, I har i fryseren, køleskabet og spisekammeret: <b>🧊 Brug det, vi har</b> og ✨ AI-madplanen
+        (det, der skal spises snart, først), og indkøbslisten viser, hvad I allerede har.</li>
+      <li><b>Indkøbslisten</b> kan hente hutis indkøbsliste: <b>🧊 Hent fra huti</b> kopierer posterne hertil – Kokkeri ændrer intet i huti.</li>
+    </ul>
+    <p class="small muted">En <b>læsenøgle</b> er nok. Lav en personlig læsenøgle i huti under
+      <i>Indstillinger → Forbindelser (Adgangsnøgler)</i>. Kun en administrator kan forbinde, teste og afbryde.</p>
+    <details class="small muted hutidetaljer"><summary>»Tag ud i huti« og skrivenøgler</summary>
+      <p style="margin:6px 0">Knappen »Tag ud i huti« kræver en skrivenøgle (<i>Read and change</i>). Den giver Kokkeris server
+        alle hutis skriveværktøjer, selv om Kokkeri kun bruger <code>take_stock</code> (kun madvarer, kun når nogen klikker) – vælg den kun,
+        hvis I vil have den knap. Forbindelsen er fælles for alle Kokkeris brugere, og nøglen forlader aldrig Kokkeris server.</p>
+    </details>
+    <p class="small muted">Status: ${!S.settings.hutiSet ? '<span class="warn">ikke forbundet</span>'
         : S.settings.hutiStatus && S.settings.hutiStatus.ok
           ? `<span class="good">forbundet ✓</span> – ${+S.settings.hutiStatus.total || 0} madvarer, ${+S.settings.hutiStatus.eatSoon || 0} skal spises snart${S.settings.hutiStatus.canWrite ? ' · kan tage ud' : ' · kun læse'}`
           : S.settings.hutiStatus && S.settings.hutiStatus.kode ? '<span class="warn">forbundet, men sidste test fejlede</span>' : '<span class="good">forbundet</span>'}</p>
@@ -245,8 +251,16 @@ RENDER.settings = () => {
     <p class="small muted">Lad Claude læse og skrive i dine opskrifter, din madplan og din
       indkøbsliste. <b>claude.ai</b> forbinder du med knappen »Add custom connector« og
       adressen herunder – du bliver sendt hertil for at godkende. <b>Claude Code</b> og
-      <b>Claude Desktop</b> bruger i stedet en nøgle, du laver her.</p>
+      <b>Claude Desktop</b> bruger i stedet en nøgle fra <b>Adgangsnøgler</b> herunder.</p>
     <div id="accessBox" class="muted small">Henter …</div>
+  </div>
+
+  <div class="panelbox">
+    <h2 style="margin-top:0">🔑 Adgangsnøgler</h2>
+    <p class="small muted">Nøgler til andre apps og scripts, der skal læse eller ændre Kokkeri – fx Claude Code, Claude Desktop,
+      qlk (»Send til Kokkeri«) eller dit eget script. Giv hver app sin egen nøgle, så du kan tilbagekalde den alene.
+      Vælg <i>Kun læsning</i>, når appen ikke skal ændre noget.</p>
+    <div id="tokenBox" class="muted small">Henter …</div>
   </div>
   </div>
 
@@ -320,6 +334,8 @@ function visSettingsFane(id) {
     el.setAttribute('aria-selected', paa ? 'true' : 'false');
   });
   try { localStorage.setItem('kk_settings_fane', valgt); } catch (e) {}
+  /* sideoversigten viser kun den synlige fanes kort */
+  if (typeof byggToc === 'function') byggToc();
   /* Fanen staar ogsaa i adressen (/indstillinger/data), saa et genindlaes
    * lander paa den. Et faneskift RETTER adressen - det er ikke et sideskift,
    * og tilbage-knappen skal foere ud af indstillingerne, ikke gennem fanerne.
@@ -344,12 +360,19 @@ function bindSettingsFaner() {
   });
 }
 
-/* ---------------- Claude-adgang: noegler og forbundne apps ---------------- */
+/* ---------------- Claude-adgang (forbundne apps) og Adgangsnoegler ----------------
+ * v56: noeglerne har deres eget kort (#tokenBox) lige efter Claude-adgang (#accessBox).
+ * Samme /api/access-kald fylder begge - logikken og ruterne er uaendrede. */
 async function tegnAdgang() {
   const box = $('#accessBox');
+  const tbox = $('#tokenBox');
   if (!box) return;
   let d;
-  try { d = await api('/api/access'); } catch (e) { box.textContent = 'Kunne ikke hente adgangen.'; return; }
+  try { d = await api('/api/access'); } catch (e) {
+    box.textContent = 'Kunne ikke hente adgangen.';
+    if (tbox) tbox.textContent = 'Kunne ikke hente nøglerne.';
+    return;
+  }
   box.innerHTML = `
     <div class="fld" style="max-width:560px">
       <span class="small muted">Adresse til connector</span>
@@ -361,8 +384,8 @@ async function tegnAdgang() {
         <div class="kildenavn"><b>${esc(c.name)}</b></div>
         <div class="kildetal small muted">forbundet ${fmtDate(String(c.last_token || '').slice(0, 10))}</div>
         <button class="btn small danger" data-conndel="${esc(c.id)}">Fjern</button></div>`).join('')}</div>`
-      : '<p class="small muted">Ingen apps er forbundet endnu.</p>'}
-    <h3>Nøgler til Claude Code og Desktop</h3>
+      : '<p class="small muted">Ingen apps er forbundet endnu.</p>'}`;
+  if (tbox) tbox.innerHTML = `
     ${d.tokens.length ? `<div class="kilder">${d.tokens.map(t => `<div class="kilde">
         <div class="kildenavn"><b>${esc(t.label || 'Uden navn')}</b>
           <span class="muted small">${t.scope === 'read' ? 'kun læsning' : 'fuld adgang'}</span></div>
@@ -370,7 +393,7 @@ async function tegnAdgang() {
         <button class="btn small danger" data-tokdel="${esc(t.id)}">Slet</button></div>`).join('')}</div>`
       : '<p class="small muted">Ingen nøgler endnu.</p>'}
     <div class="rowflex" style="margin-top:10px">
-      <input id="tokLabel" placeholder="Navn, fx »Claude på laptoppen«" style="max-width:240px">
+      <input id="tokLabel" placeholder="Navn, fx »Claude på laptoppen« eller »qlk«" style="max-width:260px;flex:1 1 200px;min-width:0">
       <select id="tokScope">
         <option value="full">Fuld adgang</option>
         <option value="read">Kun læsning</option>

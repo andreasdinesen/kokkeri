@@ -105,7 +105,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 55;
+const APP_VERSION = 56;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -1168,6 +1168,7 @@ function render() {
   synkAdresse(S._urlErstat);
   S._urlErstat = false;
   updateWakeBtn();
+  byggToc();                 // EFTER optegningen - ét sted i stedet for i hver side
 }
 function goto(view, arg) {
   S.view = view;
@@ -1175,6 +1176,84 @@ function goto(view, arg) {
   render();
   window.scrollTo(0, 0);
 }
+
+/* ---------------- sideoversigten i hoejre side (v56, RUNE-ERFARINGER §9b) ----------------
+ * Notion-agtig: en stak streger, én pr. afsnit (h2 i #app), der folder sig ud med teksten
+ * paa hover, markerer det afsnit, man er i, og ruller dertil ved klik. Kopieret fra doda.
+ *  - Den bor i <body>, ikke i #app: alt i #app skiftes ud ved hver render().
+ *  - Generel: byggToc() samler sidens SYNLIGE h2'er efter hver optegning (indstillingernes
+ *    skjulte faner er ikke med), saa nye kort kommer med af sig selv. Kun ved mindst
+ *    TOC_MIN afsnit, aldrig paa en smal skaerm (SMAL_SKAERM - samme graense som style.css),
+ *    og CSS'en skjuler den, mens AI-panelet staar i hoejre side.
+ *  - Modalernes h2 ligger i #modalHost, ikke i #app, og kommer derfor ikke med. */
+const TOC_MIN = 3;
+/* Sider uden oversigt: opskriften staar i to spalter (Ingredienser ved siden af Fremgangsmaade),
+ * saa der er intet at rulle til - en oversigt med tre punkter, hvor to ligger i samme hoejde,
+ * var mere forvirrende end nyttig (vurderet 14/10-2026). */
+const TOC_UDEN = new Set(['recipeDetail']);
+const TOC_TOP = 140;          // afsnittet, der er rullet forbi denne linje, er det aktive
+const tocState = { punkter: [], aktiv: -1 };
+/** Ren funktion (proeves i node): toppene i raekkefoelge -> indekset paa det aktive afsnit.
+ *  Det sidste afsnit, hvis top er rullet op over graensen; ellers det foerste. Er man rullet
+ *  helt i bund, er det sidste afsnit aktivt (ellers kan et kort sidste afsnit aldrig blive det). */
+function aktivtTocAfsnit(toppe, graense, iBund) {
+  if (!toppe.length) return -1;
+  if (iBund) return toppe.length - 1;
+  let i = 0;
+  for (let n = 0; n < toppe.length; n++) if (toppe[n] <= graense) i = n;
+  return i;
+}
+function tocRail() {
+  let r = document.getElementById('tocRail');
+  if (!r) {
+    document.body.insertAdjacentHTML('beforeend', '<div class="toc" id="tocRail" role="navigation" aria-label="På siden" hidden></div>');
+    r = document.getElementById('tocRail');
+  }
+  return r;
+}
+function byggToc() {
+  const rail = tocRail();
+  const host = document.getElementById('app');
+  /* closest('[hidden]') og ikke offsetParent: lige efter optegningen har intet en layout-kasse endnu */
+  const fundne = host && !host.hidden && !TOC_UDEN.has(S.view) ? [...host.querySelectorAll('h2')].filter(h => !h.closest('[hidden]')) : [];
+  if (fundne.length < TOC_MIN || smalSkaerm()) {
+    rail.hidden = true; rail.innerHTML = ''; tocState.punkter = [];
+    document.body.classList.remove('toc-vist');
+    return;
+  }
+  tocState.punkter = fundne.map((el, i) => {
+    if (!el.id) el.id = 'afsnit-' + i;
+    return { el, navn: el.textContent.replace(/\s+/g, ' ').trim() || 'Afsnit ' + (i + 1) };
+  });
+  tocState.aktiv = -1;
+  rail.innerHTML = tocState.punkter.map((p, i) => `<button type="button" class="toc-item" data-toc="${i}" title="${esc(p.navn)}">
+      <span class="toc-dash"></span><span class="toc-tekst">${esc(p.navn)}</span></button>`).join('');
+  rail.hidden = false;
+  document.body.classList.add('toc-vist');
+  rail.querySelectorAll('[data-toc]').forEach(el => el.onclick = () => {
+    const p = tocState.punkter[+el.dataset.toc];
+    if (p) p.el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  markerToc();
+}
+function markerToc() {
+  if (!tocState.punkter.length) return;
+  const d = document.scrollingElement || document.documentElement;
+  const iBund = d.scrollHeight - d.clientHeight > 4 && d.scrollTop + d.clientHeight >= d.scrollHeight - 2;
+  const i = aktivtTocAfsnit(tocState.punkter.map(p => p.el.getBoundingClientRect().top), TOC_TOP, iBund);
+  if (i === tocState.aktiv) return;
+  tocState.aktiv = i;
+  document.querySelectorAll('#tocRail [data-toc]').forEach(el => el.classList.toggle('on', +el.dataset.toc === i));
+}
+/* Én rAF pr. rulning. Lytteren sidder paa document med capture: rulle-haendelser BOBLER IKKE,
+ * og under mobilgraensen er det body, der ruller (RUNE-ERFARINGER §6c). */
+let tocVenter = false;
+document.addEventListener('scroll', () => {
+  if (tocVenter || !tocState.punkter.length) return;
+  tocVenter = true;
+  requestAnimationFrame(() => { tocVenter = false; markerToc(); });
+}, { passive: true, capture: true });
+window.addEventListener('resize', () => byggToc());
 
 function pageHead(title, sub, extraHtml) {
   return `<div class="toprow"><div class="grow"><h1>${esc(title)}</h1><p class="sub">${sub || ''}</p></div>
@@ -4365,6 +4444,8 @@ Svar KUN med JSON: [{"date": "YYYY-MM-DD", "recipeId": "..."}] – én pr. dato,
  *  - Kvik-visningen: maerket + »Tag ud i huti« (kun med en skrivenoegle, kun efter klik).
  *  - Indkoebslisten: linjer, huti har, vises i en dialog - brugeren vaelger, om de
  *    springes over eller kommer med (saa med maerket »har i huti: …«). Intet fjernes stille.
+ *  - »🧊 Hent fra huti« (v56): hutis aabne indkoebsposter KOPIERES til Kokkeris liste med
+ *    maerket »fra huti«. Kokkeri skriver aldrig tilbage - forbindelsen gaar én vej.
  *
  * Kaldene rammer /api/huti/*. Fejl giver en toast eller en linje - ALDRIG en ny runde
  * kald: S.hutiPlan husker noeglen for det, der er spurgt om, ogsaa naar det fejlede
@@ -4628,6 +4709,113 @@ async function hutiFiltrerIndkoeb(items) {
   });
 }
 
+/* ---------- »🧊 Hent fra huti« paa indkoebslisten (v56) ----------
+ * /api/huti/indkoeb giver hutis AABNE poster, renset: { hutiId, text, line, quantity, unit, aisle, source }.
+ * De KOPIERES til Kokkeris liste (shopItem med group »fra huti«, kilde 'huti' og hutiId).
+ * Kokkeri skriver intet tilbage - afkrydsning her aendrer ikke hutis liste.
+ * Dubletter: en post, hvis hutiId allerede staar AABEN paa listen, kan ikke vaelges; en post med
+ * samme normaliserede tekst som en aaben vare er ikke afkrydset; en post, der er hentet foer og
+ * siden krydset af her, er heller ikke afkrydset. Ét klik = ét kald - ingen nye forsoeg. */
+const HUTI_GRUPPE = 'fra huti';
+const hutiNormTekst = s => String(s || '').normalize('NFC').toLocaleLowerCase('da').replace(/\s+/g, ' ').trim();
+function hutiNavnAf(tekst) {
+  try { return hutiNormTekst(parseShopText(tekst).name || tekst); } catch (e) { return hutiNormTekst(tekst); }
+}
+/** poster fra huti + Kokkeris shopItems -> [{ p, status, valgt }].
+ *  status: 'ny' | 'paa_listen' (hutiId aaben her - kan ikke vaelges) | 'samme_tekst' | 'hentet_foer'. */
+function hutiIndkoebPlan(poster, eksisterende) {
+  const aktive = (eksisterende || []).filter(i => i && !i.deleted);
+  const aabne = aktive.filter(i => !i.done);
+  const aabenId = new Set(aabne.filter(i => i.hutiId).map(i => +i.hutiId));
+  const hentetId = new Set(aktive.filter(i => i.hutiId).map(i => +i.hutiId));
+  const tekster = new Set();
+  for (const i of aabne) { tekster.add(hutiNormTekst(i.text)); tekster.add(hutiNavnAf(i.text)); }
+  const set = new Set();
+  return (poster || []).map(p => {
+    let status = 'ny';
+    if (p.hutiId && aabenId.has(+p.hutiId)) status = 'paa_listen';
+    else if (tekster.has(hutiNormTekst(p.line || p.text)) || tekster.has(hutiNormTekst(p.text)) || set.has(hutiNormTekst(p.text))) status = 'samme_tekst';
+    else if (p.hutiId && hentetId.has(+p.hutiId)) status = 'hentet_foer';
+    set.add(hutiNormTekst(p.text));
+    return { p, status, valgt: status === 'ny' };
+  });
+}
+/** De valgte poster -> nye shopItems (afdelingen: Kokkeris eget gaet, ellers hutis oversatte). */
+function hutiIndkoebItems(valgte) {
+  const nu = new Date().toISOString();
+  return valgte.map(p => ({
+    id: uid(), kind: 'shopItem', text: String(p.line || p.text).slice(0, 200), group: HUTI_GRUPPE,
+    section: guessSection(p.line || p.text) || p.aisle || '', done: false, createdAt: nu,
+    kilde: 'huti', hutiId: p.hutiId || null
+  }));
+}
+/** Laeg de valgte paa listen - tjekker listen IGEN lige foer (to klik / to faner). -> antal lagt paa. */
+async function hutiIndkoebLaegPaa(valgte) {
+  const plan = hutiIndkoebPlan(valgte, K('shopItem'));
+  const nye = hutiIndkoebItems(plan.filter(x => x.status !== 'paa_listen').map(x => x.p));
+  if (nye.length) await saveBulk(nye);
+  return nye.length;
+}
+const HUTI_STATUS_TEKST = { paa_listen: 'står allerede på listen', samme_tekst: 'en vare med samme navn står på listen', hentet_foer: 'hentet før og krydset af her' };
+function hutiHentIndkoebModal() {
+  const st = { d: null, fejl: '', plan: [] };
+  const tegn = m => {
+    const krop = m.querySelector('#hiKrop');
+    const ok = m.querySelector('#hiOk');
+    if (st.fejl) {
+      krop.innerHTML = `<p class="warn">${esc(st.fejl)}</p><div class="rowflex"><button class="btn small" id="hiIgen">Prøv igen</button></div>`;
+      krop.querySelector('#hiIgen').onclick = () => hent(m);
+      ok.disabled = true;
+      return;
+    }
+    if (!st.d) { krop.innerHTML = '<p class="muted">Henter hutis indkøbsliste …</p>'; ok.disabled = true; return; }
+    if (!st.plan.length) { krop.innerHTML = '<p class="muted">hutis indkøbsliste er tom.</p>'; ok.disabled = true; return; }
+    krop.innerHTML = `<ul class="hutilinjer hutiindkoeb">${st.plan.map((x, i) => `<li class="${x.status === 'paa_listen' ? 'muted' : ''}"><label class="chk">
+        <input type="checkbox" data-hi="${i}"${x.valgt ? ' checked' : ''}${x.status === 'paa_listen' ? ' disabled' : ''}>
+        <span><b>${esc(x.p.line || x.p.text)}</b>${x.p.aisle ? ` <span class="small muted">· ${esc(x.p.aisle)}</span>` : ''}${
+          HUTI_STATUS_TEKST[x.status] ? `<br><span class="small muted">${esc(HUTI_STATUS_TEKST[x.status])}</span>` : ''}</span>
+      </label></li>`).join('')}</ul>
+      <div class="rowflex"><button class="btn small" id="hiAlle">Vælg alle</button><button class="btn small" id="hiIngen">Fravælg alle</button></div>`;
+    const bokse = () => [...krop.querySelectorAll('[data-hi]:not([disabled])')];
+    const tael = () => { const n = bokse().filter(b => b.checked).length; ok.disabled = !n; ok.textContent = n ? `Tilføj ${n}` : 'Tilføj'; };
+    bokse().forEach(b => b.onchange = tael);
+    krop.querySelector('#hiAlle').onclick = () => { bokse().forEach(b => { b.checked = true; }); tael(); };
+    krop.querySelector('#hiIngen').onclick = () => { bokse().forEach(b => { b.checked = false; }); tael(); };
+    tael();
+  };
+  const hent = async m => {
+    st.fejl = ''; st.d = null; tegn(m);
+    try {
+      st.d = await api('/api/huti/indkoeb', { body: {} });
+      st.plan = hutiIndkoebPlan(st.d.items || [], K('shopItem'));
+    } catch (e) { st.fejl = 'huti: ' + e.message; }
+    if (document.body.contains(m)) tegn(m);
+  };
+  openModal(`<h2>🧊 Hent fra huti</h2>
+    <p class="small muted" style="margin-top:0">Posterne på hutis indkøbsliste <b>kopieres</b> over på Kokkeris liste med mærket »fra huti«.
+      Kokkeri ændrer intet i huti – krydser I en vare af her, står den stadig på hutis liste.</p>
+    <div id="hiKrop"></div>
+    <div class="actions">
+      <button class="btn" id="hiAnnuller">Annullér</button>
+      <button class="btn primary" id="hiOk" disabled>Tilføj</button>
+    </div>`, m => {
+    m.querySelector('#hiAnnuller').onclick = () => closeModal();
+    const ok = m.querySelector('#hiOk');
+    ok.onclick = async () => {
+      const valgte = [...m.querySelectorAll('[data-hi]:checked:not([disabled])')].map(b => st.plan[+b.dataset.hi].p);
+      if (!valgte.length) return;
+      ok.disabled = true;
+      try {
+        const n = await hutiIndkoebLaegPaa(valgte);
+        closeModal();
+        toast(n ? `${n} ${n === 1 ? 'vare' : 'varer'} hentet fra huti` : 'Varerne står allerede på listen');
+        render();
+      } catch (e) { ok.disabled = false; toast(e.message, true); }
+    };
+    hent(m);
+  });
+}
+
 /* ---------- indstillinger ---------- */
 
 /* Panelet selv staar i p9_settings.js (fanen Integrationer) - tests/faner.test.mjs
@@ -4780,6 +4968,7 @@ RENDER.shopping = () => {
           <span class="txt">${esc(i.text)}</span>
           ${bySection && i.group && visGruppe ? `<span class="grp">${esc(i.group)}</span>` : ''}
           ${i.huti && !i.done ? `<span class="hutimaerke" title="Lagt på listen, selv om huti har det">🧊 ${esc(i.huti)}</span>` : ''}
+          ${i.kilde === 'huti' && bySection && !visGruppe ? '<span class="grp hutikilde" title="Kopieret fra hutis indkøbsliste">🧊 fra huti</span>' : ''}
         </span>
         ${tilbudChipHtml(i)}
         <button class="iconbtn" data-del="${i.id}" title="Fjern">✕</button>
@@ -4798,6 +4987,7 @@ RENDER.shopping = () => {
         <button class="btn" id="shopPrint">🖨️ Print</button>
         <button class="btn" id="shopMerge" ${open.length > 1 ? '' : 'disabled'}>🧮 Læg ens varer sammen</button>
         ${S.settings.aiKeySet && open.length ? `<button class="btn" id="shopAiSort" title="AI gennemgår alle ${open.length} varer og flytter dem, der ligger i en forkert afdeling">✨ Sortér med AI</button>` : ''}
+        ${hutiSat() ? '<button class="btn" id="shopHuti" title="Kopiér posterne fra hutis indkøbsliste hertil">🧊 Hent fra huti</button>' : ''}
         ${S.settings.haSet ? '<button class="btn" id="shopHa">🏠 Send til Home Assistant</button>' : ''}
         ${S.settings.todoistSet ? '<button class="btn" id="shopTd">✅ Send til Todoist</button>' : ''}
         ${S.settings.dodaSet ? '<button class="btn" id="shopDoda">☑️ Send til doda</button>' : ''}
@@ -4898,6 +5088,8 @@ RENDER.shopping_bind = () => {
   };
   const aiSort = $('#shopAiSort');
   if (aiSort) aiSort.onclick = () => aiSortSections(aiSort);
+  const hh = $('#shopHuti');
+  if (hh) hh.onclick = () => hutiHentIndkoebModal();
   const ha = $('#shopHa');
   if (ha) ha.onclick = async () => {
     ha.disabled = true;
@@ -5808,13 +6000,19 @@ RENDER.settings = () => {
 
   <div class="panelbox">
     <h2 style="margin-top:0">🧊 huti (fryser, køleskab og spisekammer)</h2>
-    <p class="small muted">Lad madplanen se, hvad I har i huti: knappen <b>🧊 Brug det, vi har</b> på madplanen foreslår retter,
-      der bruger det – det, der skal spises snart, først – og indkøbslisten viser, hvad I allerede har.
-      Lav en personlig nøgle i huti under Settings → Connections → Claude / MCP. Vi anbefaler en <b><i>Read</i>-nøgle</b>.
-      En <i>Read and change</i>-nøgle giver Kokkeris server alle hutis skriveværktøjer, selv om Kokkeri kun bruger
-      <code>take_stock</code> til »tage ud i huti« (kun madvarer, kun når nogen klikker) – vælg den kun, hvis I vil have den knap.
-      Forbindelsen er fælles for alle Kokkeris brugere, og kun en administrator kan forbinde, teste og afbryde.
-      Nøglen bliver på Kokkeris server. Status: ${!S.settings.hutiSet ? '<span class="warn">ikke forbundet</span>'
+    <ul class="small muted hutipunkter">
+      <li><b>Madplanen</b> kan bruge det, I har i fryseren, køleskabet og spisekammeret: <b>🧊 Brug det, vi har</b> og ✨ AI-madplanen
+        (det, der skal spises snart, først), og indkøbslisten viser, hvad I allerede har.</li>
+      <li><b>Indkøbslisten</b> kan hente hutis indkøbsliste: <b>🧊 Hent fra huti</b> kopierer posterne hertil – Kokkeri ændrer intet i huti.</li>
+    </ul>
+    <p class="small muted">En <b>læsenøgle</b> er nok. Lav en personlig læsenøgle i huti under
+      <i>Indstillinger → Forbindelser (Adgangsnøgler)</i>. Kun en administrator kan forbinde, teste og afbryde.</p>
+    <details class="small muted hutidetaljer"><summary>»Tag ud i huti« og skrivenøgler</summary>
+      <p style="margin:6px 0">Knappen »Tag ud i huti« kræver en skrivenøgle (<i>Read and change</i>). Den giver Kokkeris server
+        alle hutis skriveværktøjer, selv om Kokkeri kun bruger <code>take_stock</code> (kun madvarer, kun når nogen klikker) – vælg den kun,
+        hvis I vil have den knap. Forbindelsen er fælles for alle Kokkeris brugere, og nøglen forlader aldrig Kokkeris server.</p>
+    </details>
+    <p class="small muted">Status: ${!S.settings.hutiSet ? '<span class="warn">ikke forbundet</span>'
         : S.settings.hutiStatus && S.settings.hutiStatus.ok
           ? `<span class="good">forbundet ✓</span> – ${+S.settings.hutiStatus.total || 0} madvarer, ${+S.settings.hutiStatus.eatSoon || 0} skal spises snart${S.settings.hutiStatus.canWrite ? ' · kan tage ud' : ' · kun læse'}`
           : S.settings.hutiStatus && S.settings.hutiStatus.kode ? '<span class="warn">forbundet, men sidste test fejlede</span>' : '<span class="good">forbundet</span>'}</p>
@@ -5849,8 +6047,16 @@ RENDER.settings = () => {
     <p class="small muted">Lad Claude læse og skrive i dine opskrifter, din madplan og din
       indkøbsliste. <b>claude.ai</b> forbinder du med knappen »Add custom connector« og
       adressen herunder – du bliver sendt hertil for at godkende. <b>Claude Code</b> og
-      <b>Claude Desktop</b> bruger i stedet en nøgle, du laver her.</p>
+      <b>Claude Desktop</b> bruger i stedet en nøgle fra <b>Adgangsnøgler</b> herunder.</p>
     <div id="accessBox" class="muted small">Henter …</div>
+  </div>
+
+  <div class="panelbox">
+    <h2 style="margin-top:0">🔑 Adgangsnøgler</h2>
+    <p class="small muted">Nøgler til andre apps og scripts, der skal læse eller ændre Kokkeri – fx Claude Code, Claude Desktop,
+      qlk (»Send til Kokkeri«) eller dit eget script. Giv hver app sin egen nøgle, så du kan tilbagekalde den alene.
+      Vælg <i>Kun læsning</i>, når appen ikke skal ændre noget.</p>
+    <div id="tokenBox" class="muted small">Henter …</div>
   </div>
   </div>
 
@@ -5924,6 +6130,8 @@ function visSettingsFane(id) {
     el.setAttribute('aria-selected', paa ? 'true' : 'false');
   });
   try { localStorage.setItem('kk_settings_fane', valgt); } catch (e) {}
+  /* sideoversigten viser kun den synlige fanes kort */
+  if (typeof byggToc === 'function') byggToc();
   /* Fanen staar ogsaa i adressen (/indstillinger/data), saa et genindlaes
    * lander paa den. Et faneskift RETTER adressen - det er ikke et sideskift,
    * og tilbage-knappen skal foere ud af indstillingerne, ikke gennem fanerne.
@@ -5948,12 +6156,19 @@ function bindSettingsFaner() {
   });
 }
 
-/* ---------------- Claude-adgang: noegler og forbundne apps ---------------- */
+/* ---------------- Claude-adgang (forbundne apps) og Adgangsnoegler ----------------
+ * v56: noeglerne har deres eget kort (#tokenBox) lige efter Claude-adgang (#accessBox).
+ * Samme /api/access-kald fylder begge - logikken og ruterne er uaendrede. */
 async function tegnAdgang() {
   const box = $('#accessBox');
+  const tbox = $('#tokenBox');
   if (!box) return;
   let d;
-  try { d = await api('/api/access'); } catch (e) { box.textContent = 'Kunne ikke hente adgangen.'; return; }
+  try { d = await api('/api/access'); } catch (e) {
+    box.textContent = 'Kunne ikke hente adgangen.';
+    if (tbox) tbox.textContent = 'Kunne ikke hente nøglerne.';
+    return;
+  }
   box.innerHTML = `
     <div class="fld" style="max-width:560px">
       <span class="small muted">Adresse til connector</span>
@@ -5965,8 +6180,8 @@ async function tegnAdgang() {
         <div class="kildenavn"><b>${esc(c.name)}</b></div>
         <div class="kildetal small muted">forbundet ${fmtDate(String(c.last_token || '').slice(0, 10))}</div>
         <button class="btn small danger" data-conndel="${esc(c.id)}">Fjern</button></div>`).join('')}</div>`
-      : '<p class="small muted">Ingen apps er forbundet endnu.</p>'}
-    <h3>Nøgler til Claude Code og Desktop</h3>
+      : '<p class="small muted">Ingen apps er forbundet endnu.</p>'}`;
+  if (tbox) tbox.innerHTML = `
     ${d.tokens.length ? `<div class="kilder">${d.tokens.map(t => `<div class="kilde">
         <div class="kildenavn"><b>${esc(t.label || 'Uden navn')}</b>
           <span class="muted small">${t.scope === 'read' ? 'kun læsning' : 'fuld adgang'}</span></div>
@@ -5974,7 +6189,7 @@ async function tegnAdgang() {
         <button class="btn small danger" data-tokdel="${esc(t.id)}">Slet</button></div>`).join('')}</div>`
       : '<p class="small muted">Ingen nøgler endnu.</p>'}
     <div class="rowflex" style="margin-top:10px">
-      <input id="tokLabel" placeholder="Navn, fx »Claude på laptoppen«" style="max-width:240px">
+      <input id="tokLabel" placeholder="Navn, fx »Claude på laptoppen« eller »qlk«" style="max-width:260px;flex:1 1 200px;min-width:0">
       <select id="tokScope">
         <option value="full">Fuld adgang</option>
         <option value="read">Kun læsning</option>

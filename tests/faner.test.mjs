@@ -81,7 +81,7 @@ function kort(html) {
 
 /* Afsnittene, som de var foer opdelingen (v34) - alle ti. */
 const ALLE = ['App', '✨ AI-assistent', '🏷️ Tilbud fra eTilbudsavis', '🏠 Home Assistant', '✅ Todoist', '☑️ doda', '🍷 Cellarius (vinforslag)', '🧊 huti (fryser, køleskab og spisekammer)', '📅 Madplan i din kalender',
-  'Backup & import', '🗑️ Ryd data', 'Min konto', 'Claude-adgang (MCP)', 'Brugere (admin)'];
+  'Backup & import', '🗑️ Ryd data', 'Min konto', 'Claude-adgang (MCP)', '🔑 Adgangsnøgler', 'Brugere (admin)'];
 const KUN_ADMIN = ['🗑️ Ryd data', 'Brugere (admin)'];
 
 console.log('Indstillinger: faner');
@@ -133,8 +133,18 @@ proev('huti-panelet: read-only for en ikke-admin, knapperne kun for admin', () =
 });
 proev('huti-panelet anbefaler en read-noegle og forklarer write-noeglen', () => {
   const html = tegn(true).html;
-  if (!/Read<\/i>-nøgle/.test(html)) throw new Error('anbefaler ikke en read-noegle');
+  if (!/<b>læsenøgle<\/b> er nok/.test(html)) throw new Error('anbefaler ikke en read-noegle');
+  if (!/Indstillinger → Forbindelser \(Adgangsnøgler\)/.test(html)) throw new Error('peger ikke paa hutis Adgangsnoegler');
+  if (!/Hent fra huti/.test(html)) throw new Error('naevner ikke »Hent fra huti«');
   if (!/alle hutis skriveværktøjer/.test(html) || !/take_stock/.test(html)) throw new Error('forklarer ikke write-noeglen');
+});
+proev('Adgangsnoegler: eget kort lige efter Claude-adgang, med listen og »Lav noegle«-feltet', () => {
+  const html = tegn(true).html;
+  const i = html.indexOf('Claude-adgang (MCP)'), j = html.indexOf('🔑 Adgangsnøgler');
+  if (i < 0 || j < i) throw new Error('kortet staar ikke efter Claude-adgang');
+  if (html.indexOf('<h2', i + 5) !== html.lastIndexOf('<h2', j)) throw new Error('der staar et kort imellem');
+  if (!/id="tokenBox"/.test(html.slice(j))) throw new Error('#tokenBox mangler i kortet');
+  if (!/qlk/.test(html.slice(j, j + 600))) throw new Error('forklaringen naevner ikke qlk');
 });
 proev('settings_bind() kalder faneskiftet', () => {
   if (!/bindSettingsFaner\(\)/.test(BIND)) throw new Error('bindSettingsFaner() kaldes ikke');

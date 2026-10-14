@@ -10,7 +10,11 @@
  *   Accept: application/json, text/event-stream   - svaret laeses som JSON eller SSE
  *
  * Vaerktoejerne: `pantry_for_planning` (laes, det hele kompakt), `tools/list` (kan
- * noeglen skrive?) og `take_stock` (kun med en skrivenoegle og kun efter et klik).
+ * noeglen skrive?), `shopping_list` (laes - »Hent fra huti« paa indkoebslisten) og
+ * `take_stock` (kun med en skrivenoegle og kun efter et klik).
+ *
+ * Forbindelsen gaar KUN den ene vej (Andreas, 14/10-2026): Kokkeri laeser hutis
+ * indkoebsliste, men skriver aldrig tilbage - huti har ingen »Send til Kokkeri«.
  *
  * Reglerne (RUNE-ERFARINGER §6b + huti v2):
  *  - Noeglen bor i settings (`huti_key`) og forlader ALDRIG serveren - fladen faar kun
@@ -39,6 +43,7 @@ const netvagt = require('./netvagt.js');
 
 const MAKS_SVAR = 2 * 1024 * 1024;
 const MAKS_VARER = 200;
+const MAKS_POSTER = 200;               // hutis indkoebsliste - loft paa antal
 const CACHE_MS = 3 * 60 * 1000;
 
 /* hutis enheder (huti/app/shared/model.js VARE_ENHEDER) paa dansk. Ukendt -> ''. */
@@ -109,6 +114,81 @@ function rensVare(x) {
     ageDays: heltal(x.ageDays, 0, 100000),
     origin: art ? { species: ARTER[art] || 'vildt', area: rens(x.origin.area, 80) } : null
   };
+}
+
+/* hutis afdelinger (huti/app/shared/model.js AFDELINGER) -> Kokkeris SHOP_SECTIONS (p1b_food.js).
+ * household og other har ingen pendant - dér gaetter Kokkeri selv. */
+const AFDELINGER = { produce: 'Frugt & grønt', bakery: 'Brød', dairy: 'Mejeri & køl', meat: 'Kød & fisk', frozen: 'Frost',
+  dry_goods: 'Kolonial', drinks: 'Drikkevarer' };
+const KILDER = new Set(['manual', 'used_up', 'low_stock', 'recipe']);
+
+/** Én post fra hutis indkoebsliste -> det, Kokkeri viser. null = kasseret.
+ *  Formatet (huti/app/mcp.js shopping_list): { id, text, quantity, unit, aisle, source, checked, addedBy }.
+ *  `name` godtages for `text`, og `checkedAt` for `checked` (et senere huti-format). Afkrydsede
+ *  poster er ikke med. Hvem der tilfoejede den (`addedBy`) sendes ALDRIG videre. */
+function rensPost(x) {
+  if (!x || typeof x !== 'object') return null;
+  if (x.checked === true || (x.checkedAt != null && x.checkedAt !== '')) return null;
+  const tekst = rens(x.text != null ? x.text : x.name, 120);
+  if (!tekst) return null;
+  const q = Number(x.quantity);
+  const enhedRaa = String(x.unit == null ? '' : x.unit).trim().toLowerCase();
+  const enhed = Object.hasOwn(ENHEDER, enhedRaa) ? ENHEDER[enhedRaa]
+    : /^[a-zæøå.]{1,12}$/.test(enhedRaa) ? enhedRaa : '';
+  const kilde = String(x.source || '');
+  return {
+    hutiId: heltal(x.id, 1, 1e12),
+    text: tekst,
+    quantity: x.quantity != null && x.quantity !== '' && Number.isFinite(q) && q > 0 && q < 1e6 ? Math.round(q * 1000) / 1000 : null,
+    unit: enhed,
+    aisle: Object.hasOwn(AFDELINGER, x.aisle) ? AFDELINGER[x.aisle] : '',
+    source: KILDER.has(kilde) ? kilde : ''
+  };
+}
+
+/** Teksten, posten faar paa Kokkeris liste: »2 l Letmælk« (som parseShopText forstaar). */
+function postTekst(p) {
+  if (p.quantity == null) return p.text;
+  return `${String(p.quantity).replace('.', ',')}${p.unit ? ' ' + p.unit : ''} ${p.text}`;
+}
+
+/** Et `shopping_list`-svar -> rensede, aabne poster. null = ulaeseligt.
+ *  Taaler hutis nuvaerende form (structuredContent.items) og en grupperet form
+ *  (structuredContent.aisles/groups[].items). Uden structuredContent laeses tekstlinjerne
+ *  »- [shopping #12] Letmælk (2 l) · dairy · manual« - en tom liste er »The shopping list is empty.« */
+function indkoebAf(result) {
+  if (!result || result.error || result.isError) return null;
+  const sc = result.structuredContent;
+  let raa = null;
+  if (sc && typeof sc === 'object') {
+    if (Array.isArray(sc.items)) raa = sc.items;
+    else {
+      const grupper = Array.isArray(sc.aisles) ? sc.aisles : Array.isArray(sc.groups) ? sc.groups : null;
+      if (grupper) raa = grupper.slice(0, 50).flatMap(g => (g && Array.isArray(g.items) ? g.items.slice(0, MAKS_POSTER).map(x => (x && typeof x === 'object' && !x.aisle && g.aisle ? Object.assign({}, x, { aisle: g.aisle }) : x)) : []));
+    }
+  }
+  if (!raa) {
+    const tekst = Array.isArray(result.content) && result.content[0] && typeof result.content[0].text === 'string' ? result.content[0].text : null;
+    if (tekst == null) return null;
+    raa = [];
+    for (const l of tekst.slice(0, 200000).split('\n')) {
+      const m = /^- \[shopping #(\d+)\] (.+?)(?: \(([\d.,]+)(?: ([^)]{1,20}))?\))?(?: · ([a-z_]+))?(?: · ([a-z_]+))?( · ticked off)?$/.exec(l.trim());
+      if (m) raa.push({ id: m[1], text: m[2], quantity: m[3] ? m[3].replace(',', '.') : null, unit: m[4] || '', aisle: m[5], source: m[6], checked: !!m[7] });
+    }
+    if (!raa.length && !/empty/i.test(tekst)) return null;
+  }
+  const poster = [];
+  const set = new Set();
+  for (const x of raa) {
+    if (poster.length >= MAKS_POSTER) break;
+    const p = rensPost(x);
+    if (!p) continue;
+    const noegle = p.hutiId ? '#' + p.hutiId : 't:' + p.text.toLowerCase();
+    if (set.has(noegle)) continue;          // samme post to gange i svaret
+    set.add(noegle);
+    poster.push(p);
+  }
+  return poster;
 }
 
 /** »2 poser hakket vildt« / »hjortekølle« - til mærkerne i fladen og til AI'en. */
@@ -305,6 +385,19 @@ function opret({ setting, setSetting, log, timeoutMs, cacheMs }) {
     return Object.assign({ ok: true, at: cache.at }, beh);
   }
 
+  /** hutis indkoebsliste (kun de aabne poster), renset. ALTID et friskt kald - ét klik i
+   *  fladen = ét kald, ingen cache og ingen nye forsoeg. Kokkeri skriver INTET tilbage;
+   *  en laesenoegle er nok. -> { ok, items, total } eller fejl(kode). */
+  async function indkoeb() {
+    const b = base(); const k = noegle();
+    if (!b || !k) return fejl('not_set');
+    const r = await rpc(b, k, [{ method: 'tools/call', params: { name: 'shopping_list', arguments: {} } }]);
+    if (!r.ok) return r;
+    const poster = indkoebAf(r.svar[0]);
+    if (!poster) { advar('shopping_list gav intet brugbart svar (aeldre huti uden indkoebsliste?)'); return fejl('failed'); }
+    return { ok: true, items: poster.map(x => Object.assign(x, { line: postTekst(x) })), total: poster.length };
+  }
+
   /** »Tag ud i huti« - kun efter et klik, kun med en skrivenoegle.
    *  Sikkerhedsreviewet (14/10-2026): en skrivenoegle i huti giver ALLE hutis skrivevaerktoejer,
    *  og take_stock tager ethvert lager-id ud - ogsaa ammunition. Kokkeri tager derfor KUN et id
@@ -336,7 +429,7 @@ function opret({ setting, setSetting, log, timeoutMs, cacheMs }) {
     return { ok: true, taken: Number.isFinite(taget) ? taget : null, stock: v ? { id: v.id, name: v.name, quantity: v.quantity, unit: v.unit } : null };
   }
 
-  return { offentlig, forbind, test, afbryd, beholdning, tagUd, glemCache: () => { cache = null; } };
+  return { offentlig, forbind, test, afbryd, beholdning, indkoeb, tagUd, glemCache: () => { cache = null; } };
 }
 
-module.exports = { opret, rensBase, rensVare, laesSvar, vareLinje, maengdeTekst, rens, ENHEDER, BESKED };
+module.exports = { opret, rensBase, rensVare, rensPost, indkoebAf, postTekst, laesSvar, vareLinje, maengdeTekst, rens, ENHEDER, BESKED };

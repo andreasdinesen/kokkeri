@@ -142,6 +142,7 @@ function render() {
   synkAdresse(S._urlErstat);
   S._urlErstat = false;
   updateWakeBtn();
+  byggToc();                 // EFTER optegningen - ét sted i stedet for i hver side
 }
 function goto(view, arg) {
   S.view = view;
@@ -149,6 +150,84 @@ function goto(view, arg) {
   render();
   window.scrollTo(0, 0);
 }
+
+/* ---------------- sideoversigten i hoejre side (v56, RUNE-ERFARINGER §9b) ----------------
+ * Notion-agtig: en stak streger, én pr. afsnit (h2 i #app), der folder sig ud med teksten
+ * paa hover, markerer det afsnit, man er i, og ruller dertil ved klik. Kopieret fra doda.
+ *  - Den bor i <body>, ikke i #app: alt i #app skiftes ud ved hver render().
+ *  - Generel: byggToc() samler sidens SYNLIGE h2'er efter hver optegning (indstillingernes
+ *    skjulte faner er ikke med), saa nye kort kommer med af sig selv. Kun ved mindst
+ *    TOC_MIN afsnit, aldrig paa en smal skaerm (SMAL_SKAERM - samme graense som style.css),
+ *    og CSS'en skjuler den, mens AI-panelet staar i hoejre side.
+ *  - Modalernes h2 ligger i #modalHost, ikke i #app, og kommer derfor ikke med. */
+const TOC_MIN = 3;
+/* Sider uden oversigt: opskriften staar i to spalter (Ingredienser ved siden af Fremgangsmaade),
+ * saa der er intet at rulle til - en oversigt med tre punkter, hvor to ligger i samme hoejde,
+ * var mere forvirrende end nyttig (vurderet 14/10-2026). */
+const TOC_UDEN = new Set(['recipeDetail']);
+const TOC_TOP = 140;          // afsnittet, der er rullet forbi denne linje, er det aktive
+const tocState = { punkter: [], aktiv: -1 };
+/** Ren funktion (proeves i node): toppene i raekkefoelge -> indekset paa det aktive afsnit.
+ *  Det sidste afsnit, hvis top er rullet op over graensen; ellers det foerste. Er man rullet
+ *  helt i bund, er det sidste afsnit aktivt (ellers kan et kort sidste afsnit aldrig blive det). */
+function aktivtTocAfsnit(toppe, graense, iBund) {
+  if (!toppe.length) return -1;
+  if (iBund) return toppe.length - 1;
+  let i = 0;
+  for (let n = 0; n < toppe.length; n++) if (toppe[n] <= graense) i = n;
+  return i;
+}
+function tocRail() {
+  let r = document.getElementById('tocRail');
+  if (!r) {
+    document.body.insertAdjacentHTML('beforeend', '<div class="toc" id="tocRail" role="navigation" aria-label="På siden" hidden></div>');
+    r = document.getElementById('tocRail');
+  }
+  return r;
+}
+function byggToc() {
+  const rail = tocRail();
+  const host = document.getElementById('app');
+  /* closest('[hidden]') og ikke offsetParent: lige efter optegningen har intet en layout-kasse endnu */
+  const fundne = host && !host.hidden && !TOC_UDEN.has(S.view) ? [...host.querySelectorAll('h2')].filter(h => !h.closest('[hidden]')) : [];
+  if (fundne.length < TOC_MIN || smalSkaerm()) {
+    rail.hidden = true; rail.innerHTML = ''; tocState.punkter = [];
+    document.body.classList.remove('toc-vist');
+    return;
+  }
+  tocState.punkter = fundne.map((el, i) => {
+    if (!el.id) el.id = 'afsnit-' + i;
+    return { el, navn: el.textContent.replace(/\s+/g, ' ').trim() || 'Afsnit ' + (i + 1) };
+  });
+  tocState.aktiv = -1;
+  rail.innerHTML = tocState.punkter.map((p, i) => `<button type="button" class="toc-item" data-toc="${i}" title="${esc(p.navn)}">
+      <span class="toc-dash"></span><span class="toc-tekst">${esc(p.navn)}</span></button>`).join('');
+  rail.hidden = false;
+  document.body.classList.add('toc-vist');
+  rail.querySelectorAll('[data-toc]').forEach(el => el.onclick = () => {
+    const p = tocState.punkter[+el.dataset.toc];
+    if (p) p.el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  markerToc();
+}
+function markerToc() {
+  if (!tocState.punkter.length) return;
+  const d = document.scrollingElement || document.documentElement;
+  const iBund = d.scrollHeight - d.clientHeight > 4 && d.scrollTop + d.clientHeight >= d.scrollHeight - 2;
+  const i = aktivtTocAfsnit(tocState.punkter.map(p => p.el.getBoundingClientRect().top), TOC_TOP, iBund);
+  if (i === tocState.aktiv) return;
+  tocState.aktiv = i;
+  document.querySelectorAll('#tocRail [data-toc]').forEach(el => el.classList.toggle('on', +el.dataset.toc === i));
+}
+/* Én rAF pr. rulning. Lytteren sidder paa document med capture: rulle-haendelser BOBLER IKKE,
+ * og under mobilgraensen er det body, der ruller (RUNE-ERFARINGER §6c). */
+let tocVenter = false;
+document.addEventListener('scroll', () => {
+  if (tocVenter || !tocState.punkter.length) return;
+  tocVenter = true;
+  requestAnimationFrame(() => { tocVenter = false; markerToc(); });
+}, { passive: true, capture: true });
+window.addEventListener('resize', () => byggToc());
 
 function pageHead(title, sub, extraHtml) {
   return `<div class="toprow"><div class="grow"><h1>${esc(title)}</h1><p class="sub">${sub || ''}</p></div>

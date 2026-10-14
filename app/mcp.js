@@ -604,6 +604,25 @@ function opret(srv) {
       }
     },
     {
+      /* v56: hutis indkoebsliste (kun de aabne poster) - kun laesning, Kokkeri skriver aldrig
+       * tilbage til huti. Til »hvad mangler vi?« og til at saette noget paa Kokkeris liste med
+       * add_to_shopping_list. */
+      name: 'huti_shopping_list',
+      scope: 'read',
+      description: 'The household\'s shopping list in the huti app (open items only): what huti says to buy, with amount '
+        + 'and aisle. Read-only - Kokkeri never changes huti. To copy items to Kokkeri\'s own shopping list, use '
+        + 'add_to_shopping_list (skip what get_shopping_list already has).',
+      inputSchema: { type: 'object', properties: {} },
+      async kald() {
+        if (!srv.huti || !srv.huti.indkoeb) return { fejl: 'huti er ikke tilgængelig her.' };
+        const r = await srv.huti.indkoeb();
+        if (!r.ok) return { fejl: r.besked };
+        const linjer = r.items.map(x => `- ${x.line}${x.aisle ? ' · ' + x.aisle : ''}`);
+        return { tekst: r.items.length ? tekstliste(`${r.items.length} poster på hutis indkøbsliste:`, linjer) : 'hutis indkøbsliste er tom.',
+          data: { items: r.items.map(x => ({ huti_id: x.hutiId, text: x.line, aisle: x.aisle || null })) } };
+      }
+    },
+    {
       name: 'get_meal_plan',
       scope: 'read',
       description: 'Read the meal plan between two dates (YYYY-MM-DD, inclusive).',

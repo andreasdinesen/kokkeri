@@ -742,3 +742,48 @@ span.dif { padding: 1px 4px; border-radius: 4px; }
   .hutiret .hutilaeg { flex-wrap: wrap; }
   .hutiret .hutilaeg select { flex: 1; min-width: 0; }
 }
+
+/* v56: huti-panelets punktliste og foldede detaljer */
+.hutipunkter { margin: 6px 0; padding-left: 18px; }
+.hutipunkter li { margin: 3px 0; }
+.hutidetaljer { margin: 6px 0; }
+.hutidetaljer > summary { cursor: pointer; }
+.hutiindkoeb label.chk { align-items: flex-start; }
+
+/* ---------------- sideoversigten i hoejre side (v56, RUNE-ERFARINGER §9b, fra doda) ----------------
+ * Lag 30: under AI-panelet (60), modal (75), palet (80) og toast (90), over indholdet.
+ * Den store venstre-padding er en usynlig gribeflade i sidens hoejre margen - main faar
+ * tilsvarende luft til hoejre (body.toc-vist), saa stregerne aldrig ligger oven paa indhold. */
+.toc {
+  position: fixed; right: 6px; top: 50%; transform: translateY(-50%);
+  z-index: 30; display: flex; flex-direction: column; gap: 2px;
+  padding: 12px 10px 12px 30px;
+  max-height: 70vh; overflow-y: auto; overscroll-behavior: contain;
+  border-radius: 10px; background: transparent; border: 1px solid transparent;
+  transition: background .14s, border-color .14s, box-shadow .14s;
+}
+.toc:hover, .toc:focus-within { background: var(--card); border-color: var(--border); box-shadow: 0 6px 24px rgba(0,0,0,.18); }
+.toc-item {
+  display: flex; align-items: center; gap: 10px; padding: 5px 6px;
+  border: 0; background: none; color: var(--muted); font: inherit; font-size: 13px;
+  text-align: left; cursor: pointer; border-radius: 6px;
+}
+.toc-item:hover { color: var(--text); }
+/* flex:none, ellers klemmer flex-foraelderen stregen til ingenting */
+.toc-dash { flex: none; width: 16px; height: 2px; border-radius: 2px; background: currentColor; opacity: .4;
+  transition: width .14s, opacity .14s, background .14s; }
+.toc-item.on .toc-dash { width: 24px; opacity: 1; background: var(--accent); }
+.toc-item.on { color: var(--text); }
+.toc-tekst { max-width: 0; opacity: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  transition: max-width .18s, opacity .14s; }
+.toc:hover .toc-tekst, .toc:focus-within .toc-tekst { max-width: 220px; opacity: 1; }
+/* klik i oversigten: overskriften maa ikke klistre til kanten */
+#app h2 { scroll-margin-top: 24px; }
+@media (min-width: 901px) { body.toc-vist main { padding-right: 70px; } }
+/* AI-panelet staar i hoejre side - saa er der ikke plads til begge */
+body.ai-aaben .toc { display: none; }
+/* Under mobilgraensen (samme 900 px som SMAL_SKAERM i p2) er der ikke plads ved siden af indholdet */
+@media (max-width: 900px) {
+  .toc { display: none !important; }
+}
+@media print { .toc { display: none !important; } }

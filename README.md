@@ -53,7 +53,9 @@ SQLite. **Ingen npm-afhængigheder, ingen CDN – alt kører lokalt.**
   knap *Brug det, vi har* foreslår retter, der bruger det, I har – det, der skal
   spises snart, først – hver ret viser »fra huti: …«, indkøbslisten spørger, før
   den lægger noget på, som I allerede har, og med en skrivenøgle kan en ret
-  »tage ud i huti«. AI-assistenten (og Claude via MCP) kan se fryseren.
+  »tage ud i huti«. *🧊 Hent fra huti* på indkøbslisten kopierer hutis
+  indkøbsliste over (Kokkeri ændrer intet i huti). AI-assistenten (og Claude via
+  MCP) kan se fryseren og hutis indkøbsliste.
 - **Timere**: flere navngivne køkkentimere med forvalg, pause og +1 min – de
   overlever sideskift og genindlæsning, ringer med lyd og notifikation.
   Klik på et minuttal inde i en fremgangsmåde for at starte en timer direkte.
@@ -119,6 +121,17 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v56**: **Hent fra huti.** Indkøbslisten får
+  *🧊 Hent fra huti* (kun når huti er forbundet): hutis åbne poster vises med
+  flueben, og »Tilføj« kopierer de valgte over med mærket »fra huti«. Det, der
+  allerede står på listen, er ikke afkrydset, og de samme poster kan ikke hentes to
+  gange – heller ikke når teksten er rettet her. Kokkeri skriver intet tilbage til
+  huti; en læsenøgle er nok. Nyt læseværktøj `huti_shopping_list` til assistenten og
+  Claude via MCP. Nøglerne til andre apps og scripts (Claude Code, Claude Desktop, qlk,
+  egne scripts) har fået deres eget kort, *🔑 Adgangsnøgler*, lige efter Claude-adgang
+  (MCP), og huti-panelets tekst er kortere og peger på hutis *Adgangsnøgler*.
+  Indstillingerne har fået en sideoversigt i højre side (som i doda): en streg pr.
+  kort, der folder sig ud med navnet, viser hvor du er, og ruller dertil ved klik.
 - **v55**: **Fryseren i huti.** Forbind huti under
   Indstillinger → Integrationer med en personlig huti-nøgle (læse er nok; nøglen
   bliver på serveren). Madplanen får *🧊 Brug det, vi har*: retter fra biblioteket,

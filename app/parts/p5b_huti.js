@@ -9,6 +9,8 @@
  *  - Kvik-visningen: maerket + »Tag ud i huti« (kun med en skrivenoegle, kun efter klik).
  *  - Indkoebslisten: linjer, huti har, vises i en dialog - brugeren vaelger, om de
  *    springes over eller kommer med (saa med maerket »har i huti: …«). Intet fjernes stille.
+ *  - »🧊 Hent fra huti« (v56): hutis aabne indkoebsposter KOPIERES til Kokkeris liste med
+ *    maerket »fra huti«. Kokkeri skriver aldrig tilbage - forbindelsen gaar én vej.
  *
  * Kaldene rammer /api/huti/*. Fejl giver en toast eller en linje - ALDRIG en ny runde
  * kald: S.hutiPlan husker noeglen for det, der er spurgt om, ogsaa naar det fejlede
@@ -269,6 +271,113 @@ async function hutiFiltrerIndkoeb(items) {
     });
     /* lukkes modalen paa anden vis (klik udenfor), er det en fortrydelse */
     const vagt = setInterval(() => { if (!document.querySelector('#hsOk')) { clearInterval(vagt); svar(null); } }, 400);
+  });
+}
+
+/* ---------- »🧊 Hent fra huti« paa indkoebslisten (v56) ----------
+ * /api/huti/indkoeb giver hutis AABNE poster, renset: { hutiId, text, line, quantity, unit, aisle, source }.
+ * De KOPIERES til Kokkeris liste (shopItem med group »fra huti«, kilde 'huti' og hutiId).
+ * Kokkeri skriver intet tilbage - afkrydsning her aendrer ikke hutis liste.
+ * Dubletter: en post, hvis hutiId allerede staar AABEN paa listen, kan ikke vaelges; en post med
+ * samme normaliserede tekst som en aaben vare er ikke afkrydset; en post, der er hentet foer og
+ * siden krydset af her, er heller ikke afkrydset. Ét klik = ét kald - ingen nye forsoeg. */
+const HUTI_GRUPPE = 'fra huti';
+const hutiNormTekst = s => String(s || '').normalize('NFC').toLocaleLowerCase('da').replace(/\s+/g, ' ').trim();
+function hutiNavnAf(tekst) {
+  try { return hutiNormTekst(parseShopText(tekst).name || tekst); } catch (e) { return hutiNormTekst(tekst); }
+}
+/** poster fra huti + Kokkeris shopItems -> [{ p, status, valgt }].
+ *  status: 'ny' | 'paa_listen' (hutiId aaben her - kan ikke vaelges) | 'samme_tekst' | 'hentet_foer'. */
+function hutiIndkoebPlan(poster, eksisterende) {
+  const aktive = (eksisterende || []).filter(i => i && !i.deleted);
+  const aabne = aktive.filter(i => !i.done);
+  const aabenId = new Set(aabne.filter(i => i.hutiId).map(i => +i.hutiId));
+  const hentetId = new Set(aktive.filter(i => i.hutiId).map(i => +i.hutiId));
+  const tekster = new Set();
+  for (const i of aabne) { tekster.add(hutiNormTekst(i.text)); tekster.add(hutiNavnAf(i.text)); }
+  const set = new Set();
+  return (poster || []).map(p => {
+    let status = 'ny';
+    if (p.hutiId && aabenId.has(+p.hutiId)) status = 'paa_listen';
+    else if (tekster.has(hutiNormTekst(p.line || p.text)) || tekster.has(hutiNormTekst(p.text)) || set.has(hutiNormTekst(p.text))) status = 'samme_tekst';
+    else if (p.hutiId && hentetId.has(+p.hutiId)) status = 'hentet_foer';
+    set.add(hutiNormTekst(p.text));
+    return { p, status, valgt: status === 'ny' };
+  });
+}
+/** De valgte poster -> nye shopItems (afdelingen: Kokkeris eget gaet, ellers hutis oversatte). */
+function hutiIndkoebItems(valgte) {
+  const nu = new Date().toISOString();
+  return valgte.map(p => ({
+    id: uid(), kind: 'shopItem', text: String(p.line || p.text).slice(0, 200), group: HUTI_GRUPPE,
+    section: guessSection(p.line || p.text) || p.aisle || '', done: false, createdAt: nu,
+    kilde: 'huti', hutiId: p.hutiId || null
+  }));
+}
+/** Laeg de valgte paa listen - tjekker listen IGEN lige foer (to klik / to faner). -> antal lagt paa. */
+async function hutiIndkoebLaegPaa(valgte) {
+  const plan = hutiIndkoebPlan(valgte, K('shopItem'));
+  const nye = hutiIndkoebItems(plan.filter(x => x.status !== 'paa_listen').map(x => x.p));
+  if (nye.length) await saveBulk(nye);
+  return nye.length;
+}
+const HUTI_STATUS_TEKST = { paa_listen: 'står allerede på listen', samme_tekst: 'en vare med samme navn står på listen', hentet_foer: 'hentet før og krydset af her' };
+function hutiHentIndkoebModal() {
+  const st = { d: null, fejl: '', plan: [] };
+  const tegn = m => {
+    const krop = m.querySelector('#hiKrop');
+    const ok = m.querySelector('#hiOk');
+    if (st.fejl) {
+      krop.innerHTML = `<p class="warn">${esc(st.fejl)}</p><div class="rowflex"><button class="btn small" id="hiIgen">Prøv igen</button></div>`;
+      krop.querySelector('#hiIgen').onclick = () => hent(m);
+      ok.disabled = true;
+      return;
+    }
+    if (!st.d) { krop.innerHTML = '<p class="muted">Henter hutis indkøbsliste …</p>'; ok.disabled = true; return; }
+    if (!st.plan.length) { krop.innerHTML = '<p class="muted">hutis indkøbsliste er tom.</p>'; ok.disabled = true; return; }
+    krop.innerHTML = `<ul class="hutilinjer hutiindkoeb">${st.plan.map((x, i) => `<li class="${x.status === 'paa_listen' ? 'muted' : ''}"><label class="chk">
+        <input type="checkbox" data-hi="${i}"${x.valgt ? ' checked' : ''}${x.status === 'paa_listen' ? ' disabled' : ''}>
+        <span><b>${esc(x.p.line || x.p.text)}</b>${x.p.aisle ? ` <span class="small muted">· ${esc(x.p.aisle)}</span>` : ''}${
+          HUTI_STATUS_TEKST[x.status] ? `<br><span class="small muted">${esc(HUTI_STATUS_TEKST[x.status])}</span>` : ''}</span>
+      </label></li>`).join('')}</ul>
+      <div class="rowflex"><button class="btn small" id="hiAlle">Vælg alle</button><button class="btn small" id="hiIngen">Fravælg alle</button></div>`;
+    const bokse = () => [...krop.querySelectorAll('[data-hi]:not([disabled])')];
+    const tael = () => { const n = bokse().filter(b => b.checked).length; ok.disabled = !n; ok.textContent = n ? `Tilføj ${n}` : 'Tilføj'; };
+    bokse().forEach(b => b.onchange = tael);
+    krop.querySelector('#hiAlle').onclick = () => { bokse().forEach(b => { b.checked = true; }); tael(); };
+    krop.querySelector('#hiIngen').onclick = () => { bokse().forEach(b => { b.checked = false; }); tael(); };
+    tael();
+  };
+  const hent = async m => {
+    st.fejl = ''; st.d = null; tegn(m);
+    try {
+      st.d = await api('/api/huti/indkoeb', { body: {} });
+      st.plan = hutiIndkoebPlan(st.d.items || [], K('shopItem'));
+    } catch (e) { st.fejl = 'huti: ' + e.message; }
+    if (document.body.contains(m)) tegn(m);
+  };
+  openModal(`<h2>🧊 Hent fra huti</h2>
+    <p class="small muted" style="margin-top:0">Posterne på hutis indkøbsliste <b>kopieres</b> over på Kokkeris liste med mærket »fra huti«.
+      Kokkeri ændrer intet i huti – krydser I en vare af her, står den stadig på hutis liste.</p>
+    <div id="hiKrop"></div>
+    <div class="actions">
+      <button class="btn" id="hiAnnuller">Annullér</button>
+      <button class="btn primary" id="hiOk" disabled>Tilføj</button>
+    </div>`, m => {
+    m.querySelector('#hiAnnuller').onclick = () => closeModal();
+    const ok = m.querySelector('#hiOk');
+    ok.onclick = async () => {
+      const valgte = [...m.querySelectorAll('[data-hi]:checked:not([disabled])')].map(b => st.plan[+b.dataset.hi].p);
+      if (!valgte.length) return;
+      ok.disabled = true;
+      try {
+        const n = await hutiIndkoebLaegPaa(valgte);
+        closeModal();
+        toast(n ? `${n} ${n === 1 ? 'vare' : 'varer'} hentet fra huti` : 'Varerne står allerede på listen');
+        render();
+      } catch (e) { ok.disabled = false; toast(e.message, true); }
+    };
+    hent(m);
   });
 }
 

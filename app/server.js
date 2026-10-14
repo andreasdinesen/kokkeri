@@ -1580,6 +1580,9 @@ ${tilbudLinjeTilPrompt()}
   der skal spises snart, først. Med suggest_recipes kommer der også retter fra biblioteket, der bruger det.
   Brug det, når brugeren spørger til fryseren/køleskabet/"det vi har", eller vil have en madplan ud fra det –
   læg så retterne på madplanen med add_to_meal_plan, når brugeren beder om det, og prioritér det, der skal spises snart.
+- huti_shopping_list viser husstandens indkøbsliste i huti (kun læsning – Kokkeri ændrer aldrig huti). Brug det,
+  når brugeren spørger, hvad der står på hutis liste, eller vil have den over på Kokkeris liste: tjek så
+  get_shopping_list først, og læg kun det manglende på med add_to_shopping_list, når brugeren beder om det.
 - Vinen kan kobles til en ret på madplanen: set_wine_for_meal (entry-id fra get_meal_plan) for en ret,
   der allerede står der, eller feltet wine i add_to_meal_plan. Kun når brugeren beder om det.
 
@@ -1774,7 +1777,7 @@ const mcp = require('./mcp.js').opret({
   /* Tilbud fra eTilbudsavis (v44) - asynkrone, kaster med status ved fejl. */
   tilbud: { opsaetning: () => tilbudOpsaetning(), soeg: (q2, butik, rel) => tilbudSoeg(q2, butik, rel), alle: () => tilbudAlle() },
   /* huti (v55) - kun laesning; noeglen bliver her. */
-  huti: { beholdning: () => hutiForb.beholdning(), linje: v => hutiMod.vareLinje(v) },
+  huti: { beholdning: () => hutiForb.beholdning(), indkoeb: () => hutiForb.indkoeb(), linje: v => hutiMod.vareLinje(v) },
   /* Vinkaelderen i Cellarius (v53) - kun laesning; noeglen bliver her. */
   cellarius: {
     retTekst: r => cellariusRetTekst(r),
@@ -2866,6 +2869,14 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
         hutiForb.afbryd();
         console.log(`[huti] ${user.username} afbrød forbindelsen til huti`);
         return send(res, 200, { ok: true, settings: appSettingsJson() });
+      }
+      /* »Hent fra huti« paa indkoebslisten: hutis AABNE poster, renset. Kun laesning - Kokkeri
+       * skriver intet tilbage (forbindelsen gaar én vej). Login er nok, som de andre laesekald;
+       * fladen lægger de valgte poster paa Kokkeris liste med sine egne saveBulk-kald. */
+      if (p === '/api/huti/indkoeb' && req.method === 'POST') {
+        const r = await hutiForb.indkoeb();
+        if (!r.ok) return hutiFejl(r);
+        return send(res, 200, { items: r.items, total: r.total });
       }
       /* Herfra skal forbindelsen findes. Beholdningen er cachet i 3 min (frisk: true springer den over). */
       const b = await hutiForb.beholdning({ frisk: !!body.frisk });
