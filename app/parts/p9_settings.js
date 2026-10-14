@@ -190,7 +190,7 @@ RENDER.settings = () => {
       Status: ${S.settings.cellariusSet ? '<span class="good">forbundet ✓</span>' : '<span class="warn">ikke sat op</span>'}</p>
     <div class="formgrid">
       <label class="fld"><span>Cellarius' adresse</span>
-        <input id="celUrl" value="${esc(S.settings.cellariusUrl || '')}" placeholder="https://cellarius.yggdrasilpanel.com" inputmode="url" autocapitalize="none" spellcheck="false"></label>
+        <input id="celUrl" value="${esc(S.settings.cellariusUrl || '')}" placeholder="https://app.getcellarius.com" inputmode="url" autocapitalize="none" spellcheck="false"></label>
       <label class="fld"><span>Nøgle ${S.settings.cellariusSet ? '(udfyld kun for at skifte)' : ''}</span>
         <input id="celKey" type="password" autocomplete="off"></label>
       <label class="fld"><span>Konto-id (husstanden)</span>

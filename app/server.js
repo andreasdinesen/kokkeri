@@ -1000,7 +1000,28 @@ function dodaOpgaveTekst(it, projekt, kontekster) {
  * Cellarius under Indstillinger -> Integrationer (scope cellar:read, kan intet
  * aendre). Samme kontrakt som dodaKald: aldrig en undtagelse, og en Cellarius,
  * der er nede, er en advarsel - ikke en fejl i Kokkeri. */
-const CELLARIUS_STANDARD = 'https://cellarius.yggdrasilpanel.com';
+/* v52: Cellarius flyttede 14/10-2026 til app.getcellarius.com. Den gamle
+ * adresse viderestiller forsiden, og API'et svarer (endnu) begge steder - men
+ * en gemt gammel adresse skiftes, saa Kokkeri ikke staar paa en adresse, der
+ * kan forsvinde. */
+const CELLARIUS_STANDARD = 'https://app.getcellarius.com';
+const CELLARIUS_GAMLE_VAERTER = new Set(['cellarius.yggdrasilpanel.com']);
+function cellariusBase() {
+  const b = dodaBase(setting('cellarius_url', '') || CELLARIUS_STANDARD);
+  try { if (b && CELLARIUS_GAMLE_VAERTER.has(new URL(b).hostname)) return CELLARIUS_STANDARD; } catch (e) {}
+  return b;
+}
+function migrateCellariusAdresse() {
+  const gemt = setting('cellarius_url', '');
+  if (!gemt) return;
+  try {
+    if (CELLARIUS_GAMLE_VAERTER.has(new URL(dodaBase(gemt)).hostname)) {
+      q.setSetting.run('cellarius_url', CELLARIUS_STANDARD);
+      console.log('Kokkeri: Cellarius-adressen flyttet til ' + CELLARIUS_STANDARD);
+    }
+  } catch (e) {}
+}
+migrateCellariusAdresse();
 async function cellariusKald(base, key, metode, sti, krop) {
   let svar;
   try {
@@ -1057,19 +1078,45 @@ async function cellariusKonto(base, key) {
 const CELLARIUS_MADKODER = ['beef', 'lamb', 'game', 'pork', 'veal', 'poultry', 'cured_meat', 'rich_fish', 'lean_fish',
   'shellfish', 'pasta', 'mushrooms', 'vegetarian', 'spicy', 'soft_cheese', 'hard_cheese', 'blue_cheese', 'goat_cheese',
   'appetizer', 'sweet_dessert', 'fruit_dessert', 'chocolate'];
+/* Flaskens plads som Cellarius viser den: "Vinreol · Reol Skab B4" (v52). */
+function cellariusPlads(b) {
+  const hylde = [b.unit, b.slot_label].filter(Boolean).map(String).join(' ');
+  return [b.cellar, hylde].filter(Boolean).map(String).join(' · ').slice(0, 80);
+}
+/* Drikkevinduet { from, peak_from, peak_to, to, status } -> tekst til AI'en og
+ * en af Cellarius' begrundelseskoder. Regnet ud fra AARET, ikke `status`:
+ * kun "ready" er set i praksis, og de andre vaerdier er ikke dokumenterede. */
+function cellariusVindue(w) {
+  if (!w || typeof w !== 'object') return null;
+  const fra = parseInt(w.from, 10), til = parseInt(w.to, 10);
+  if (!fra && !til) return null;
+  const aar = new Date().getFullYear();
+  let kode = 'in_window', ord = 'klar';
+  if (fra && aar < fra) { kode = 'too_young'; ord = 'for ung'; }
+  else if (til && aar >= til - 1) { kode = 'drink_soon'; ord = 'bør drikkes snart'; }
+  const top = w.peak_from && w.peak_to ? `, top ${w.peak_from}–${w.peak_to}` : '';
+  return { kode, tekst: `drikkevindue ${fra || '?'}–${til || '?'}${top}: ${ord}` };
+}
 async function cellariusAiForslag(base, key, konto, tekst, limit) {
   const r = await cellariusKald(base, key, 'GET', '/accounts/' + encodeURIComponent(konto) + '/bottles');
   if (!r.ok) return r;
-  /* én linje pr. vin (wine_id), ikke pr. flaske */
+  /* én linje pr. AARGANG (vintage_id) - ikke pr. flaske, og ikke pr. vin:
+   * en 2016 og en 2022 af samme vin er to forskellige forslag (v52). */
   const vine = new Map();
   for (const b of (Array.isArray(r.data.bottles) ? r.data.bottles : [])) {
     if (!b || (b.status && b.status !== 'in_cellar')) continue;
-    const k = b.wine_id || [b.producer, b.name, b.vintage].join('|');
-    const v = vine.get(k);
-    if (v) { v.bottles++; continue; }
-    vine.set(k, { id: b.wine_id || b.id || null, producer: String(b.producer || ''), name: String(b.name || ''),
-      vintage: b.vintage == null ? null : b.vintage, colour: String(b.colour || ''),
-      country: String(b.country || ''), region: String(b.region || ''), bottles: 1 });
+    const k = b.vintage_id || [b.wine_id || b.producer + '|' + b.name, b.vintage].join('|');
+    const plads = cellariusPlads(b);
+    let v = vine.get(k);
+    if (!v) {
+      v = { id: b.wine_id || b.id || null, producer: String(b.producer || ''), name: String(b.name || ''),
+        vintage: b.vintage == null ? null : b.vintage, colour: String(b.colour || ''),
+        country: String(b.country || ''), region: String(b.region || ''), bottles: 0, places: [],
+        vindue: cellariusVindue(b.window), naa: +b.access_cost || 0 };
+      vine.set(k, v);
+    }
+    v.bottles++;
+    if (plads && !v.places.includes(plads) && v.places.length < 4) v.places.push(plads);
   }
   const liste = [...vine.values()].slice(0, 200);
   if (!liste.length) return { ok: true, data: { foods: [], suggestions: [], tom: true } };
@@ -1077,11 +1124,13 @@ async function cellariusAiForslag(base, key, konto, tekst, limit) {
   try {
     out = await aiMessage({
       system: `Du er sommelier i et dansk hjem. Vælg op til ${limit} vine FRA LISTEN, der passer til retten – bedste først.
+Tag hensyn til drikkevinduet: foretræk vine, der er klar, og især dem, der bør drikkes snart. En vin, der stadig er for ung, vælges kun, hvis intet andet passer.
 Svar KUN med ét JSON-objekt: {"foods": [koder], "suggestions": [{"nr": tal, "why": "kort dansk begrundelse, højst 12 ord"}]}
 "foods" er rettens hovedingredienser som koder fra: ${CELLARIUS_MADKODER.join(', ')}.
 Brug kun numre fra listen. Passer intet rigtigt, så svar med tom "suggestions".`,
       messages: [{ role: 'user', content: 'Retten: ' + tekst + '\n\nVinene i kælderen:\n' +
-        liste.map((v, i) => `${i + 1}. ${[v.producer, v.name, v.vintage].filter(Boolean).join(' ')} – ${[v.colour, v.region, v.country].filter(Boolean).join(', ')}`).join('\n') }],
+        liste.map((v, i) => `${i + 1}. ${[v.producer, v.name, v.vintage].filter(Boolean).join(' ')} – ${[v.colour, v.region, v.country].filter(Boolean).join(', ')}`
+          + (v.vindue ? ` – ${v.vindue.tekst}` : '')).join('\n') }],
       maxTokens: 800, effort: 'low'
     });
   } catch (e) {
@@ -1093,7 +1142,11 @@ Brug kun numre fra listen. Passer intet rigtigt, så svar med tom "suggestions".
     const n = parseInt(x && x.nr, 10);
     if (!(n >= 1 && n <= liste.length) || set.has(n)) return null;
     set.add(n);
-    return Object.assign({}, liste[n - 1], { places: [], reasons: [], why: String((x && x.why) || '').slice(0, 120) });
+    const v = liste[n - 1];
+    /* Cellarius' egne begrundelseskoder, saa vinduet viser det samme som dér */
+    const reasons = [v.vindue && v.vindue.kode, v.naa > 0 ? 'hard_to_reach' : ''].filter(Boolean);
+    const { vindue, naa, ...rest } = v;
+    return Object.assign(rest, { reasons, why: String((x && x.why) || '').slice(0, 120) });
   }).filter(Boolean).slice(0, limit);
   return { ok: true, data: {
     foods: (Array.isArray(j.foods) ? j.foods : []).map(String).filter(f => CELLARIUS_MADKODER.includes(f)),
@@ -2592,7 +2645,7 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
      * `recipeId` slaar opskriften op her paa serveren; `text` er fri tekst
      * (madplanen, eller en ret uden opskrift). */
     if (p.startsWith('/api/cellarius/')) {
-      const base = dodaBase(setting('cellarius_url', '') || CELLARIUS_STANDARD);
+      const base = cellariusBase();
       const key = setting('cellarius_key', '');
       if (!base || !key) return err(res, 400, 'Cellarius er ikke sat op – angiv nøglen under Indstillinger');
       const konto = await cellariusKonto(base, key);

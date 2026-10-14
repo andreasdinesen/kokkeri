@@ -112,6 +112,12 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v52** (oktober 2026): **Cellarius er flyttet.** Standardadressen er nu
+  `app.getcellarius.com`; en gemt gammel adresse (`cellarius.yggdrasilpanel.com`)
+  flyttes af sig selv ved opstart. Vinforslagene viser, hvor flasken står
+  (»Vinreol · Reol Skab B4«), og AI'en får drikkevinduet med: den foretrækker
+  vine, der er klar eller bør drikkes snart, og tager kun en for ung vin, hvis
+  intet andet passer. Forskellige årgange af samme vin er nu hver sit forslag.
 - **v51** (oktober 2026): **Vinforslag fra Cellarius.** Under Indstillinger →
   Integrationer angiver du en læse-nøgle fra Cellarius (Indstillinger →
   Integrationer dér) og husstandens `account_id` (står på `…/api/v1/auth/me`,

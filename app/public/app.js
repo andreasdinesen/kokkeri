@@ -105,7 +105,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 51;
+const APP_VERSION = 52;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -2111,7 +2111,8 @@ const VIN_MAD = { beef: 'okse', lamb: 'lam', game: 'vildt', pork: 'svin', veal: 
   blue_cheese: 'blåskimmel', goat_cheese: 'gedeost', appetizer: 'snacks', sweet_dessert: 'dessert',
   fruit_dessert: 'frugtdessert', chocolate: 'chokolade' };
 const VIN_GRUND = { food_match: 'passer til retten', by_colour: 'gættet ud fra farven', body_fits: 'fylden passer',
-  easy_to_reach: 'lige ved hånden', hard_to_reach: 'svær at nå' };
+  easy_to_reach: 'lige ved hånden', hard_to_reach: 'svær at nå',
+  in_window: 'i sit drikkevindue', drink_soon: 'bør drikkes snart', too_young: 'stadig for ung' };
 function wineModal(r) {
   const vis = (indhold) => openModal(`<h2>🍷 Vin til "${esc(r.title)}"</h2>${indhold}
     <div class="rowflex" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="wineClose">Luk</button></div>`,
@@ -2130,8 +2131,8 @@ function wineModal(r) {
       if (d.foods.length) html = `<p class="small muted">Læst som: ${esc(laest)}</p>`;
       html += !d.suggestions.length ? '<p>Intet i kælderen passer til den ret lige nu.</p>'
         : '<ol class="winelist">' + d.suggestions.map(v => {
-            /* AI-reserven kender ikke pladserne - kun Cellarius har layoutet */
-            const om = [ai ? '' : (v.places.length ? v.places.slice(0, 2).join(', ') : 'mangler plads'),
+            /* v52: flaskelisten har pladserne med, saa ogsaa AI-reserven viser dem */
+            const om = [v.places.length ? v.places.slice(0, 2).join(', ') : 'mangler plads',
               v.bottles === 1 ? 'sidste flaske' : v.bottles + ' flasker',
               ...v.reasons.map(g => VIN_GRUND[g] || g)].filter(Boolean).map(esc).join(' · ');
             return `<li>
@@ -5409,7 +5410,7 @@ RENDER.settings = () => {
       Status: ${S.settings.cellariusSet ? '<span class="good">forbundet ✓</span>' : '<span class="warn">ikke sat op</span>'}</p>
     <div class="formgrid">
       <label class="fld"><span>Cellarius' adresse</span>
-        <input id="celUrl" value="${esc(S.settings.cellariusUrl || '')}" placeholder="https://cellarius.yggdrasilpanel.com" inputmode="url" autocapitalize="none" spellcheck="false"></label>
+        <input id="celUrl" value="${esc(S.settings.cellariusUrl || '')}" placeholder="https://app.getcellarius.com" inputmode="url" autocapitalize="none" spellcheck="false"></label>
       <label class="fld"><span>Nøgle ${S.settings.cellariusSet ? '(udfyld kun for at skifte)' : ''}</span>
         <input id="celKey" type="password" autocomplete="off"></label>
       <label class="fld"><span>Konto-id (husstanden)</span>
