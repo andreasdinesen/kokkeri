@@ -1127,6 +1127,11 @@ function cellariusVindue(w) {
   const top = w.peak_from && w.peak_to ? `, top ${w.peak_from}–${w.peak_to}` : '';
   return { kode, tekst: `drikkevindue ${fra || '?'}–${til || '?'}${top}: ${ord}` };
 }
+/* Kun VIN (v58): kaelderen rummer ogsaa whisky og gin, og de hoerer ikke til
+ * aftensmaden. Cellarius' vinfarver - alt andet (tom farve, spiritus) springes over. */
+const CELLARIUS_VINFARVER = new Set(['red', 'white', 'rose', 'sparkling', 'sweet', 'fortified']);
+const vinFarve = b => String(b.colour || b.color || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+const erVin = b => CELLARIUS_VINFARVER.has(vinFarve(b));
 /* Kaelderens vine - delt af AI-reserven paa knappen og MCP-vaerktoejet
  * get_wine_cellar (v53), saa begge ser praecis det samme. */
 async function cellariusKaelder(base, key, konto) {
@@ -1136,13 +1141,13 @@ async function cellariusKaelder(base, key, konto) {
    * en 2016 og en 2022 af samme vin er to forskellige forslag (v52). */
   const vine = new Map();
   for (const b of (Array.isArray(r.data.bottles) ? r.data.bottles : [])) {
-    if (!b || (b.status && b.status !== 'in_cellar')) continue;
+    if (!b || (b.status && b.status !== 'in_cellar') || !erVin(b)) continue;
     const k = b.vintage_id || [b.wine_id || b.producer + '|' + b.name, b.vintage].join('|');
     const plads = cellariusPlads(b);
     let v = vine.get(k);
     if (!v) {
       v = { id: b.wine_id || b.id || null, producer: String(b.producer || ''), name: String(b.name || ''),
-        vintage: b.vintage == null ? null : b.vintage, colour: String(b.colour || ''),
+        vintage: b.vintage == null ? null : b.vintage, colour: vinFarve(b),
         country: String(b.country || ''), region: String(b.region || ''), bottles: 0, places: [],
         vindue: cellariusVindue(b.window), naa: +b.access_cost || 0 };
       vine.set(k, v);

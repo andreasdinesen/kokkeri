@@ -121,6 +121,9 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v58**: **Kun vin fra kælderen.** Vinfeltet på madplanen, vinforslagene og
+  assistentens kig i kælderen viser nu kun vin (rød, hvid, rosé, mousserende, sød og
+  hedvin) – whisky og gin fra Cellarius hører ikke til aftensmaden.
 - **v57**: **Vin fra kælderen på madplanen.** Feltet »🍷 Vin til retten« søger i
   Cellarius-kælderen (når Cellarius er sat op): en liste med farve, antal flasker,
   drikkevindue og plads, der filtreres mens man skriver; vælg med mus eller piletaster
