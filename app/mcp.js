@@ -220,6 +220,11 @@ const harRaavare = (r, ord) => {
 /* Samme ordfilter som what_can_i_cook: tre bogstaver, eller to for en kendt gruppe (æg). */
 const brugbartOrd = x => x.length >= 3 || (x.length >= 2 && RAAVARE_GRUPPER.some(([navn]) => navn === x));
 
+/* hutis ord, der aldrig er det, en ret skal have fra huti: »vand« staar i halvdelen
+ * af alle opskrifter (»2 dl vand«), saa nødlagerets vanddunke gav maerket »fra huti:
+ * Vand« paa naesten hver ret (v57). Salt og peber er ligesaa overalt. */
+const HUTI_IKKE_ORD = new Set(['vand', 'salt', 'peber']);
+
 /* ------------------------------------------------- huti -> madplanen (v55)
  * hutis varer (app/huti.js, renset) har hvert et dansk raavareord (`word`, lavet af
  * hutis mkRaavareOrd). Samme ord fra flere varer er ét ord - »spis snart«, hvis bare
@@ -228,7 +233,7 @@ function hutiOrd(varer) {
   const m = new Map();
   for (const v of varer || []) {
     const ord = norm(v && v.word);
-    if (!ord || !brugbartOrd(ord)) continue;
+    if (!ord || !brugbartOrd(ord) || HUTI_IKKE_ORD.has(ord)) continue;
     const g = m.get(ord);
     if (g) { g.varer.push(v); g.soon = g.soon || !!v.soon; continue; }
     m.set(ord, { ord, soon: !!v.soon, varer: [v] });

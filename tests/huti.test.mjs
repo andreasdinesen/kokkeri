@@ -101,6 +101,15 @@ test('matcheren: samme raekkefoelge som what_can_i_cook uden »spis snart«, og 
   assert.deepEqual(M.hutiVarerTil(OPSKRIFTER[0], varer).map(v => v.id).sort(), [11, 13]);
 });
 
+test('vand, salt og peber fra huti giver intet maerke (v57: noedlagerets vand stod paa alle retter)', () => {
+  const vand = [{ id: 90, name: 'Vand', word: 'vand', place: 'Smedestien › Garage › Nødlager' },
+    { id: 91, name: 'Havsalt', word: 'salt' }].map(H.rensVare);
+  const r = { id: 'x', title: 'Gryde', ingredients: ['2 dl vand', '1 tsk salt', '500 g oksekød'] };
+  assert.deepEqual(M.hutiVarerTil(r, vand), []);
+  assert.deepEqual(M.hutiForslag([r], vand).retter, []);
+  assert.deepEqual(M.hutiVarerTilLinje('2 dl vand', vand), []);
+});
+
 test('indkoebslinjerne: strengere end opskrift-matcheren', () => {
   const varer = VARER().map(H.rensVare);
   const id = l => M.hutiVarerTilLinje(l, varer).map(v => v.id);

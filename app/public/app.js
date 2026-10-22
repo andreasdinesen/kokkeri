@@ -105,7 +105,7 @@
 /* Kokkeri frontend – vanilla JS, ingen frameworks.
  * Samlet af build-dele (app/parts/p*.js -> public/app.js). */
 
-const APP_VERSION = 56;
+const APP_VERSION = 57;
 
 /* localStorage kan kaste (privat vindue, blokerede cookies) - preferencer maa
  * aldrig kunne vaelte appen. */
@@ -4252,6 +4252,72 @@ async function planQuickView(entry) {
   }, true);
 }
 
+/* Vinfeltet paa madplanen soeger i Cellarius-kaelderen (v57). Listen hentes højst
+ * én gang hvert 5. minut; fritekst virker stadig, og svarer Cellarius ikke, er
+ * feltet bare et tekstfelt som foer. */
+const VIN_FARVE = { red: '🔴', white: '🟡', rose: '🌸', sparkling: '🫧', sweet: '🍯', fortified: '🟤' };
+const VIN_VINDUE = { too_young: 'for ung', in_window: 'klar', drink_soon: 'drik snart' };
+const vinNavn = v => [v.producer, v.name, v.vintage].filter(Boolean).join(' ');
+function hentVinKaelder() {
+  const c = S.vinKaelder;
+  if (c && Date.now() - c.t < 300000) return c.p;
+  const p = api('/api/cellarius/kaelder').then(d => d.wines || []);
+  S.vinKaelder = { t: Date.now(), p };
+  p.catch(() => { S.vinKaelder = null; });
+  return p;
+}
+function vinVaelger(inp, liste) {
+  let vine = null, vist = [], sel = -1;
+  const vis = () => {
+    if (!vine || document.activeElement !== inp) return;
+    const ord = normName(inp.value).split(' ').filter(Boolean);
+    vist = vine.filter(v => {
+      const t = normName([vinNavn(v), v.region, v.country].join(' '));
+      return ord.every(o => t.includes(o));
+    }).slice(0, 50);
+    sel = Math.min(sel, vist.length - 1);
+    liste.hidden = false;
+    liste.innerHTML = vist.length ? vist.map((v, i) => `<div class="vinitem${i === sel ? ' sel' : ''}" data-i="${i}">
+        <span>${VIN_FARVE[v.colour] || '🍷'}</span><span class="grow">${esc(vinNavn(v))}</span>
+        <span class="hint">${esc([v.bottles === 1 ? '1 fl.' : v.bottles + ' fl.', VIN_VINDUE[v.window] || '', v.places[0] || ''].filter(Boolean).join(' · '))}</span>
+      </div>`).join('')
+      : `<div class="vintom">${vine.length ? 'Ingen vin i kælderen passer – teksten gemmes som den er' : 'Vinkælderen er tom'}</div>`;
+    const s = liste.querySelector('.sel');
+    if (s) s.scrollIntoView({ block: 'nearest' });
+  };
+  const vaelg = i => {
+    const v = vist[i];
+    if (!v) return;
+    inp.value = vinNavn(v).slice(0, 120);
+    liste.hidden = true;
+  };
+  inp.addEventListener('focus', async () => {
+    if (vine) return vis();
+    liste.hidden = false;
+    liste.innerHTML = '<div class="vintom">Henter vinkælderen …</div>';
+    try { vine = await hentVinKaelder(); vis(); }
+    catch (e) { liste.innerHTML = `<div class="vintom">Cellarius svarer ikke (${esc(e.message)}) – skriv vinen selv</div>`; }
+  });
+  inp.addEventListener('input', () => { sel = -1; vis(); });
+  inp.addEventListener('click', () => { if (liste.hidden) vis(); });   // efter et valg har feltet stadig fokus
+  inp.addEventListener('blur', () => { liste.hidden = true; });
+  inp.addEventListener('keydown', e => {
+    if (liste.hidden || !vist.length) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      sel = (sel + (e.key === 'ArrowDown' ? 1 : -1) + vist.length) % vist.length;
+      vis();
+    } else if (e.key === 'Enter' && sel >= 0) { e.preventDefault(); vaelg(sel); }
+    else if (e.key === 'Escape') { e.stopPropagation(); liste.hidden = true; }
+  });
+  /* mousedown, ikke click: saa mister feltet ikke fokus (og listen lukker ikke) foer valget */
+  liste.addEventListener('mousedown', e => {
+    e.preventDefault();
+    const it = e.target.closest('.vinitem');
+    if (it) vaelg(+it.dataset.i);
+  });
+}
+
 /* Modalen aabnes forfra hver gang (aabn()), fordi opskrift-vaelgeren
  * overtager modalvinduet. Felterne laeses over i `d` foerst, saa dato,
  * maaltid og personer overlever turen forbi soegningen. */
@@ -4284,7 +4350,9 @@ function planEntryModal(entry, prefill) {
       <button type="button" class="btn small" id="pmRester">🍲 Rester</button>
     </div>
     <label class="fld"><span>🍷 Vin til retten (valgfrit)</span>
-      <input id="pmWine" value="${esc(d.wine || '')}" maxlength="120" placeholder="fx Terre del Barolo Barolo 2020"></label>
+      <input id="pmWine" value="${esc(d.wine || '')}" maxlength="120" autocomplete="off"
+        placeholder="${S.settings.cellariusSet ? 'Søg i vinkælderen – eller skriv selv' : 'fx Terre del Barolo Barolo 2020'}"></label>
+    ${S.settings.cellariusSet ? '<div id="pmWineList" class="vinvalg" hidden></div>' : ''}
     <div class="actions">
       ${isNew ? '' : '<button class="btn danger" id="pmDelete" style="margin-right:auto">Fjern</button>'}
       <button class="btn" id="pmCancel">Annullér</button>
@@ -4306,6 +4374,7 @@ function planEntryModal(entry, prefill) {
       };
       const ryd = m.querySelector('#pmClear');
       if (ryd) ryd.onclick = () => { laes(); d.recipeId = ''; aabn(); };
+      if (S.settings.cellariusSet) vinVaelger(m.querySelector('#pmWine'), m.querySelector('#pmWineList'));
       m.querySelector('#pmRester').onclick = () => { m.querySelector('#pmText').value = HURTIG_TEKST; };
       if (!isNew) m.querySelector('#pmDelete').onclick = async () => {
         closeModal();

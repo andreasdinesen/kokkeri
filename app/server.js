@@ -2806,6 +2806,16 @@ ${rec.url ? `<p class="foot">Original: <a href="${H(rec.url)}" rel="noopener">${
         if (!b.ok) return err(res, b.kode === 'bad_key' ? 401 : 502, b.besked);
         return send(res, 200, { ok: true, konto: konto.konto, mode: 'ai' });
       }
+      /* Kaelderens vine til vinfeltet paa madplanen (v57) - samme liste som AI-reserven. */
+      if (p === '/api/cellarius/kaelder' && req.method === 'GET') {
+        const k = await cellariusKaelder(base, key, konto.konto);
+        if (!k.ok) return err(res, k.kode === 'bad_key' ? 401 : 502, k.besked);
+        return send(res, 200, { wines: k.vine.map(v => ({
+          producer: v.producer, name: v.name, vintage: v.vintage, colour: v.colour,
+          region: v.region, country: v.country, bottles: v.bottles, places: v.places,
+          window: v.vindue ? v.vindue.kode : null
+        })) });
+      }
       if (p === '/api/cellarius/pairings' && req.method === 'POST') {
         let tekst = String(body.text || '').trim().slice(0, 500);
         if (body.recipeId) {

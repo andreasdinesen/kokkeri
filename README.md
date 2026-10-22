@@ -121,6 +121,11 @@ genererede filer direkte.
 
 ## Versionshistorik
 
+- **v57**: **Vin fra kælderen på madplanen.** Feltet »🍷 Vin til retten« søger i
+  Cellarius-kælderen (når Cellarius er sat op): en liste med farve, antal flasker,
+  drikkevindue og plads, der filtreres mens man skriver; vælg med mus eller piletaster
+  og Enter. Fritekst virker stadig. Og huti-mærkerne springer vand, salt og peber over –
+  nødlagerets vand stod som »fra huti: Vand« på næsten alle retter.
 - **v56**: **Hent fra huti.** Indkøbslisten får
   *🧊 Hent fra huti* (kun når huti er forbundet): hutis åbne poster vises med
   flueben, og »Tilføj« kopierer de valgte over med mærket »fra huti«. Det, der
